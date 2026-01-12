@@ -805,25 +805,30 @@ class QAAgent:
         # Combine all filing content
         all_content = "\n\n".join(f"=== {k} ===\n{v[:20000]}" for k, v in filings.items())
 
-        # Run checks (sequentially to avoid rate limits)
+        # Run checks (sequentially with delays to avoid Gemini rate limits)
+        # Gemini free tier: 10 requests per minute per model
+        # Add 7 second delay between LLM calls to stay under limit
 
         # 1. Internal consistency (no LLM needed)
         print(f"    [1/5] Internal consistency...")
         checks.append(self.check_internal_consistency(extraction))
 
-        # 2. Entity verification
+        # 2. Entity verification (uses LLM)
         print(f"    [2/5] Entity verification...")
         checks.append(self.verify_entities(extraction, exhibit_21))
+        await asyncio.sleep(7)  # Rate limit delay
 
-        # 3. Debt verification
+        # 3. Debt verification (uses LLM)
         print(f"    [3/5] Debt verification...")
         checks.append(self.verify_debt(extraction, debt_content))
+        await asyncio.sleep(7)  # Rate limit delay
 
-        # 4. Completeness check
+        # 4. Completeness check (uses LLM)
         print(f"    [4/5] Completeness check...")
         checks.append(self.check_completeness(extraction, all_content))
+        await asyncio.sleep(7)  # Rate limit delay
 
-        # 5. Structure verification
+        # 5. Structure verification (uses LLM)
         print(f"    [5/5] Structure verification...")
         checks.append(self.verify_structure(extraction, all_content))
 
