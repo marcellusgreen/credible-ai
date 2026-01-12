@@ -1,0 +1,523 @@
+"""
+Credible.ai - Database Schema
+
+Core tables for corporate structure and debt data.
+Based on the data model specification.
+"""
+
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Optional
+from uuid import UUID, uuid4
+
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+# =============================================================================
+# CORE TABLES
+# =============================================================================
+
+
+class Company(Base):
+    """Root table for public companies."""
+
+    __tablename__ = "companies"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    ticker: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # Classification
+    sector: Mapped[Optional[str]] = mapped_column(String(100))
+    industry: Mapped[Optional[str]] = mapped_column(String(100))
+
+    # Identifiers
+    cik: Mapped[Optional[str]] = mapped_column(String(20))  # SEC Central Index Key
+    lei: Mapped[Optional[str]] = mapped_column(String(20))  # Legal Entity Identifier
+
+    # Flexible attributes (ratings, market cap, etc.)
+    attributes: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+    # Metadata
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    # Relationships
+    entities: Mapped[list["Entity"]] = relationship(
+        back_populates="company", cascade="all, delete-orphan"
+    )
+    debt_instruments: Mapped[list["DebtInstrument"]] = relationship(
+        back_populates="company", cascade="all, delete-orphan"
+    )
+    cache: Mapped[Optional["CompanyCache"]] = relationship(
+        back_populates="company", cascade="all, delete-orphan", uselist=False
+    )
+    metrics: Mapped[Optional["CompanyMetrics"]] = relationship(
+        back_populates="company", cascade="all, delete-orphan", uselist=False
+    )
+
+    __table_args__ = (
+        Index("idx_companies_ticker", "ticker"),
+        Index("idx_companies_cik", "cik"),
+        Index("idx_companies_sector", "sector"),
+    )
+
+
+class Entity(Base):
+    """Legal entities within a corporate structure."""
+
+    __tablename__ = "entities"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    company_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+
+    # Identity
+    name: Mapped[str] = mapped_column(String(500), nullable=False)
+    slug: Mapped[Optional[str]] = mapped_column(String(255))
+    legal_name: Mapped[Optional[str]] = mapped_column(String(500))
+
+    # Classification
+    entity_type: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )  # holdco, opco, subsidiary, spv, jv, finco
+    jurisdiction: Mapped[Optional[str]] = mapped_column(String(100))
+    formation_type: Mapped[Optional[str]] = mapped_column(String(50))  # LLC, Corp, LP, Ltd
+    formation_date: Mapped[Optional[date]] = mapped_column(Date)
+
+    # Hierarchy
+    parent_id: Mapped[Optional[UUID]] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("entities.id")
+    )
+    ownership_pct: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    structure_tier: Mapped[Optional[int]] = mapped_column(
+        Integer
+    )  # 1=holdco, 2=intermediate, 3=opco, 4+=sub
+
+    # Status flags
+    is_guarantor: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_borrower: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_restricted: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_unrestricted: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_material: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_domestic: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_dormant: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # VIE and consolidation
+    is_vie: Mapped[bool] = mapped_column(Boolean, default=False)
+    vie_primary_beneficiary: Mapped[bool] = mapped_column(Boolean, default=False)
+    consolidation_method: Mapped[Optional[str]] = mapped_column(
+        String(50)
+    )  # full, equity_method, proportional, vie
+
+    # Flexible attributes
+    attributes: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+    # Metadata
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    # Relationships
+    company: Mapped["Company"] = relationship(back_populates="entities")
+    parent: Mapped[Optional["Entity"]] = relationship(
+        back_populates="children", remote_side=[id]
+    )
+    children: Mapped[list["Entity"]] = relationship(back_populates="parent")
+    issued_debt: Mapped[list["DebtInstrument"]] = relationship(
+        back_populates="issuer", foreign_keys="DebtInstrument.issuer_id"
+    )
+    guarantees: Mapped[list["Guarantee"]] = relationship(
+        back_populates="guarantor", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("company_id", "slug", name="uq_entities_company_slug"),
+        Index("idx_entities_company", "company_id"),
+        Index("idx_entities_parent", "parent_id"),
+        Index("idx_entities_type", "company_id", "entity_type"),
+        Index(
+            "idx_entities_guarantor",
+            "company_id",
+            "is_guarantor",
+            postgresql_where=(is_guarantor == True),
+        ),
+        Index(
+            "idx_entities_unrestricted",
+            "company_id",
+            "is_unrestricted",
+            postgresql_where=(is_unrestricted == True),
+        ),
+    )
+
+
+class DebtInstrument(Base):
+    """Individual debt facilities and securities."""
+
+    __tablename__ = "debt_instruments"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    company_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    issuer_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("entities.id"), nullable=False
+    )
+
+    # Identity
+    name: Mapped[str] = mapped_column(String(500), nullable=False)
+    slug: Mapped[Optional[str]] = mapped_column(String(255))
+    cusip: Mapped[Optional[str]] = mapped_column(String(9))
+    isin: Mapped[Optional[str]] = mapped_column(String(12))
+
+    # Classification
+    instrument_type: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )  # term_loan_b, revolver, senior_notes, etc.
+    seniority: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )  # senior_secured, senior_unsecured, subordinated
+    security_type: Mapped[Optional[str]] = mapped_column(
+        String(50)
+    )  # first_lien, second_lien, unsecured
+
+    # Principal amounts (stored as BIGINT cents to avoid float issues)
+    commitment: Mapped[Optional[int]] = mapped_column(BigInteger)  # Total facility size
+    principal: Mapped[Optional[int]] = mapped_column(
+        BigInteger
+    )  # Original principal / face value
+    outstanding: Mapped[Optional[int]] = mapped_column(BigInteger)  # Current outstanding
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+
+    # Interest terms
+    rate_type: Mapped[Optional[str]] = mapped_column(String(20))  # fixed, floating
+    interest_rate: Mapped[Optional[int]] = mapped_column(
+        Integer
+    )  # For fixed: rate in bps (850 = 8.50%)
+    spread_bps: Mapped[Optional[int]] = mapped_column(
+        Integer
+    )  # For floating: spread over benchmark
+    benchmark: Mapped[Optional[str]] = mapped_column(String(20))  # SOFR, LIBOR, Prime
+    floor_bps: Mapped[Optional[int]] = mapped_column(Integer)  # Interest rate floor
+
+    # Key dates
+    issue_date: Mapped[Optional[date]] = mapped_column(Date)
+    maturity_date: Mapped[Optional[date]] = mapped_column(Date)
+
+    # Status
+    is_drawn: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    # Flexible attributes (covenants, call schedules, etc.)
+    attributes: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+    # Metadata
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    # Relationships
+    company: Mapped["Company"] = relationship(back_populates="debt_instruments")
+    issuer: Mapped["Entity"] = relationship(
+        back_populates="issued_debt", foreign_keys=[issuer_id]
+    )
+    guarantees: Mapped[list["Guarantee"]] = relationship(
+        back_populates="debt_instrument", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("company_id", "slug", name="uq_debt_company_slug"),
+        Index("idx_debt_company", "company_id"),
+        Index("idx_debt_issuer", "issuer_id"),
+        Index("idx_debt_maturity", "maturity_date"),
+        Index("idx_debt_type", "instrument_type"),
+        Index("idx_debt_seniority", "company_id", "seniority"),
+        Index(
+            "idx_debt_active",
+            "company_id",
+            "is_active",
+            postgresql_where=(is_active == True),
+        ),
+    )
+
+
+class OwnershipLink(Base):
+    """Complex ownership relationships between entities (multiple parents, JVs, etc.)."""
+
+    __tablename__ = "ownership_links"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    parent_entity_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("entities.id", ondelete="CASCADE"), nullable=False
+    )
+    child_entity_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("entities.id", ondelete="CASCADE"), nullable=False
+    )
+
+    # Ownership details
+    ownership_pct: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    ownership_type: Mapped[Optional[str]] = mapped_column(
+        String(50)
+    )  # direct, indirect, economic_only, voting_only
+
+    # For JVs and partnerships
+    is_joint_venture: Mapped[bool] = mapped_column(Boolean, default=False)
+    jv_partner_name: Mapped[Optional[str]] = mapped_column(String(255))
+    consolidation_method: Mapped[Optional[str]] = mapped_column(
+        String(50)
+    )  # full, equity_method, proportional, vie
+
+    # Effective dates
+    effective_from: Mapped[Optional[date]] = mapped_column(Date)
+    effective_to: Mapped[Optional[date]] = mapped_column(Date)  # NULL if current
+
+    # Flexible attributes
+    attributes: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+    # Metadata
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    # Relationships
+    parent_entity: Mapped["Entity"] = relationship(
+        foreign_keys=[parent_entity_id],
+        backref="owned_entities",
+    )
+    child_entity: Mapped["Entity"] = relationship(
+        foreign_keys=[child_entity_id],
+        backref="owner_entities",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "parent_entity_id", "child_entity_id", "effective_from",
+            name="uq_ownership_parent_child_date"
+        ),
+        Index("idx_ownership_parent", "parent_entity_id"),
+        Index("idx_ownership_child", "child_entity_id"),
+        Index(
+            "idx_ownership_jv",
+            "is_joint_venture",
+            postgresql_where=(is_joint_venture == True),
+        ),
+    )
+
+
+class Guarantee(Base):
+    """Junction table linking debt instruments to guarantor entities."""
+
+    __tablename__ = "guarantees"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    debt_instrument_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("debt_instruments.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    guarantor_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("entities.id", ondelete="CASCADE"), nullable=False
+    )
+
+    guarantee_type: Mapped[str] = mapped_column(
+        String(50), default="full"
+    )  # full, limited, upstream, downstream, cross-stream
+    limitation_amount: Mapped[Optional[int]] = mapped_column(
+        BigInteger
+    )  # For limited guarantees
+
+    # Metadata
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    # Relationships
+    debt_instrument: Mapped["DebtInstrument"] = relationship(back_populates="guarantees")
+    guarantor: Mapped["Entity"] = relationship(back_populates="guarantees")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "debt_instrument_id", "guarantor_id", name="uq_guarantees_debt_guarantor"
+        ),
+        Index("idx_guarantees_debt", "debt_instrument_id"),
+        Index("idx_guarantees_guarantor", "guarantor_id"),
+    )
+
+
+# =============================================================================
+# DENORMALIZED TABLES (Read Path)
+# =============================================================================
+
+
+class CompanyCache(Base):
+    """Pre-computed API responses. Serve directly with zero processing."""
+
+    __tablename__ = "company_cache"
+
+    company_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("companies.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    ticker: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
+
+    # Pre-computed responses (ready to serve as-is)
+    response_company: Mapped[Optional[dict]] = mapped_column(JSONB)
+    response_structure: Mapped[Optional[dict]] = mapped_column(JSONB)
+    response_debt: Mapped[Optional[dict]] = mapped_column(JSONB)
+    response_subordination: Mapped[Optional[dict]] = mapped_column(JSONB)
+    response_guarantors: Mapped[Optional[dict]] = mapped_column(JSONB)
+    response_waterfall: Mapped[Optional[dict]] = mapped_column(JSONB)
+
+    # Cache control
+    etag: Mapped[Optional[str]] = mapped_column(String(32))
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    source_filing_date: Mapped[Optional[date]] = mapped_column(Date)
+
+    # Quick access (avoid parsing JSON for simple lookups)
+    total_debt: Mapped[Optional[int]] = mapped_column(BigInteger)
+    entity_count: Mapped[Optional[int]] = mapped_column(Integer)
+    sector: Mapped[Optional[str]] = mapped_column(String(100))
+
+    # Relationships
+    company: Mapped["Company"] = relationship(back_populates="cache")
+
+    __table_args__ = (Index("idx_cache_ticker", "ticker"),)
+
+
+class CompanyMetrics(Base):
+    """Flat table optimized for screening and filtering."""
+
+    __tablename__ = "company_metrics"
+
+    ticker: Mapped[str] = mapped_column(String(20), primary_key=True)
+    company_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+
+    # Dimensions (for filtering)
+    sector: Mapped[Optional[str]] = mapped_column(String(100))
+    industry: Mapped[Optional[str]] = mapped_column(String(100))
+    market_cap_bucket: Mapped[Optional[str]] = mapped_column(
+        String(20)
+    )  # small, mid, large, mega
+
+    # Debt totals (BIGINT cents)
+    total_debt: Mapped[Optional[int]] = mapped_column(BigInteger)
+    secured_debt: Mapped[Optional[int]] = mapped_column(BigInteger)
+    unsecured_debt: Mapped[Optional[int]] = mapped_column(BigInteger)
+    net_debt: Mapped[Optional[int]] = mapped_column(BigInteger)
+
+    # Ratios (pre-computed)
+    leverage_ratio: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 2))
+    net_leverage_ratio: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 2))
+    interest_coverage: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 2))
+    secured_leverage: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 2))
+
+    # Maturity profile
+    debt_due_1yr: Mapped[Optional[int]] = mapped_column(BigInteger)
+    debt_due_2yr: Mapped[Optional[int]] = mapped_column(BigInteger)
+    debt_due_3yr: Mapped[Optional[int]] = mapped_column(BigInteger)
+    nearest_maturity: Mapped[Optional[date]] = mapped_column(Date)
+    weighted_avg_maturity: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(4, 1)
+    )  # years
+
+    # Structure metrics
+    entity_count: Mapped[Optional[int]] = mapped_column(Integer)
+    guarantor_count: Mapped[Optional[int]] = mapped_column(Integer)
+
+    # Risk scores (Credible's value-add)
+    subordination_risk: Mapped[Optional[str]] = mapped_column(
+        String(20)
+    )  # low, moderate, high
+    subordination_score: Mapped[Optional[Decimal]] = mapped_column(Numeric(4, 2))  # 0-10
+    maturity_wall_risk: Mapped[Optional[str]] = mapped_column(String(20))
+
+    # Boolean flags for fast filtering
+    has_holdco_debt: Mapped[bool] = mapped_column(Boolean, default=False)
+    has_opco_debt: Mapped[bool] = mapped_column(Boolean, default=False)
+    has_structural_sub: Mapped[bool] = mapped_column(Boolean, default=False)
+    has_unrestricted_subs: Mapped[bool] = mapped_column(Boolean, default=False)
+    has_intercreditor: Mapped[bool] = mapped_column(Boolean, default=False)
+    has_foreign_carveout: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_covenant_lite: Mapped[bool] = mapped_column(Boolean, default=False)
+    has_floating_rate: Mapped[bool] = mapped_column(Boolean, default=False)
+    has_pik: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_leveraged_loan: Mapped[bool] = mapped_column(Boolean, default=False)  # >4x leverage
+    has_near_term_maturity: Mapped[bool] = mapped_column(
+        Boolean, default=False
+    )  # within 24 months
+
+    # Ratings
+    sp_rating: Mapped[Optional[str]] = mapped_column(String(10))
+    moodys_rating: Mapped[Optional[str]] = mapped_column(String(10))
+    rating_bucket: Mapped[Optional[str]] = mapped_column(
+        String(20)
+    )  # IG, HY-BB, HY-B, HY-CCC, NR
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    # Relationships
+    company: Mapped["Company"] = relationship(back_populates="metrics")
+
+    __table_args__ = (
+        Index("idx_metrics_sector", "sector"),
+        Index("idx_metrics_leverage", "leverage_ratio"),
+        Index("idx_metrics_subordination", "subordination_risk"),
+        Index("idx_metrics_maturity", "nearest_maturity"),
+        Index("idx_metrics_rating", "rating_bucket"),
+        Index("idx_metrics_sector_leverage", "sector", "leverage_ratio"),
+        Index("idx_metrics_sector_subordination", "sector", "subordination_risk"),
+        Index("idx_metrics_rating_leverage", "rating_bucket", "leverage_ratio"),
+        Index(
+            "idx_metrics_risk_flags",
+            "subordination_risk",
+            "has_structural_sub",
+            "has_unrestricted_subs",
+        ),
+    )

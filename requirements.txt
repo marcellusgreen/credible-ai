@@ -1,0 +1,27 @@
+# API
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Database
+asyncpg>=0.29.0
+sqlalchemy>=2.0.0
+alembic>=1.13.0
+
+# Cache (optional for MVP)
+redis>=5.0.0
+
+# Performance
+orjson>=3.9.0
+
+# Extraction
+anthropic>=0.18.0
+httpx>=0.26.0
+
+# Utilities
+python-dotenv>=1.0.0
+structlog>=24.1.0
+
+# Security
+python-jose[cryptography]>=3.3.0
