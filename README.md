@@ -24,13 +24,37 @@ Corporate structure and debt analysis is complex. Even with AI, achieving accura
 - **Pre-computed API Responses**: Sub-second serving via cached JSON with ETag support
 - **SEC-API.io Integration**: Fast, reliable filing retrieval without SEC rate limits
 
-## Tested Results
+## Current Database
+
+**38 companies | 779 entities | 330 debt instruments**
+
+| Sector | Companies |
+|--------|-----------|
+| **Tech** | AAPL, MSFT, NVDA, GOOGL, META |
+| **Telecom/Cable** | CHTR, LUMN, DISH, FYBR, ATUS |
+| **Offshore Drilling** | RIG, VAL, DO, NE |
+| **Airlines** | AAL, UAL, DAL |
+| **Gaming** | CZR |
+| **Retail** | M, KSS, BBWI |
+| **Healthcare** | HCA, CHS |
+| **Energy** | OXY, DVN, APA, SWN |
+| **Media** | PARA, WBD, FOX |
+| **Autos** | F, GM |
+| **Banks** | JPM, GS |
+| **Consumer** | KHC |
+| **REITs** | SPG |
+| **Cruises** | CCL |
+| **Other** | CRWV, GE |
+
+## Extraction Results
 
 | Company | Ticker | QA Score | Entities | Debt Instruments | Cost | Duration |
 |---------|--------|----------|----------|------------------|------|----------|
 | Apple | AAPL | 94% | 20 | 7 | $0.0175 | ~60s |
-| CoreWeave | CRWV | 85% | 4 | 4 | $0.0122 | ~45s |
+| NVIDIA | NVDA | 94% | 4 | 9 | $0.0138 | ~57s |
+| Microsoft | MSFT | 88% | 9 | 16 | $0.0152 | ~31s |
 | Transocean | RIG | 88% | 17 | 15 | $0.0301 | ~90s |
+| CoreWeave | CRWV | 85% | 4 | 4 | $0.0122 | ~45s |
 | Altice USA | ATUS | 76%* | 18 | 14 | $0.0138 | ~42s |
 
 *ATUS has hierarchy issues that the QA system correctly identified
@@ -240,7 +264,9 @@ credible/
 │   ├── api/routes.py                # FastAPI endpoints
 │   └── main.py                      # FastAPI app
 ├── scripts/
-│   ├── extract_iterative.py         # CLI (recommended)
+│   ├── extract_iterative.py         # CLI for single company (recommended)
+│   ├── batch_extract.py             # Batch extraction for multiple companies
+│   ├── load_results_to_db.py        # Load JSON results to database
 │   ├── extract_tiered.py            # CLI (no QA)
 │   └── qa_extraction.py             # CLI (QA report only)
 ├── demos/

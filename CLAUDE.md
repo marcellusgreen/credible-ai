@@ -10,6 +10,31 @@ Credible.ai is a credit data API for AI agents. It extracts corporate structure 
 
 **Key insight**: Even with AI, achieving accuracy, speed, and cost-effectiveness for corporate structure extraction requires significant engineering. This is why pre-computed, quality-assured API access is valuable.
 
+## Current Status (January 2026)
+
+**Database**: 38 companies, 779 entities, 330 debt instruments
+
+**What's Working**:
+- ✅ Iterative extraction with QA feedback loop
+- ✅ 5-check QA verification system
+- ✅ Gemini for extraction, Claude for escalation
+- ✅ SEC-API.io integration (paid tier)
+- ✅ PostgreSQL on Neon Cloud
+- ✅ FastAPI REST API
+- ✅ Agent integration demos
+- ✅ Batch extraction script
+
+**Known Issues**:
+- Some companies saved with 0 debt instruments (need re-extraction)
+- ~13 companies failed extraction (Gemini JSON parsing issues)
+- Rate limiting needed for parallel extractions
+
+**Next Steps**:
+1. Retry failed extractions (AMZN, BAC, BA, CAT, MGM, WYNN, etc.)
+2. Deploy to Railway
+3. Add authentication/API keys for production
+4. Build landing page
+
 ## Architecture
 
 ### Iterative Extraction with QA (Recommended)
@@ -92,7 +117,9 @@ Still failing? → Escalate to Claude Sonnet/Opus
 | `app/services/extraction.py` | SEC-API/EDGAR clients, `clean_filing_html()`, database save |
 | `app/models/schema.py` | SQLAlchemy models |
 | `app/api/routes.py` | FastAPI endpoints |
-| `scripts/extract_iterative.py` | **CLI** (recommended) |
+| `scripts/extract_iterative.py` | **CLI** for single company (recommended) |
+| `scripts/batch_extract.py` | Batch extraction for multiple companies |
+| `scripts/load_results_to_db.py` | Load JSON results to database |
 | `demos/agent_integration.py` | Chatbot demo with full API integration |
 | `demos/agent_demo_offline.py` | Offline demo using local JSON files |
 
@@ -252,8 +279,8 @@ From `EXTRACTION_PROMPT_TEMPLATE` in `tiered_extraction.py`:
 ## Running Extractions
 
 ```bash
-# Iterative with QA (recommended)
-python scripts/extract_iterative.py --ticker RIG --cik 0001451505
+# Single company extraction with QA (recommended)
+python scripts/extract_iterative.py --ticker RIG --cik 0001451505 --save-db
 
 # Options:
 #   --threshold 90      # Quality threshold (default: 85%)
@@ -261,12 +288,30 @@ python scripts/extract_iterative.py --ticker RIG --cik 0001451505
 #   --save-db           # Save to database
 #   --no-save           # Don't save result files
 
+# Batch extraction (multiple companies)
+python scripts/batch_extract.py --batch telecom --delay 15
+python scripts/batch_extract.py --batch all --delay 30
+
+# Available batches: telecom, offshore, airlines, gaming, retail, healthcare,
+#                    energy, media, autos, tech, banks, industrials, consumer,
+#                    reits, cruises
+
+# Load existing JSON results to database
+python scripts/load_results_to_db.py
+python scripts/load_results_to_db.py --ticker AAPL
+
 # Simple tiered (no QA)
 python scripts/extract_tiered.py --ticker AAPL --cik 0000320193 --tier1 gemini
 
 # QA report only
 python scripts/qa_extraction.py --ticker AAPL --cik 0000320193
 ```
+
+## Rate Limiting
+
+The QA agent has 7-second delays between LLM checks to avoid Gemini API rate limits (10 requests/min on free tier). For batch extraction, use `--delay 15` or higher between companies.
+
+If you see `429 You exceeded your current quota` errors, increase delays or upgrade to paid Gemini tier.
 
 ## API Keys Required
 
