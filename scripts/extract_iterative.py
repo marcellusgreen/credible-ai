@@ -39,7 +39,8 @@ async def download_filings(ticker: str, cik: str, sec_api_key: str = None) -> di
     if sec_api_key:
         print(f"  Downloading filings via SEC-API...")
         sec_client = SecApiClient(sec_api_key)
-        filings = await sec_client.get_all_relevant_filings(ticker)
+        # Pass CIK as fallback if ticker search fails
+        filings = await sec_client.get_all_relevant_filings(ticker, cik=cik)
         exhibit_21 = sec_client.get_exhibit_21(ticker)
         if exhibit_21:
             filings['exhibit_21'] = exhibit_21

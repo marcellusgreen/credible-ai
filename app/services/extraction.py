@@ -322,12 +322,14 @@ class SecApiClient:
         self,
         ticker: str,
         form_types: list[str] = None,
-        max_filings: int = 15
+        max_filings: int = 15,
+        cik: str = None
     ) -> list[dict]:
         """
-        Get recent filings for a company by ticker.
+        Get recent filings for a company by ticker or CIK.
 
         Returns list of filing metadata with URLs.
+        Falls back to CIK search if ticker returns no results.
         """
         if not self.query_api:
             return []
@@ -337,6 +339,8 @@ class SecApiClient:
 
         # Build query for multiple form types
         form_query = " OR ".join([f'formType:"{ft}"' for ft in form_types])
+
+        # First try by ticker
         query = {
             "query": {
                 "query_string": {
@@ -350,7 +354,16 @@ class SecApiClient:
 
         try:
             response = self.query_api.get_filings(query)
-            return response.get("filings", [])
+            filings = response.get("filings", [])
+
+            # If no results by ticker and CIK provided, try by CIK
+            if not filings and cik:
+                cik_num = cik.lstrip("0")  # Remove leading zeros for query
+                query["query"]["query_string"]["query"] = f'cik:{cik_num} AND ({form_query})'
+                response = self.query_api.get_filings(query)
+                filings = response.get("filings", [])
+
+            return filings
         except Exception as e:
             print(f"  [FAIL] SEC-API query failed: {e}")
             return []
@@ -410,7 +423,8 @@ class SecApiClient:
     async def get_all_relevant_filings(
         self,
         ticker: str,
-        include_exhibits: bool = True
+        include_exhibits: bool = True,
+        cik: str = None
     ) -> dict[str, str]:
         """
         Get all relevant filings for comprehensive extraction.
@@ -424,14 +438,16 @@ class SecApiClient:
         ten_k_filings = self.get_filings_by_ticker(
             ticker,
             form_types=["10-K"],
-            max_filings=1
+            max_filings=1,
+            cik=cik
         )
 
         # Then get recent 10-Q and 8-K filings
         other_filings = self.get_filings_by_ticker(
             ticker,
             form_types=["10-Q", "8-K"],
-            max_filings=10
+            max_filings=10,
+            cik=cik
         )
 
         # Combine: 10-K first, then others (deduplicate by accessionNo)
