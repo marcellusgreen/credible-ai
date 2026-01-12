@@ -1,14 +1,46 @@
 """
 QA Agent for verifying extraction accuracy.
 
-Performs multiple verification checks against source filings:
-1. Entity verification - confirms subsidiaries exist in Exhibit 21
-2. Debt verification - confirms debt amounts match filing footnotes
-3. Structure verification - validates hierarchy makes sense
-4. Completeness check - looks for missed entities/debt
-5. Cross-reference check - verifies guarantors, issuers match
+Performs 5 verification checks against source filings:
+1. Internal Consistency - validates parent/issuer/guarantor references exist (no LLM)
+2. Entity Verification - confirms subsidiaries match Exhibit 21
+3. Debt Verification - confirms debt amounts match filing footnotes
+4. Completeness Check - looks for missed entities/debt
+5. Structure Verification - validates hierarchy makes sense
 
-Uses a cheap model (Gemini) for verification to keep costs low.
+Uses Gemini for verification to keep costs low (~$0.006 per QA run).
+
+TROUBLESHOOTING COMMON ISSUES:
+-----------------------------
+
+1. "No Exhibit 21 content available" (Entity Verification skipped)
+   - Exhibit 21 may be keyed as "exhibit_21_2025-02-13" not just "exhibit_21"
+   - The run_qa() method searches for any key containing "exhibit_21"
+   - Check that filing download includes Exhibit 21 from 10-K
+
+2. "0/N debt instruments verified" (Debt Verification failing)
+   - Filing content may be raw HTML/XBRL instead of clean text
+   - The extraction.py clean_filing_html() should strip HTML/XBRL
+   - Check debt_content contains readable text with keywords like "senior notes"
+
+3. Entity name mismatches (Internal Consistency failing)
+   - Names may differ in case: "TRANSOCEAN LTD" vs "Transocean Ltd."
+   - Names may differ in punctuation: "Ltd." vs "Ltd"
+   - The normalize_name() function handles case and trailing periods
+
+4. Parent not found errors
+   - Entities from fix iterations may use ALL CAPS parent names
+   - Ensure normalize_name() is applied to both entity names and parent refs
+
+SCORING:
+--------
+Each check contributes 20% to the overall score:
+- PASS = 20 points
+- WARN = 10 points
+- FAIL = 0 points
+- SKIP = 10 points (neutral)
+
+Threshold: 85% required to pass without escalation.
 """
 
 import json

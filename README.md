@@ -31,6 +31,9 @@ Corporate structure and debt analysis is complex. Even with AI, achieving accura
 | Apple | AAPL | 94% | 20 | 7 | $0.0175 | ~60s |
 | CoreWeave | CRWV | 85% | 4 | 4 | $0.0122 | ~45s |
 | Transocean | RIG | 88% | 17 | 15 | $0.0301 | ~90s |
+| Altice USA | ATUS | 76%* | 18 | 14 | $0.0138 | ~42s |
+
+*ATUS has hierarchy issues that the QA system correctly identified
 
 **Target: <$0.03 per company** with 85%+ QA score and individual debt instrument extraction.
 
@@ -139,12 +142,6 @@ The `/structure` endpoint returns the corporate tree with debt at each entity:
               "interest_rate": 875,
               "maturity_date": "2030-02-01",
               "guarantors": ["Transocean Ltd."]
-            },
-            {
-              "name": "8.25% Senior Notes due 2029",
-              "seniority": "senior_unsecured",
-              "outstanding": 88900000000,
-              "maturity_date": "2029-05-01"
             }
           ]
         }
@@ -158,13 +155,28 @@ The `/structure` endpoint returns the corporate tree with debt at each entity:
 
 Every extraction runs through 5 automated checks:
 
-| Check | What it Verifies |
-|-------|------------------|
-| **Internal Consistency** | Parent/issuer/guarantor references exist, amounts reasonable |
-| **Entity Verification** | Entities match Exhibit 21 subsidiaries list |
-| **Debt Verification** | Amounts match filing footnotes |
-| **Completeness Check** | No major entities or debt instruments missed |
-| **Structure Verification** | Hierarchy is valid, holdco identified |
+| Check | LLM? | What it Verifies | Pass Criteria |
+|-------|------|------------------|---------------|
+| **Internal Consistency** | No | Parent/issuer/guarantor references exist | No orphan references |
+| **Entity Verification** | Yes | Entities match Exhibit 21 subsidiaries | 80%+ entities found |
+| **Debt Verification** | Yes | Amounts match filing footnotes | Amounts within 10% |
+| **Completeness Check** | Yes | No major entities/debt missed | 80%+ items extracted |
+| **Structure Verification** | Yes | Hierarchy is valid | Valid tree, holdco exists |
+
+### QA Scoring
+
+```
+PASS = 20 points    WARN = 10 points    FAIL = 0 points    SKIP = 10 points
+Total possible = 100 points | Threshold = 85 points to pass
+```
+
+### What the QA Catches
+
+The QA system catches real issues like:
+- **Hierarchy problems**: Entity X should be under Entity Y, not a separate holdco
+- **Missing subsidiaries**: Entities in Exhibit 21 not in extraction
+- **Amount mismatches**: Extracted $500M but filing shows $550M
+- **Orphan references**: Guarantor name doesn't match any extracted entity
 
 If QA score < 85%, the system applies targeted fixes:
 - Entity fixes: Add missing subsidiaries, correct parent references
@@ -177,8 +189,9 @@ Some companies require special handling:
 
 **Known Complex Companies** (in `tiered_extraction.py`):
 - Offshore drilling: RIG, DO, NE, VAL
-- PE-backed with complex debt: KKR, APO, BX
-- Retail with many subsidiaries: DLTR, DG
+- Cable/Telecom: ATUS, CHTR (many subsidiaries, significant debt)
+- PE-backed: KKR, APO, BX (multiple layers)
+- Retail: DLTR, DG (many subsidiaries)
 
 **Common Challenges & Solutions**:
 
@@ -188,7 +201,9 @@ Some companies require special handling:
 | Aggregated debt totals | Prompt explicitly requires individual instruments |
 | Entity name mismatches | Case-insensitive, punctuation-normalized matching |
 | Truncated JSON from LLM | `parse_json_robust()` fixes common issues |
-| Missing 10-K in recent filings | SEC-API explicitly fetches most recent 10-K first |
+| Missing 10-K | SEC-API explicitly fetches most recent 10-K first |
+| Company not found by ticker | Falls back to CIK-based search |
+| Raw HTML/XBRL content | `clean_filing_html()` extracts readable text |
 
 ## Cost Breakdown
 
@@ -220,7 +235,7 @@ credible/
 │   │   ├── iterative_extraction.py  # Main extraction with QA loop
 │   │   ├── qa_agent.py              # 5-check verification system
 │   │   ├── tiered_extraction.py     # LLM clients, prompts, helpers
-│   │   └── extraction.py            # SEC clients, database save
+│   │   └── extraction.py            # SEC clients, clean_filing_html(), database save
 │   ├── models/schema.py             # SQLAlchemy models
 │   ├── api/routes.py                # FastAPI endpoints
 │   └── main.py                      # FastAPI app
@@ -240,6 +255,7 @@ credible/
 | NVIDIA | NVDA | 0001045810 | Simple |
 | CoreWeave | CRWV | 0001769628 | Medium |
 | Transocean | RIG | 0001451505 | Complex |
+| Altice USA | ATUS | 0001702780 | Complex |
 
 ## Deployment
 

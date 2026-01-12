@@ -37,11 +37,14 @@ Still failing? → Escalate to Claude Sonnet/Opus
 
 ### Tested Results
 
-| Company | QA Score | Entities | Debt | Cost | Duration |
-|---------|----------|----------|------|------|----------|
-| AAPL | 94% | 20 | 7 | $0.0175 | ~60s |
-| CRWV | 85% | 4 | 4 | $0.0122 | ~45s |
-| RIG | 88% | 17 | 15 | $0.0301 | ~90s |
+| Company | Ticker | QA Score | Entities | Debt | Cost | Duration |
+|---------|--------|----------|----------|------|------|----------|
+| Apple | AAPL | 94% | 20 | 7 | $0.0175 | ~60s |
+| CoreWeave | CRWV | 85% | 4 | 4 | $0.0122 | ~45s |
+| Transocean | RIG | 88% | 17 | 15 | $0.0301 | ~90s |
+| Altice USA | ATUS | 76%* | 18 | 14 | $0.0138 | ~42s |
+
+*ATUS has hierarchy issues the QA correctly identified
 
 ## Key Design Decisions
 
@@ -56,6 +59,10 @@ Still failing? → Escalate to Claude Sonnet/Opus
 5. **Smart debt section extraction**: Large filings (5M+ chars) are processed with `extract_debt_sections()` which pulls debt-relevant portions using keyword matching.
 
 6. **10-K prioritization**: SEC-API client explicitly fetches most recent 10-K first, since debt and subsidiary info is concentrated there.
+
+7. **CIK fallback**: If ticker search returns no results, falls back to CIK-based search. Some companies (like Altice) aren't indexed by ticker.
+
+8. **HTML/XBRL cleaning**: Modern SEC filings use inline XBRL. `clean_filing_html()` strips tags to extract readable text for QA verification.
 
 ## Database Schema
 
@@ -82,39 +89,105 @@ Still failing? → Escalate to Claude Sonnet/Opus
 | `app/services/iterative_extraction.py` | **Main** - Iterative extraction with QA feedback loop |
 | `app/services/qa_agent.py` | QA verification agent with 5 checks + `parse_json_robust()` |
 | `app/services/tiered_extraction.py` | LLM clients, prompts, `extract_debt_sections()` |
-| `app/services/extraction.py` | SEC-API/EDGAR clients, database save |
+| `app/services/extraction.py` | SEC-API/EDGAR clients, `clean_filing_html()`, database save |
 | `app/models/schema.py` | SQLAlchemy models |
 | `app/api/routes.py` | FastAPI endpoints |
 | `scripts/extract_iterative.py` | **CLI** (recommended) |
 
+## QA Agent Deep Dive
+
+The QA agent (`qa_agent.py`) runs 5 checks and calculates a weighted score.
+
+### Check Details
+
+| Check | LLM? | What It Does | Pass Criteria |
+|-------|------|--------------|---------------|
+| Internal Consistency | No | Validates parent/issuer/guarantor refs exist | No orphan references |
+| Entity Verification | Yes | Compares entities to Exhibit 21 | 80%+ entities found |
+| Debt Verification | Yes | Compares amounts to filing footnotes | Amounts match (+/- 10%) |
+| Completeness | Yes | Looks for missed entities/debt | 80%+ items extracted |
+| Structure Verification | Yes | Validates hierarchy logic | Valid tree, holdco exists |
+
+### Scoring
+
+```
+PASS = 20 points
+WARN = 10 points
+FAIL = 0 points
+SKIP = 10 points (neutral)
+
+Total possible = 100 points
+Threshold = 85 points to pass
+```
+
+### Key Functions
+
+- `normalize_name()`: Case-insensitive, strips trailing periods
+- `clean_html()`: Strips HTML tags from Exhibit 21
+- `parse_json_robust()`: Handles malformed LLM JSON responses
+- `run_qa()`: Orchestrates all 5 checks
+
 ## Common Issues & Solutions
 
-### Issue: LLM returns aggregated debt totals instead of individual instruments
+### Filing Content Issues
 
-**Symptom**: Extraction shows "Long-term debt: $6.2B" instead of individual notes/bonds.
+#### Issue: No Exhibit 21 found for entity verification
 
-**Solution**: The prompt in `tiered_extraction.py` explicitly instructs:
+**Symptom**: `Entity Verification: SKIPPED - No Exhibit 21 content available`
+
+**Cause**: Exhibit 21 keyed as `exhibit_21_2025-02-13` not `exhibit_21`
+
+**Solution**: `run_qa()` searches for any key containing "exhibit_21":
+```python
+for key, content in filings.items():
+    if "exhibit_21" in key.lower() or "exhibit 21" in key.lower():
+        exhibit_21 = content
+        break
+```
+
+#### Issue: Debt verification shows 0/N verified
+
+**Symptom**: `Debt Verification: 0/9 debt instruments verified`
+
+**Cause**: Filing content is raw HTML/XBRL, not readable text
+
+**Solution**: `clean_filing_html()` in `extraction.py` strips tags:
+```python
+# Check if content needs cleaning
+if content.strip().startswith('<') or content.strip().startswith('<?xml'):
+    content = clean_filing_html(content)
+```
+
+#### Issue: Company not found via ticker
+
+**Symptom**: `Found 0 filings via SEC-API`
+
+**Cause**: Some companies (like ATUS) aren't indexed by ticker
+
+**Solution**: `get_filings_by_ticker()` falls back to CIK search:
+```python
+if not filings and cik:
+    query["query"]["query_string"]["query"] = f'cik:{cik_num} AND ({form_query})'
+```
+
+### Extraction Issues
+
+#### Issue: LLM returns aggregated debt totals
+
+**Symptom**: "Long-term debt: $6.2B" instead of individual notes
+
+**Solution**: Prompt explicitly instructs individual instruments:
 ```
 CRITICAL - EXTRACT INDIVIDUAL DEBT INSTRUMENTS, NOT TOTALS:
 Example of WRONG: "Long-term debt" with total amount
 Example of CORRECT: "8.75% Senior Notes due 2030" with specific amount
 ```
 
-### Issue: Entity verification fails with JSON parse error
+#### Issue: Parent entity not found (case mismatch)
 
-**Symptom**: `Expecting ',' delimiter: line 932 column 6`
+**Symptom**: `Parent 'TRANSOCEAN LTD' not found for entity 'Subsidiary'`
 
-**Solution**: `parse_json_robust()` in `qa_agent.py` handles malformed JSON:
-- Removes trailing commas
-- Closes unclosed brackets
-- Handles markdown code blocks
-- Fixes unquoted keys
-
-### Issue: Parent entity not found (case mismatch)
-
-**Symptom**: `Parent 'TRANSOCEAN LTD' not found for entity 'Subsidiary Name'`
-
-**Solution**: `check_internal_consistency()` uses `normalize_name()`:
+**Solution**: `normalize_name()` handles case and punctuation:
 ```python
 def normalize_name(name: str) -> str:
     normalized = name.lower().strip()
@@ -122,51 +195,47 @@ def normalize_name(name: str) -> str:
     return normalized
 ```
 
-### Issue: 10-K not being fetched, only recent 8-Ks
+#### Issue: 10-K not being fetched
 
-**Symptom**: Extraction misses debt info, only captures recent events.
+**Symptom**: Extraction misses debt info, only captures 8-K events
 
-**Solution**: `get_all_relevant_filings()` explicitly fetches 10-K first:
+**Solution**: `get_all_relevant_filings()` fetches 10-K first:
 ```python
-# First, get most recent 10-K (critical for debt/structure)
 ten_k_filings = self.get_filings_by_ticker(ticker, form_types=["10-K"], max_filings=1)
-# Then get recent 10-Q and 8-K
 other_filings = self.get_filings_by_ticker(ticker, form_types=["10-Q", "8-K"], max_filings=10)
 ```
 
-### Issue: Large filing (5M+ chars) truncates debt sections
+#### Issue: Large filing truncates debt sections
 
-**Symptom**: Extraction misses debt instruments that exist in the filing.
+**Symptom**: Missing debt instruments despite existing in filing
 
-**Solution**: `extract_debt_sections()` in `tiered_extraction.py` extracts debt-relevant portions:
+**Solution**: `extract_debt_sections()` extracts debt-relevant portions:
 ```python
-priority_keywords = [
-    "debt - ",  # Footnote headings
-    "% notes due",  # Specific instruments
-    "credit agreement",
-]
+priority_keywords = ["debt - ", "% notes due", "credit agreement"]
 # Extracts 10K chars around each keyword match
 ```
 
-### Issue: Gemini output truncated mid-JSON
+#### Issue: Gemini JSON output truncated
 
-**Symptom**: JSON cuts off with unclosed brackets.
+**Symptom**: JSON cuts off with unclosed brackets
 
-**Solution**: Gemini config sets `max_output_tokens: 16000` and context is limited to 100K chars to leave room for response.
+**Solution**:
+- `max_output_tokens: 16000` in Gemini config
+- Context limited to 100K chars
+- `parse_json_robust()` closes unclosed brackets
 
-## QA Scoring
+### JSON Parsing Issues
 
-Each check contributes to the overall score:
+#### Issue: Entity verification fails with JSON parse error
 
-| Check | Weight | Pass Criteria |
-|-------|--------|---------------|
-| Internal Consistency | 20% | No orphan references |
-| Entity Verification | 20% | 80%+ entities found in Exhibit 21 |
-| Debt Verification | 20% | Amounts match filing (+/- 10%) |
-| Completeness | 20% | 80%+ expected items extracted |
-| Structure | 20% | Valid hierarchy, holdco exists |
+**Symptom**: `Expecting ',' delimiter: line 932 column 6`
 
-**Threshold**: 85% required to pass. Below threshold triggers fix iterations.
+**Solution**: `parse_json_robust()` handles:
+- Trailing commas
+- Unclosed brackets (truncated output)
+- Markdown code blocks
+- Unquoted keys
+- Single quotes instead of double
 
 ## Extraction Prompt Key Points
 
@@ -211,6 +280,7 @@ python scripts/qa_extraction.py --ticker AAPL --cik 0000320193
 These companies are flagged in `KNOWN_COMPLEX` for special handling:
 
 - **Offshore drilling**: RIG, DO, NE, VAL (complex debt structures)
+- **Cable/Telecom**: ATUS, CHTR (many subsidiaries, significant debt)
 - **PE-backed**: KKR, APO, BX (multiple layers)
 - **Retail**: DLTR, DG (many subsidiaries)
 
@@ -224,6 +294,14 @@ These companies are flagged in `KNOWN_COMPLEX` for special handling:
 | Claude escalation | ~$0.15-0.50 | Only when needed |
 
 **Target: <$0.03 per company** with 85%+ QA score.
+
+## Debugging Tips
+
+1. **Check filing content**: Run extraction with print statements to see what content is being passed
+2. **Test clean_filing_html()**: Verify debt keywords appear after cleaning
+3. **Check Exhibit 21 key**: Print `filings.keys()` to see actual key names
+4. **Verify QA prompts**: Check that prompts receive the expected content length
+5. **Review QA report**: The `atus_iterative_result.json` shows detailed check results
 
 ## Migrations
 
