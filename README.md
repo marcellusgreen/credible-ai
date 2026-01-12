@@ -243,6 +243,9 @@ credible/
 │   ├── extract_iterative.py         # CLI (recommended)
 │   ├── extract_tiered.py            # CLI (no QA)
 │   └── qa_extraction.py             # CLI (QA report only)
+├── demos/
+│   ├── agent_integration.py         # Full API integration demo
+│   └── agent_demo_offline.py        # Offline demo with local JSON
 ├── alembic/versions/                # Database migrations
 └── results/                         # Extraction outputs
 ```
@@ -256,6 +259,108 @@ credible/
 | CoreWeave | CRWV | 0001769628 | Medium |
 | Transocean | RIG | 0001451505 | Complex |
 | Altice USA | ATUS | 0001702780 | Complex |
+
+## Agent Integration
+
+Credible is designed for AI agents. The `demos/` directory contains integration examples.
+
+### Quick Start (Offline Demo)
+
+```bash
+# Works without running API - uses pre-extracted JSON files
+python demos/agent_demo_offline.py
+
+# Or ask a specific question
+python demos/agent_demo_offline.py "What is Transocean's debt structure?"
+```
+
+### Full Integration (With API)
+
+```bash
+# Start the API first
+uvicorn app.main:app --reload
+
+# Run the agent
+python demos/agent_integration.py
+```
+
+### Example Conversation
+
+```
+User: What companies do you have data for?
+
+[Tool Call] list_available_companies({})
+[Tool Result] {"companies": [{"ticker": "AAPL", "name": "Apple Inc."},
+               {"ticker": "RIG", "name": "Transocean Ltd."}, ...]}
+
+Agent: I have data for 4 companies:
+- Apple (AAPL)
+- CoreWeave (CRWV)
+- Transocean (RIG)
+- Altice USA (ATUS)
+```
+
+```
+User: Does Transocean have any secured debt?
+
+[Tool Call] get_company_debt({"ticker": "RIG"})
+[Tool Result] {"debt_instruments": [...], "summary": {"secured_count": 8, ...}}
+
+Agent: Yes, Transocean has significant secured debt. Based on the Credible API
+(extracted from SEC filings), they have 8 secured instruments including:
+
+1. **8.75% Senior Secured Notes due 2030** - $688M outstanding
+   - Issuer: Transocean International Limited
+   - Security: First lien
+   - Guarantors: Transocean Ltd.
+
+2. **8.50% Senior Secured Notes due 2031** - $1.13B outstanding
+   ...
+```
+
+```
+User: What's the corporate structure of Altice USA?
+
+[Tool Call] get_company_structure({"ticker": "ATUS"})
+[Tool Result] {"structure": {"name": "Altice USA, Inc.", "children": [...]}}
+
+Agent: Altice USA has a complex corporate structure. Here's the hierarchy:
+
+**Altice USA, Inc.** (Holdco - Delaware)
+├── **CSC Holdings, LLC** (Opco - Delaware)
+│   ├── Cablevision Lightpath, Inc.
+│   ├── CSC TKR, LLC
+│   └── Newsday Holdings, LLC
+├── **Cequel Communications Holdings I, LLC**
+│   └── Cequel Communications, LLC (Suddenlink)
+...
+
+The debt is primarily issued at CSC Holdings, LLC with Altice USA as guarantor.
+```
+
+### Tool Definitions
+
+The agent has access to these tools:
+
+| Tool | Description |
+|------|-------------|
+| `get_company_structure` | Corporate hierarchy with debt at each entity |
+| `get_company_debt` | All debt instruments with full details |
+| `get_company_overview` | Basic company info and metrics |
+| `list_available_companies` | See what data is available |
+
+### System Prompt
+
+```python
+SYSTEM_PROMPT = """You are a credit analyst assistant with access to the Credible API,
+which provides pre-computed corporate structure and debt data from SEC filings.
+
+Important notes:
+- Amounts are in CENTS (divide by 100 to get dollars)
+- Interest rates are in BASIS POINTS (divide by 100 to get percentage)
+- Always cite the data source as "Credible API (extracted from SEC filings)"
+"""
+```
 
 ## Deployment
 
