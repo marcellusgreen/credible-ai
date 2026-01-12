@@ -757,7 +757,12 @@ class QAAgent:
         print(f"\n  Running QA checks...")
 
         # Get relevant filing sections
-        exhibit_21 = filings.get("exhibit_21", "")
+        # Find Exhibit 21 - may be keyed as "exhibit_21", "exhibit_21_2025-02-13", etc.
+        exhibit_21 = ""
+        for key, content in filings.items():
+            if "exhibit_21" in key.lower() or "exhibit 21" in key.lower() or key.lower() == "ex-21":
+                exhibit_21 = content
+                break
 
         # Combine debt-related content
         debt_content = ""

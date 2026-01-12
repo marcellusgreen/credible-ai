@@ -20,6 +20,59 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Company, CompanyCache, CompanyMetrics, DebtInstrument, Entity, Guarantee, OwnershipLink
 
 
+def clean_filing_html(content: str) -> str:
+    """
+    Clean HTML/XBRL content from SEC filings to extract readable text.
+    Handles inline XBRL (iXBRL) format used in modern SEC filings.
+    """
+    if not content:
+        return ""
+
+    # Check if it's already clean text (not HTML)
+    if not content.strip().startswith('<') and not content.strip().startswith('<?xml'):
+        return content
+
+    # Remove XML declaration and DOCTYPE
+    content = re.sub(r'<\?xml[^>]*\?>', '', content)
+    content = re.sub(r'<!DOCTYPE[^>]*>', '', content)
+
+    # Remove script and style blocks
+    content = re.sub(r'<script[^>]*>[\s\S]*?</script>', '', content, flags=re.IGNORECASE)
+    content = re.sub(r'<style[^>]*>[\s\S]*?</style>', '', content, flags=re.IGNORECASE)
+
+    # Remove XBRL hidden sections (often contain duplicate/metadata)
+    content = re.sub(r'<ix:hidden[^>]*>[\s\S]*?</ix:hidden>', '', content, flags=re.IGNORECASE)
+
+    # Extract text from XBRL elements (ix:nonNumeric, ix:nonFraction, etc.)
+    # These contain the actual displayed values
+    content = re.sub(r'<ix:[^>]*>([^<]*)</ix:[^>]*>', r'\1', content)
+
+    # Remove all remaining HTML/XML tags but preserve content
+    content = re.sub(r'<[^>]+>', ' ', content)
+
+    # Decode common HTML entities
+    content = content.replace('&nbsp;', ' ')
+    content = content.replace('&amp;', '&')
+    content = content.replace('&lt;', '<')
+    content = content.replace('&gt;', '>')
+    content = content.replace('&quot;', '"')
+    content = content.replace('&#39;', "'")
+    content = content.replace('&apos;', "'")
+    content = content.replace('&#x2019;', "'")
+    content = content.replace('&#x2014;', '-')
+    content = content.replace('&#x2013;', '-')
+
+    # Decode numeric HTML entities
+    content = re.sub(r'&#(\d+);', lambda m: chr(int(m.group(1))), content)
+    content = re.sub(r'&#x([0-9a-fA-F]+);', lambda m: chr(int(m.group(1), 16)), content)
+
+    # Clean up whitespace
+    content = re.sub(r'\s+', ' ', content)
+    content = re.sub(r'\n\s*\n', '\n\n', content)
+
+    return content.strip()
+
+
 # =============================================================================
 # EXTRACTION PROMPT
 # =============================================================================
@@ -375,7 +428,11 @@ class SecApiClient:
 
         try:
             # RenderApi converts SEC filing to clean text
-            return self.render_api.get_filing(filing_url)
+            content = self.render_api.get_filing(filing_url)
+            # Clean any remaining HTML/XBRL if render didn't fully convert
+            if content and (content.strip().startswith('<') or content.strip().startswith('<?xml')):
+                content = clean_filing_html(content)
+            return content
         except Exception as e:
             print(f"  [FAIL] SEC-API render failed: {e}")
             return ""
