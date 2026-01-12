@@ -1055,6 +1055,8 @@ async def save_extraction_to_db(
     await db.flush()
 
     # 5. Create debt instruments and guarantees
+    used_debt_slugs: set[str] = set()  # Track used slugs to handle duplicates
+
     for ext_debt in extraction.debt_instruments:
         issuer_id = entity_name_to_id.get(ext_debt.issuer_name)
         if not issuer_id:
@@ -1062,13 +1064,22 @@ async def save_extraction_to_db(
             print(f"  Warning: Issuer '{ext_debt.issuer_name}' not found for debt '{ext_debt.name}'")
             continue
 
+        # Generate unique slug (handle duplicates by appending counter)
+        base_slug = slugify(ext_debt.name)
+        slug = base_slug
+        counter = 2
+        while slug in used_debt_slugs:
+            slug = f"{base_slug}-{counter}"
+            counter += 1
+        used_debt_slugs.add(slug)
+
         debt_id = uuid4()
         debt = DebtInstrument(
             id=debt_id,
             company_id=company_id,
             issuer_id=issuer_id,
             name=ext_debt.name,
-            slug=slugify(ext_debt.name),
+            slug=slug,
             instrument_type=ext_debt.instrument_type,
             seniority=ext_debt.seniority,
             security_type=ext_debt.security_type,
