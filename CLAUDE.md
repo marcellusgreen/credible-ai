@@ -93,6 +93,8 @@ Still failing? → Escalate to Claude Sonnet/Opus
 | `app/models/schema.py` | SQLAlchemy models |
 | `app/api/routes.py` | FastAPI endpoints |
 | `scripts/extract_iterative.py` | **CLI** (recommended) |
+| `demos/agent_integration.py` | Chatbot demo with full API integration |
+| `demos/agent_demo_offline.py` | Offline demo using local JSON files |
 
 ## QA Agent Deep Dive
 
@@ -302,6 +304,69 @@ These companies are flagged in `KNOWN_COMPLEX` for special handling:
 3. **Check Exhibit 21 key**: Print `filings.keys()` to see actual key names
 4. **Verify QA prompts**: Check that prompts receive the expected content length
 5. **Review QA report**: The `atus_iterative_result.json` shows detailed check results
+
+## Agent Integration
+
+The `demos/` directory contains chatbot integration examples showing how AI agents use the Credible API.
+
+### Files
+
+| File | Description |
+|------|-------------|
+| `demos/agent_integration.py` | Full integration requiring running API |
+| `demos/agent_demo_offline.py` | Offline demo using local JSON files |
+
+### Tool Definitions
+
+Both demos define 4 tools for Claude function calling:
+
+```python
+TOOLS = [
+    {
+        "name": "get_company_structure",
+        "description": "Get corporate structure with debt at each entity",
+        "input_schema": {"properties": {"ticker": {"type": "string"}}, "required": ["ticker"]}
+    },
+    {
+        "name": "get_company_debt",
+        "description": "Get all debt instruments with full details",
+        "input_schema": {"properties": {"ticker": {"type": "string"}}, "required": ["ticker"]}
+    },
+    {
+        "name": "get_company_overview",
+        "description": "Get basic company info and metrics",
+        "input_schema": {"properties": {"ticker": {"type": "string"}}, "required": ["ticker"]}
+    },
+    {
+        "name": "list_available_companies",
+        "description": "List all companies in database",
+        "input_schema": {"properties": {}, "required": []}
+    }
+]
+```
+
+### Running Demos
+
+```bash
+# Offline (no API needed)
+python demos/agent_demo_offline.py
+python demos/agent_demo_offline.py "What is Transocean's debt structure?"
+
+# Full integration (requires running API)
+uvicorn app.main:app --reload
+python demos/agent_integration.py
+```
+
+### Key Implementation Details
+
+1. **System prompt** instructs Claude about:
+   - Amounts in CENTS (divide by 100 for dollars)
+   - Rates in BASIS POINTS (divide by 100 for percentage)
+   - Always cite "Credible API (extracted from SEC filings)"
+
+2. **Tool execution loop**: Processes tool calls until `stop_reason != "tool_use"`
+
+3. **Offline mode**: `load_extraction()` reads from `results/{ticker}_iterative.json`
 
 ## Migrations
 
