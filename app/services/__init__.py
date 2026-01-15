@@ -1,1 +1,1 @@
-"""Business logic services for Credible.ai"""
+"""Business logic services for DebtStack.ai"""

@@ -1,14 +1,15 @@
 """
 QA Agent for verifying extraction accuracy.
 
-Performs 5 verification checks against source filings:
+Performs 6 verification checks against source filings:
 1. Internal Consistency - validates parent/issuer/guarantor references exist (no LLM)
 2. Entity Verification - confirms subsidiaries match Exhibit 21
 3. Debt Verification - confirms debt amounts match filing footnotes
 4. Completeness Check - looks for missed entities/debt
 5. Structure Verification - validates hierarchy makes sense
+6. JV/VIE Verification - confirms joint ventures, VIEs, and complex ownership are captured
 
-Uses Gemini for verification to keep costs low (~$0.006 per QA run).
+Uses Gemini for verification to keep costs low (~$0.008 per QA run).
 
 TROUBLESHOOTING COMMON ISSUES:
 -----------------------------
@@ -44,13 +45,14 @@ Threshold: 85% required to pass without escalation.
 """
 
 import json
-import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Optional
 
 import httpx
+
+from app.services.utils import parse_json_robust, clean_html, normalize_name
 
 
 class QACheckStatus(Enum):
@@ -287,109 +289,61 @@ Return JSON:
 }}"""
 
 
-def clean_html(content: str) -> str:
-    """Strip HTML tags and clean up whitespace."""
-    # Remove HTML tags
-    content = re.sub(r'<[^>]+>', ' ', content)
-    # Remove HTML entities
-    content = re.sub(r'&nbsp;', ' ', content)
-    content = re.sub(r'&amp;', '&', content)
-    content = re.sub(r'&lt;', '<', content)
-    content = re.sub(r'&gt;', '>', content)
-    # Clean up whitespace
-    content = re.sub(r'\s+', ' ', content)
-    return content.strip()
+JV_VERIFICATION_PROMPT = """Verify joint ventures (JVs), VIEs, and complex ownership structures.
 
+EXTRACTED ENTITIES (with ownership info):
+{entities_json}
 
-def parse_json_robust(content: str) -> dict:
-    """
-    Robustly parse JSON from LLM response, handling common issues:
-    - Markdown code blocks
-    - Trailing commas
-    - Single quotes
-    - Unquoted keys
-    - Comments
-    - Truncated JSON
-    """
-    def ensure_dict(result):
-        """Ensure result is a dict, unwrap if it's a list with one dict."""
-        if isinstance(result, dict):
-            return result
-        if isinstance(result, list) and len(result) == 1 and isinstance(result[0], dict):
-            return result[0]
-        if isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict):
-            return result[0]
-        raise ValueError(f"Expected dict but got {type(result)}: {str(result)[:200]}")
+SOURCE FILINGS (MD&A, Notes, Exhibit 21):
+{filing_content}
 
-    # Try direct parse first
-    try:
-        result = json.loads(content)
-        return ensure_dict(result)
-    except json.JSONDecodeError:
-        pass
+SEARCH FOR THESE IN THE FILINGS:
+1. **Joint Ventures**: Look for "joint venture", "JV", "50% owned", "50/50 partnership", "equity method investee"
+2. **VIEs**: Look for "variable interest entity", "VIE", "primary beneficiary", securitization trusts
+3. **Partial Ownership**: Any subsidiary with <100% ownership
+4. **Unconsolidated entities**: "equity method", "unconsolidated affiliate", "unconsolidated subsidiary"
+5. **Unrestricted subsidiaries**: Subsidiaries excluded from credit agreement covenants
 
-    # Try extracting from code block
-    json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', content)
-    if json_match:
-        try:
-            result = json.loads(json_match.group(1))
-            return ensure_dict(result)
-        except json.JSONDecodeError:
-            content = json_match.group(1)
+For each type found in filings, verify if it was captured in the extraction.
 
-    # Try finding JSON object
-    json_match = re.search(r'\{[\s\S]*\}', content)
-    if json_match:
-        content = json_match.group(0)
-
-    # Clean up common JSON issues
-    cleaned = content
-
-    # Remove JavaScript-style comments
-    cleaned = re.sub(r'//.*?(?=\n|$)', '', cleaned)
-    cleaned = re.sub(r'/\*[\s\S]*?\*/', '', cleaned)
-
-    # Remove trailing commas before } or ]
-    cleaned = re.sub(r',(\s*[}\]])', r'\1', cleaned)
-
-    # Try parsing cleaned content
-    try:
-        result = json.loads(cleaned)
-        return ensure_dict(result)
-    except json.JSONDecodeError:
-        pass
-
-    # Try fixing unquoted keys
-    cleaned2 = re.sub(r'(?<=[{,\s])(\w+)(?=\s*:)', r'"\1"', cleaned)
-    try:
-        result = json.loads(cleaned2)
-        return ensure_dict(result)
-    except json.JSONDecodeError:
-        pass
-
-    # Try replacing single quotes with double quotes
-    cleaned3 = cleaned.replace("'", '"')
-    try:
-        result = json.loads(cleaned3)
-        return ensure_dict(result)
-    except json.JSONDecodeError:
-        pass
-
-    # Last resort: try to fix truncated JSON by closing brackets
-    open_braces = cleaned.count('{') - cleaned.count('}')
-    open_brackets = cleaned.count('[') - cleaned.count(']')
-
-    if open_braces > 0 or open_brackets > 0:
-        fixed = cleaned.rstrip().rstrip(',')
-        fixed += ']' * open_brackets
-        fixed += '}' * open_braces
-        try:
-            result = json.loads(fixed)
-            return ensure_dict(result)
-        except json.JSONDecodeError:
-            pass
-
-    raise ValueError(f"Could not parse JSON from response: {content[:1000]}")
+Return JSON:
+{{
+  "jvs_in_filing": [
+    {{
+      "name": "JV entity name from filing",
+      "partner": "Name of JV partner if mentioned",
+      "ownership_pct": 50,
+      "consolidation": "equity method or consolidated",
+      "evidence": "Quote from filing",
+      "extracted": true
+    }}
+  ],
+  "vies_in_filing": [
+    {{
+      "name": "VIE name from filing",
+      "type": "securitization trust / property JV / other",
+      "evidence": "Quote from filing",
+      "extracted": true
+    }}
+  ],
+  "unrestricted_subs_in_filing": [
+    {{
+      "name": "Unrestricted subsidiary name",
+      "evidence": "Quote from filing",
+      "extracted": true
+    }}
+  ],
+  "missed_complex_structures": [
+    {{
+      "name": "Entity name",
+      "type": "jv / vie / partial_ownership / unrestricted",
+      "evidence": "Quote from filing showing this was missed"
+    }}
+  ],
+  "extraction_jvs_verified": true,
+  "extraction_vies_verified": true,
+  "summary": "Brief assessment of JV/VIE/complex ownership extraction"
+}}"""
 
 
 class QAAgent:
@@ -404,7 +358,7 @@ class QAAgent:
         genai.configure(api_key=gemini_api_key)
         self.genai = genai
         self.model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash-exp",
+            model_name="gemini-2.0-flash",
             generation_config={
                 "temperature": 0.1,
                 "response_mime_type": "application/json",
@@ -692,6 +646,103 @@ class QAAgent:
                 message=f"Verification failed: {str(e)}",
             )
 
+    def verify_jvs(
+        self,
+        extraction: dict,
+        filing_content: str
+    ) -> QACheck:
+        """Verify joint ventures, VIEs, and complex ownership structures."""
+
+        entities = extraction.get("entities", [])
+
+        # Count JVs and VIEs in extraction
+        extracted_jvs = []
+        extracted_vies = []
+        extracted_unrestricted = []
+
+        for e in entities:
+            owners = e.get("owners", [])
+            for owner in owners:
+                if owner.get("is_joint_venture") or owner.get("jv_partner_name"):
+                    extracted_jvs.append({
+                        "name": e.get("name"),
+                        "partner": owner.get("jv_partner_name"),
+                        "ownership_pct": owner.get("ownership_pct"),
+                    })
+            if e.get("is_vie"):
+                extracted_vies.append({"name": e.get("name")})
+            if e.get("is_unrestricted"):
+                extracted_unrestricted.append({"name": e.get("name")})
+
+        # Build entities summary for prompt
+        entities_summary = []
+        for e in entities:
+            entity_info = {
+                "name": e.get("name"),
+                "type": e.get("entity_type"),
+                "is_vie": e.get("is_vie", False),
+                "is_unrestricted": e.get("is_unrestricted", False),
+                "consolidation_method": e.get("consolidation_method"),
+            }
+            owners = e.get("owners", [])
+            if owners:
+                entity_info["owners"] = [{
+                    "parent": o.get("parent_name"),
+                    "ownership_pct": o.get("ownership_pct"),
+                    "is_joint_venture": o.get("is_joint_venture", False),
+                    "jv_partner_name": o.get("jv_partner_name"),
+                } for o in owners]
+            entities_summary.append(entity_info)
+
+        prompt = JV_VERIFICATION_PROMPT.format(
+            entities_json=json.dumps(entities_summary, indent=2),
+            filing_content=filing_content[:50000],
+        )
+
+        try:
+            result = self._call_model(prompt)
+
+            # Check results
+            jvs_in_filing = result.get("jvs_in_filing", [])
+            vies_in_filing = result.get("vies_in_filing", [])
+            missed = result.get("missed_complex_structures", [])
+
+            # Determine status
+            jvs_verified = result.get("extraction_jvs_verified", True)
+            vies_verified = result.get("extraction_vies_verified", True)
+
+            if jvs_verified and vies_verified and not missed:
+                status = QACheckStatus.PASS
+                message = f"JV/VIE extraction verified ({len(extracted_jvs)} JVs, {len(extracted_vies)} VIEs captured)"
+            elif missed:
+                status = QACheckStatus.WARN
+                message = f"{len(missed)} complex structures may be missing from extraction"
+            else:
+                status = QACheckStatus.WARN
+                message = "JV/VIE extraction partially verified"
+
+            return QACheck(
+                name="JV/VIE Verification",
+                status=status,
+                message=message,
+                details={
+                    "extracted_jvs": len(extracted_jvs),
+                    "extracted_vies": len(extracted_vies),
+                    "extracted_unrestricted": len(extracted_unrestricted),
+                    "jvs_found_in_filing": len(jvs_in_filing),
+                    "vies_found_in_filing": len(vies_in_filing),
+                    "missed_structures": missed[:5] if missed else [],
+                },
+                evidence=result.get("summary"),
+            )
+
+        except Exception as e:
+            return QACheck(
+                name="JV/VIE Verification",
+                status=QACheckStatus.WARN,
+                message=f"JV verification check skipped: {str(e)}",
+            )
+
     def check_internal_consistency(self, extraction: dict) -> QACheck:
         """Check internal consistency without using LLM."""
 
@@ -699,16 +750,6 @@ class QAAgent:
 
         entities = extraction.get("entities", [])
         debt = extraction.get("debt_instruments", [])
-
-        def normalize_name(name: str) -> str:
-            """Normalize entity name for matching (case-insensitive, ignore trailing punctuation)."""
-            if not name:
-                return ""
-            # Lowercase and strip whitespace
-            normalized = name.lower().strip()
-            # Remove trailing periods (Ltd. vs Ltd)
-            normalized = normalized.rstrip('.')
-            return normalized
 
         # Build normalized name lookup
         entity_names = {e.get("name") for e in entities if e.get("name")}
@@ -805,32 +846,59 @@ class QAAgent:
         # Combine all filing content
         all_content = "\n\n".join(f"=== {k} ===\n{v[:20000]}" for k, v in filings.items())
 
-        # Run checks (sequentially with delays to avoid Gemini rate limits)
-        # Gemini free tier: 10 requests per minute per model
-        # Add 7 second delay between LLM calls to stay under limit
+        # Run checks - internal consistency first (no LLM), then LLM checks in parallel
+        # Parallel execution is safe because each check is independent
 
-        # 1. Internal consistency (no LLM needed)
-        print(f"    [1/5] Internal consistency...")
+        # 1. Internal consistency (no LLM needed) - run first
+        print(f"    [1/6] Internal consistency...")
         checks.append(self.check_internal_consistency(extraction))
 
-        # 2. Entity verification (uses LLM)
-        print(f"    [2/5] Entity verification...")
-        checks.append(self.verify_entities(extraction, exhibit_21))
-        await asyncio.sleep(7)  # Rate limit delay
+        # 2-6. LLM-based checks - run in parallel for speed
+        print(f"    [2/6] Entity verification...")
+        print(f"    [3/6] Debt verification...")
+        print(f"    [4/6] Completeness check...")
+        print(f"    [5/6] Structure verification...")
+        print(f"    [6/6] JV/VIE verification...")
 
-        # 3. Debt verification (uses LLM)
-        print(f"    [3/5] Debt verification...")
-        checks.append(self.verify_debt(extraction, debt_content))
-        await asyncio.sleep(7)  # Rate limit delay
+        # Run all LLM checks concurrently using asyncio.gather
+        # Each check is wrapped in asyncio.to_thread since they use synchronous Gemini calls
+        async def run_entity_check():
+            return await asyncio.to_thread(self.verify_entities, extraction, exhibit_21)
 
-        # 4. Completeness check (uses LLM)
-        print(f"    [4/5] Completeness check...")
-        checks.append(self.check_completeness(extraction, all_content))
-        await asyncio.sleep(7)  # Rate limit delay
+        async def run_debt_check():
+            return await asyncio.to_thread(self.verify_debt, extraction, debt_content)
 
-        # 5. Structure verification (uses LLM)
-        print(f"    [5/5] Structure verification...")
-        checks.append(self.verify_structure(extraction, all_content))
+        async def run_completeness_check():
+            return await asyncio.to_thread(self.check_completeness, extraction, all_content)
+
+        async def run_structure_check():
+            return await asyncio.to_thread(self.verify_structure, extraction, all_content)
+
+        async def run_jv_check():
+            return await asyncio.to_thread(self.verify_jvs, extraction, all_content)
+
+        # Execute all 5 LLM checks in parallel
+        llm_results = await asyncio.gather(
+            run_entity_check(),
+            run_debt_check(),
+            run_completeness_check(),
+            run_structure_check(),
+            run_jv_check(),
+            return_exceptions=True  # Don't fail if one check errors
+        )
+
+        # Process results, handling any exceptions
+        check_names = ["Entity Verification", "Debt Verification", "Completeness Check", "Structure Verification", "JV/VIE Verification"]
+        for i, result in enumerate(llm_results):
+            if isinstance(result, Exception):
+                # If a check failed, create a WARN result
+                checks.append(QACheck(
+                    name=check_names[i],
+                    status=QACheckStatus.WARN,
+                    message=f"Check failed with error: {str(result)[:100]}",
+                ))
+            else:
+                checks.append(result)
 
         # Calculate overall score
         status_scores = {

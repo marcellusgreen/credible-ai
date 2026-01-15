@@ -1,5 +1,5 @@
 """
-Credible.ai - Database Schema
+DebtStack.ai - Database Schema
 
 Core tables for corporate structure and debt data.
 Based on the data model specification.
@@ -79,6 +79,12 @@ class Company(Base):
     )
     metrics: Mapped[Optional["CompanyMetrics"]] = relationship(
         back_populates="company", cascade="all, delete-orphan", uselist=False
+    )
+    financials: Mapped[list["CompanyFinancials"]] = relationship(
+        back_populates="company", cascade="all, delete-orphan"
+    )
+    obligor_group_financials: Mapped[list["ObligorGroupFinancials"]] = relationship(
+        back_populates="company", cascade="all, delete-orphan"
     )
 
     __table_args__ = (
@@ -223,14 +229,14 @@ class DebtInstrument(Base):
     currency: Mapped[str] = mapped_column(String(3), default="USD")
 
     # Interest terms
-    rate_type: Mapped[Optional[str]] = mapped_column(String(20))  # fixed, floating
+    rate_type: Mapped[Optional[str]] = mapped_column(String(30))  # fixed, floating, unspecified
     interest_rate: Mapped[Optional[int]] = mapped_column(
         Integer
     )  # For fixed: rate in bps (850 = 8.50%)
     spread_bps: Mapped[Optional[int]] = mapped_column(
         Integer
     )  # For floating: spread over benchmark
-    benchmark: Mapped[Optional[str]] = mapped_column(String(20))  # SOFR, LIBOR, Prime
+    benchmark: Mapped[Optional[str]] = mapped_column(String(50))  # SOFR, LIBOR, Prime, or full name
     floor_bps: Mapped[Optional[int]] = mapped_column(Integer)  # Interest rate floor
 
     # Key dates
@@ -274,6 +280,56 @@ class DebtInstrument(Base):
             "is_active",
             postgresql_where=(is_active == True),
         ),
+    )
+
+
+class BondPricing(Base):
+    """
+    Daily bond pricing from FINRA TRACE.
+
+    Stores real-time pricing data for debt instruments with CUSIPs.
+    Updated daily via batch job that scrapes FINRA TRACE.
+    """
+
+    __tablename__ = "bond_pricing"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    debt_instrument_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("debt_instruments.id", ondelete="CASCADE"), nullable=False
+    )
+    cusip: Mapped[Optional[str]] = mapped_column(String(9), nullable=True)  # Optional for estimated pricing
+
+    # Pricing (clean price as percentage of par, e.g., 92.5000 = 92.5% of face value)
+    last_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 4))
+    last_trade_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_trade_volume: Mapped[Optional[int]] = mapped_column(BigInteger)  # Face value in cents
+
+    # Yields (stored in basis points for precision)
+    ytm_bps: Mapped[Optional[int]] = mapped_column(Integer)  # Yield to maturity in bps (682 = 6.82%)
+    spread_to_treasury_bps: Mapped[Optional[int]] = mapped_column(Integer)  # Spread over benchmark
+    treasury_benchmark: Mapped[Optional[str]] = mapped_column(String(10))  # "2Y", "5Y", "10Y", "30Y"
+
+    # Quality indicators
+    price_source: Mapped[str] = mapped_column(String(20), default="TRACE")  # TRACE, estimated, manual
+    staleness_days: Mapped[Optional[int]] = mapped_column(Integer)  # Days since last trade
+
+    # Timestamps
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    calculated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    # Relationship
+    debt_instrument: Mapped["DebtInstrument"] = relationship(
+        backref="pricing"
+    )
+
+    __table_args__ = (
+        Index("idx_bond_pricing_debt", "debt_instrument_id"),
+        Index("idx_bond_pricing_cusip", "cusip"),
+        Index("idx_bond_pricing_staleness", "staleness_days"),
     )
 
 
@@ -427,6 +483,149 @@ class CompanyCache(Base):
     __table_args__ = (Index("idx_cache_ticker", "ticker"),)
 
 
+class CompanyFinancials(Base):
+    """Quarterly financial statement data from 10-Q/10-K filings."""
+
+    __tablename__ = "company_financials"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    company_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+
+    # Period info
+    fiscal_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    fiscal_quarter: Mapped[int] = mapped_column(Integer, nullable=False)  # 1-4
+    period_end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    filing_type: Mapped[Optional[str]] = mapped_column(String(10))  # 10-K, 10-Q
+
+    # Income Statement (all in cents)
+    revenue: Mapped[Optional[int]] = mapped_column(BigInteger)
+    cost_of_revenue: Mapped[Optional[int]] = mapped_column(BigInteger)
+    gross_profit: Mapped[Optional[int]] = mapped_column(BigInteger)
+    operating_income: Mapped[Optional[int]] = mapped_column(BigInteger)  # EBIT
+    ebitda: Mapped[Optional[int]] = mapped_column(BigInteger)
+    interest_expense: Mapped[Optional[int]] = mapped_column(BigInteger)
+    net_income: Mapped[Optional[int]] = mapped_column(BigInteger)
+    depreciation_amortization: Mapped[Optional[int]] = mapped_column(BigInteger)
+
+    # Balance Sheet (all in cents)
+    cash_and_equivalents: Mapped[Optional[int]] = mapped_column(BigInteger)
+    total_current_assets: Mapped[Optional[int]] = mapped_column(BigInteger)
+    total_assets: Mapped[Optional[int]] = mapped_column(BigInteger)
+    total_current_liabilities: Mapped[Optional[int]] = mapped_column(BigInteger)
+    total_debt: Mapped[Optional[int]] = mapped_column(BigInteger)  # Cross-check with debt_instruments
+    total_liabilities: Mapped[Optional[int]] = mapped_column(BigInteger)
+    stockholders_equity: Mapped[Optional[int]] = mapped_column(BigInteger)
+
+    # Cash Flow Statement (all in cents)
+    operating_cash_flow: Mapped[Optional[int]] = mapped_column(BigInteger)
+    investing_cash_flow: Mapped[Optional[int]] = mapped_column(BigInteger)
+    financing_cash_flow: Mapped[Optional[int]] = mapped_column(BigInteger)
+    capex: Mapped[Optional[int]] = mapped_column(BigInteger)
+
+    # Metadata
+    source_filing: Mapped[Optional[str]] = mapped_column(String(500))  # Filing URL
+    extracted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    # Relationship
+    company: Mapped["Company"] = relationship(back_populates="financials")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "company_id", "fiscal_year", "fiscal_quarter",
+            name="uq_financials_period"
+        ),
+        Index("idx_financials_company", "company_id"),
+        Index("idx_financials_period", "period_end_date"),
+    )
+
+
+class ObligorGroupFinancials(Base):
+    """
+    SEC Rule 13-01 Summarized Financial Information for Obligor Group.
+
+    Companies with guaranteed debt must disclose financial data for the Obligor Group
+    (Issuer + Guarantors) separately from consolidated financials. This reveals
+    what assets/income creditors can actually claim vs. what leaks to unrestricted subs.
+
+    Found in Notes to Financial Statements, typically labeled:
+    - "Summarized Financial Information"
+    - "Guarantor Financial Information"
+    - "Condensed Consolidating Financial Information"
+    """
+
+    __tablename__ = "obligor_group_financials"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    company_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+
+    # Period info
+    fiscal_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    fiscal_quarter: Mapped[int] = mapped_column(Integer, nullable=False)
+    period_end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    filing_type: Mapped[Optional[str]] = mapped_column(String(10))
+
+    # Disclosure metadata
+    disclosure_note_number: Mapped[Optional[str]] = mapped_column(String(50))
+    debt_description: Mapped[Optional[str]] = mapped_column(Text)
+    related_debt_ids: Mapped[Optional[list]] = mapped_column(JSONB)
+
+    # Obligor Group Balance Sheet (all in cents)
+    og_total_assets: Mapped[Optional[int]] = mapped_column(BigInteger)
+    og_total_liabilities: Mapped[Optional[int]] = mapped_column(BigInteger)
+    og_stockholders_equity: Mapped[Optional[int]] = mapped_column(BigInteger)
+    og_intercompany_receivables: Mapped[Optional[int]] = mapped_column(BigInteger)
+
+    # Obligor Group Income Statement (all in cents)
+    og_revenue: Mapped[Optional[int]] = mapped_column(BigInteger)
+    og_operating_income: Mapped[Optional[int]] = mapped_column(BigInteger)
+    og_ebitda: Mapped[Optional[int]] = mapped_column(BigInteger)
+    og_net_income: Mapped[Optional[int]] = mapped_column(BigInteger)
+
+    # Consolidated totals (for leakage calculation)
+    consolidated_total_assets: Mapped[Optional[int]] = mapped_column(BigInteger)
+    consolidated_revenue: Mapped[Optional[int]] = mapped_column(BigInteger)
+    consolidated_ebitda: Mapped[Optional[int]] = mapped_column(BigInteger)
+
+    # Non-guarantor subsidiaries (if disclosed separately)
+    non_guarantor_assets: Mapped[Optional[int]] = mapped_column(BigInteger)
+    non_guarantor_revenue: Mapped[Optional[int]] = mapped_column(BigInteger)
+
+    # Computed leakage metrics (stored for fast retrieval)
+    # Leakage % = (Consolidated - Obligor Group) / Consolidated * 100
+    asset_leakage_pct: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    revenue_leakage_pct: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    ebitda_leakage_pct: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+
+    # Metadata
+    source_filing: Mapped[Optional[str]] = mapped_column(String(500))
+    uncertainties: Mapped[Optional[list]] = mapped_column(JSONB)
+    extracted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    # Relationship
+    company: Mapped["Company"] = relationship(back_populates="obligor_group_financials")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "company_id", "fiscal_year", "fiscal_quarter",
+            name="uq_obligor_group_period"
+        ),
+        Index("idx_obligor_group_company", "company_id"),
+        Index("idx_obligor_group_leakage", "asset_leakage_pct"),
+    )
+
+
 class CompanyMetrics(Base):
     """Flat table optimized for screening and filtering."""
 
@@ -469,7 +668,7 @@ class CompanyMetrics(Base):
     entity_count: Mapped[Optional[int]] = mapped_column(Integer)
     guarantor_count: Mapped[Optional[int]] = mapped_column(Integer)
 
-    # Risk scores (Credible's value-add)
+    # Risk scores (DebtStack's value-add)
     subordination_risk: Mapped[Optional[str]] = mapped_column(
         String(20)
     )  # low, moderate, high

@@ -27,6 +27,7 @@ from app.services.extraction import (
     ExtractedEntity,
     ExtractedDebtInstrument,
 )
+from app.services.utils import parse_json_robust
 
 
 # =============================================================================
@@ -104,6 +105,18 @@ def extract_debt_sections(content: str, max_chars: int = 50000) -> str:
         "principal amount",
     ]
 
+    # Priority 3: JV and complex ownership keywords (for complete structure extraction)
+    jv_keywords = [
+        "joint venture",
+        "equity method",
+        "unconsolidated",
+        "variable interest entit",  # matches "entity" and "entities"
+        "vie",
+        "50% owned",
+        "50/50",
+        "unrestricted subsidiar",  # matches "subsidiary" and "subsidiaries"
+    ]
+
     def add_section(pos: int, keyword: str, context_before: int = 2000, context_after: int = 8000):
         """Add a section around a position, checking for overlap."""
         start = max(0, pos - context_before)
@@ -137,6 +150,18 @@ def extract_debt_sections(content: str, max_chars: int = 50000) -> str:
             if pos == -1:
                 break
             add_section(pos, keyword, context_before=2000, context_after=5000)
+            idx = pos + len(keyword)
+            count += 1
+
+    # Third pass: JV/VIE keywords (important for complete structure)
+    for keyword in jv_keywords:
+        idx = 0
+        count = 0
+        while idx < len(content_lower) and count < 2:  # Limit per keyword
+            pos = content_lower.find(keyword, idx)
+            if pos == -1:
+                break
+            add_section(pos, keyword, context_before=1500, context_after=4000)
             idx = pos + len(keyword)
             count += 1
 
@@ -258,6 +283,26 @@ REQUIRED: For each debt instrument extract:
 - The maturity date
 - The principal/outstanding amount for THAT SPECIFIC instrument
 
+JOINT VENTURES AND COMPLEX OWNERSHIP - IMPORTANT:
+Look carefully for these in MD&A, Notes to Financial Statements, and Exhibit 21:
+1. **Joint Ventures (JVs)**: Entities with <100% ownership, often described as:
+   - "joint venture", "JV", "50% owned", "50/50 partnership"
+   - "equity method investment", "equity method investee"
+   - "unconsolidated affiliate", "unconsolidated subsidiary"
+   - Partnerships with named external partners
+2. **VIEs (Variable Interest Entities)**: Often securitization vehicles, trusts, or special purpose entities
+   - Look for "variable interest entity", "VIE", "primary beneficiary"
+   - Common in auto finance (securitization trusts), real estate (property JVs)
+3. **Unrestricted Subsidiaries**: Subsidiaries excluded from credit agreement covenants
+   - Look for "unrestricted subsidiary" in debt footnotes or credit agreements
+
+For JVs, ALWAYS capture:
+- The JV entity name
+- ownership_pct (e.g., 50 for 50%)
+- is_joint_venture: true
+- jv_partner_name: "Name of the external JV partner" (e.g., "LG Energy Solution")
+- consolidation_method: "equity" (for equity method JVs) or "full" (for consolidated JVs)
+
 Return JSON with this exact structure:
 
 {{
@@ -274,12 +319,12 @@ Return JSON with this exact structure:
         {{
           "parent_name": "Parent entity name (must match another entity exactly)",
           "ownership_pct": 100,
-          "ownership_type": "direct",
+          "ownership_type": "direct|indirect|economic_only|voting_only",
           "is_joint_venture": false,
           "jv_partner_name": null
         }}
       ],
-      "consolidation_method": "full",
+      "consolidation_method": "full|equity|proportional|vie|unconsolidated",
       "is_guarantor": false,
       "is_borrower": false,
       "is_restricted": true,
@@ -294,6 +339,8 @@ Return JSON with this exact structure:
     {{
       "name": "Descriptive name (e.g., 'Term Loan B' or '5.00% Senior Notes due 2029')",
       "issuer_name": "Entity name that issued this debt (usually parent company)",
+      "cusip": "9-char CUSIP if disclosed (e.g., '037833EP2') or null",
+      "isin": "12-char ISIN if disclosed (e.g., 'US037833EP27') or null",
       "instrument_type": "term_loan_b|term_loan_a|revolver|senior_notes|senior_secured_notes|subordinated_notes|abl|convertible_notes|commercial_paper",
       "seniority": "senior_secured|senior_unsecured|subordinated",
       "security_type": "first_lien|second_lien|unsecured",
@@ -322,6 +369,7 @@ CRITICAL REMINDERS:
 - guarantor_names must exactly match entity names
 - EVERY company with public filings has some form of debt - find it!
 - If you see amounts like "$98.3 billion" in debt, that's 9830000000000 cents
+- For bonds/notes: Extract CUSIP (9 chars, e.g., "037833EP2") and ISIN (12 chars, e.g., "US037833EP27") if disclosed in the filing. These are often in debt footnotes or prospectuses. CUSIP can be derived from US ISIN by removing "US" prefix and last check digit.
 
 Return ONLY the JSON object."""
 
@@ -620,13 +668,13 @@ class GeminiClient:
         import google.generativeai as genai
         genai.configure(api_key=api_key)
         self.genai = genai
-        # Use Gemini 2.0 Flash for cost efficiency
+        # Use Gemini 1.5 Flash for higher rate limits
         self.model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash-exp",
+            model_name="gemini-2.0-flash",
             generation_config={
                 "temperature": 0.1,
                 "response_mime_type": "application/json",
-                "max_output_tokens": 16000,  # Increase for complex companies with many entities
+                "max_output_tokens": 32000,  # Increase for complex companies with many entities (banks, etc.)
             },
             system_instruction=SYSTEM_PROMPT,
         )
@@ -735,99 +783,6 @@ class ClaudeClient:
     def _parse_json_response(self, content: str) -> dict:
         """Parse JSON from response, handling markdown code blocks and common errors."""
         return parse_json_robust(content)
-
-
-def parse_json_robust(content: str) -> dict:
-    """
-    Robustly parse JSON from LLM response, handling common issues:
-    - Markdown code blocks
-    - Trailing commas
-    - Single quotes
-    - Unquoted keys
-    - Comments
-    - List wrapping (unwrap if single-element list containing dict)
-    """
-    def ensure_dict(result):
-        """Ensure result is a dict, unwrap if it's a list with one dict."""
-        if isinstance(result, dict):
-            return result
-        if isinstance(result, list) and len(result) == 1 and isinstance(result[0], dict):
-            return result[0]
-        if isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict):
-            # Multiple dicts - take the first one
-            return result[0]
-        raise ValueError(f"Expected dict but got {type(result)}: {str(result)[:200]}")
-
-    # Try direct parse first
-    try:
-        result = json.loads(content)
-        return ensure_dict(result)
-    except json.JSONDecodeError:
-        pass
-
-    # Try extracting from code block
-    json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', content)
-    if json_match:
-        try:
-            result = json.loads(json_match.group(1))
-            return ensure_dict(result)
-        except json.JSONDecodeError:
-            content = json_match.group(1)
-
-    # Try finding JSON object
-    json_match = re.search(r'\{[\s\S]*\}', content)
-    if json_match:
-        content = json_match.group(0)
-
-    # Clean up common JSON issues
-    cleaned = content
-
-    # Remove JavaScript-style comments
-    cleaned = re.sub(r'//.*?(?=\n|$)', '', cleaned)
-    cleaned = re.sub(r'/\*[\s\S]*?\*/', '', cleaned)
-
-    # Remove trailing commas before } or ]
-    cleaned = re.sub(r',(\s*[}\]])', r'\1', cleaned)
-
-    # Try parsing cleaned content
-    try:
-        result = json.loads(cleaned)
-        return ensure_dict(result)
-    except json.JSONDecodeError:
-        pass
-
-    # Try fixing unquoted keys (simple cases)
-    # Match word characters followed by colon
-    cleaned2 = re.sub(r'(?<=[{,\s])(\w+)(?=\s*:)', r'"\1"', cleaned)
-    try:
-        result = json.loads(cleaned2)
-        return ensure_dict(result)
-    except json.JSONDecodeError:
-        pass
-
-    # Try replacing single quotes with double quotes
-    cleaned3 = cleaned.replace("'", '"')
-    try:
-        result = json.loads(cleaned3)
-        return ensure_dict(result)
-    except json.JSONDecodeError:
-        pass
-
-    # Last resort: try to fix truncated JSON by closing brackets
-    open_braces = cleaned.count('{') - cleaned.count('}')
-    open_brackets = cleaned.count('[') - cleaned.count(']')
-
-    if open_braces > 0 or open_brackets > 0:
-        fixed = cleaned.rstrip().rstrip(',')
-        fixed += ']' * open_brackets
-        fixed += '}' * open_braces
-        try:
-            result = json.loads(fixed)
-            return ensure_dict(result)
-        except json.JSONDecodeError:
-            pass
-
-    raise ValueError(f"Could not parse JSON from response: {content[:1000]}")
 
 
 # =============================================================================

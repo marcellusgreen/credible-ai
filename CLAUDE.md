@@ -1,10 +1,10 @@
 # CLAUDE.md
 
-This file provides context for AI assistants working on the Credible.ai codebase.
+This file provides context for AI assistants working on the DebtStack.ai codebase.
 
 ## Project Overview
 
-Credible.ai is a credit data API for AI agents. It extracts corporate structure and debt information from SEC filings, then serves pre-computed responses via a FastAPI REST API.
+DebtStack.ai is a credit data API for AI agents. It extracts corporate structure and debt information from SEC filings, then serves pre-computed responses via a FastAPI REST API.
 
 **Target users**: AI agents that need credit analysis data (corporate structure, debt details, structural subordination).
 
@@ -12,28 +12,53 @@ Credible.ai is a credit data API for AI agents. It extracts corporate structure 
 
 ## Current Status (January 2026)
 
-**Database**: 38 companies, 779 entities, 330 debt instruments
+**Database**: 178 companies | 3,085 entities | 1,805 debt instruments (1,460 tradeable) | 30 pricing records
 
 **What's Working**:
 - ✅ Iterative extraction with QA feedback loop
-- ✅ 5-check QA verification system
+- ✅ 5-check QA verification system (parallelized for speed)
 - ✅ Gemini for extraction, Claude for escalation
 - ✅ SEC-API.io integration (paid tier)
 - ✅ PostgreSQL on Neon Cloud
-- ✅ FastAPI REST API
+- ✅ FastAPI REST API (20 endpoints)
 - ✅ Agent integration demos
-- ✅ Batch extraction script
+- ✅ Batch extraction scripts (by sector + by index)
+- ✅ S&P 100 / NASDAQ 100 company coverage
+- ✅ Parallel QA checks and file downloads (40% faster)
+- ✅ Smart model selection (Claude for large companies)
+- ✅ Financial statement extraction from 10-Q/10-K (income statement, balance sheet, cash flow)
+- ✅ Credit ratio calculations (leverage, interest coverage, margins)
+- ✅ SEC Rule 13-01 Obligor Group extraction (asset leakage analysis)
+- ✅ Bond pricing with tiered approach (Finnhub → Estimated)
+- ✅ Estimated pricing using Treasury yields + credit spreads
+- ✅ YTM and spread-to-treasury calculations
 
-**Known Issues**:
-- Some companies saved with 0 debt instruments (need re-extraction)
-- ~13 companies failed extraction (Gemini JSON parsing issues)
-- Rate limiting needed for parallel extractions
+**Bond Pricing Architecture**:
+```
+Tier 1: Finnhub API (TRACE data via ISIN) - requires premium subscription ($300/3 months)
+   ↓ fallback
+Tier 2: Estimated pricing - Treasury yields + credit spread curves by rating/maturity
+```
+
+- **Estimated pricing working**: 30 bonds priced with YTM and spreads
+- **Finnhub ready**: API key configured, code ready for premium upgrade
+- **FINRA TRACE scraper abandoned**: Modal handling complexity, estimated pricing sufficient
+
+**Recent Optimizations**:
+- Parallelized QA checks using `asyncio.gather()` (~15s saved per extraction)
+- Parallelized SEC-API file downloads (~3s saved)
+- Combined fix prompts for single-call fixes (~8s saved)
+- Smart model selection based on Exhibit 21 size (>30KB uses Claude)
+- Increased Gemini `max_output_tokens` to 32000 for complex companies
 
 **Next Steps**:
-1. Retry failed extractions (AMZN, BAC, BA, CAT, MGM, WYNN, etc.)
-2. Deploy to Railway
-3. Add authentication/API keys for production
-4. Build landing page
+1. Upgrade to Finnhub premium for real TRACE pricing ($300/3 months)
+2. Map CUSIPs/ISINs for existing debt instruments (extraction prompt already updated)
+3. Complete Phase 2 index extraction (~90 more companies)
+4. Deploy to Railway
+5. Add authentication/API keys for production
+6. Add covenant extraction to prompts
+7. Build landing page
 
 ## Architecture
 
@@ -101,6 +126,20 @@ Still failing? → Escalate to Claude Sonnet/Opus
 - **ownership_links**: Complex ownership (multiple parents, JVs, partial ownership)
 - **debt_instruments**: All debt with full terms, linked via `issuer_id`
 - **guarantees**: Links debt_instruments to guarantor entities
+- **company_financials**: Quarterly financial statement data
+  - Income statement: revenue, ebitda, interest_expense, net_income, etc.
+  - Balance sheet: cash, total_assets, total_debt, stockholders_equity, etc.
+  - Cash flow: operating_cash_flow, capex, financing_cash_flow, etc.
+  - All amounts in cents (BigInteger)
+- **obligor_group_financials**: SEC Rule 13-01 Obligor Group data
+  - Obligor Group financials (issuer + guarantors combined)
+  - Asset/revenue/EBITDA leakage metrics
+  - Links to related debt instruments
+- **bond_pricing**: Bond pricing data (Finnhub TRACE or estimated)
+  - Last price, trade date, volume
+  - YTM and spread to treasury (in basis points)
+  - Staleness tracking for data quality
+  - Price source: "TRACE" or "estimated"
 
 ### Denormalized Tables
 
@@ -112,20 +151,31 @@ Still failing? → Escalate to Claude Sonnet/Opus
 | File | Purpose |
 |------|---------|
 | `app/services/iterative_extraction.py` | **Main** - Iterative extraction with QA feedback loop |
-| `app/services/qa_agent.py` | QA verification agent with 5 checks + `parse_json_robust()` |
+| `app/services/qa_agent.py` | QA verification agent with 5 parallel checks + `parse_json_robust()` |
 | `app/services/tiered_extraction.py` | LLM clients, prompts, `extract_debt_sections()` |
-| `app/services/extraction.py` | SEC-API/EDGAR clients, `clean_filing_html()`, database save |
+| `app/services/extraction.py` | SEC-API/EDGAR clients, `clean_filing_html()`, parallel downloads |
+| `app/services/financial_extraction.py` | Quarterly financial data extraction from 10-Q/10-K |
+| `app/services/obligor_group_extraction.py` | SEC Rule 13-01 Obligor Group extraction |
+| `app/services/cusip_mapping.py` | OpenFIGI CUSIP mapping service |
+| `app/services/bond_pricing.py` | Tiered bond pricing (Finnhub → Estimated) |
+| `app/services/estimated_pricing.py` | Credit spread model for estimated prices |
+| `app/services/yield_calculation.py` | YTM and spread calculation |
 | `app/models/schema.py` | SQLAlchemy models |
-| `app/api/routes.py` | FastAPI endpoints |
+| `app/api/routes.py` | FastAPI endpoints (22 routes) |
 | `scripts/extract_iterative.py` | **CLI** for single company (recommended) |
-| `scripts/batch_extract.py` | Batch extraction for multiple companies |
+| `scripts/extract_financials.py` | CLI for financial data extraction |
+| `scripts/extract_obligor_group.py` | CLI for Obligor Group extraction |
+| `scripts/map_cusips.py` | CLI for CUSIP mapping |
+| `scripts/update_pricing.py` | CLI for pricing updates |
+| `scripts/batch_extract.py` | Batch extraction by sector |
+| `scripts/batch_index.py` | Batch extraction for S&P 100 / NASDAQ 100 |
 | `scripts/load_results_to_db.py` | Load JSON results to database |
 | `demos/agent_integration.py` | Chatbot demo with full API integration |
 | `demos/agent_demo_offline.py` | Offline demo using local JSON files |
 
 ## QA Agent Deep Dive
 
-The QA agent (`qa_agent.py`) runs 5 checks and calculates a weighted score.
+The QA agent (`qa_agent.py`) runs 6 checks and calculates a weighted score.
 
 ### Check Details
 
@@ -136,17 +186,17 @@ The QA agent (`qa_agent.py`) runs 5 checks and calculates a weighted score.
 | Debt Verification | Yes | Compares amounts to filing footnotes | Amounts match (+/- 10%) |
 | Completeness | Yes | Looks for missed entities/debt | 80%+ items extracted |
 | Structure Verification | Yes | Validates hierarchy logic | Valid tree, holdco exists |
+| **JV/VIE Verification** | Yes | **Verifies JVs, VIEs, complex ownership captured** | **JVs/VIEs in filing are extracted** |
 
 ### Scoring
 
 ```
-PASS = 20 points
-WARN = 10 points
+PASS = 100 points (weighted per check)
+WARN = 70 points
 FAIL = 0 points
-SKIP = 10 points (neutral)
+SKIP = not counted
 
-Total possible = 100 points
-Threshold = 85 points to pass
+Threshold = 85% average to pass
 ```
 
 ### Key Functions
@@ -154,7 +204,7 @@ Threshold = 85 points to pass
 - `normalize_name()`: Case-insensitive, strips trailing periods
 - `clean_html()`: Strips HTML tags from Exhibit 21
 - `parse_json_robust()`: Handles malformed LLM JSON responses
-- `run_qa()`: Orchestrates all 5 checks
+- `run_qa()`: Orchestrates all 6 checks in parallel
 
 ## Common Issues & Solutions
 
@@ -288,13 +338,20 @@ python scripts/extract_iterative.py --ticker RIG --cik 0001451505 --save-db
 #   --save-db           # Save to database
 #   --no-save           # Don't save result files
 
-# Batch extraction (multiple companies)
+# Batch extraction by sector
 python scripts/batch_extract.py --batch telecom --delay 15
 python scripts/batch_extract.py --batch all --delay 30
 
 # Available batches: telecom, offshore, airlines, gaming, retail, healthcare,
 #                    energy, media, autos, tech, banks, industrials, consumer,
 #                    reits, cruises
+
+# Batch extraction for index companies (S&P 100 / NASDAQ 100)
+python scripts/batch_index.py --phase 1           # Top 50 by market cap
+python scripts/batch_index.py --phase 2           # Remaining ~90 companies
+python scripts/batch_index.py --phase all         # All companies
+python scripts/batch_index.py --list              # Just list companies
+python scripts/batch_index.py --ticker TSLA       # Single company
 
 # Load existing JSON results to database
 python scripts/load_results_to_db.py
@@ -305,13 +362,35 @@ python scripts/extract_tiered.py --ticker AAPL --cik 0000320193 --tier1 gemini
 
 # QA report only
 python scripts/qa_extraction.py --ticker AAPL --cik 0000320193
+
+# Extract quarterly financial data from 10-Q/10-K
+python scripts/extract_financials.py --ticker CHTR
+python scripts/extract_financials.py --ticker CHTR --save-db
+python scripts/extract_financials.py --ticker CHTR --filing-type 10-K
+python scripts/extract_financials.py --batch demo --save-db  # CHTR, DAL, HCA, CCL, AAL
+
+# Extract SEC Rule 13-01 Obligor Group data
+python scripts/extract_obligor_group.py --ticker CHTR
+python scripts/extract_obligor_group.py --ticker CHTR --save-db
+python scripts/extract_obligor_group.py --batch demo --save-db
+
+# Map debt instruments to CUSIPs via OpenFIGI
+python scripts/map_cusips.py --ticker AAPL
+python scripts/map_cusips.py --ticker AAPL --dry-run
+python scripts/map_cusips.py --all --limit 50
+
+# Update bond pricing (Finnhub TRACE or estimated)
+python scripts/update_pricing.py --ticker AAPL      # Single company
+python scripts/update_pricing.py --stale-only       # Only stale prices
+python scripts/update_pricing.py --all --limit 50   # Batch update
+python scripts/update_pricing.py --summary          # Show pricing stats
 ```
 
 ## Rate Limiting
 
-The QA agent has 7-second delays between LLM checks to avoid Gemini API rate limits (10 requests/min on free tier). For batch extraction, use `--delay 15` or higher between companies.
+QA checks now run in parallel using `asyncio.gather()` for faster extraction. For batch extraction, use `--delay 10` or higher between companies to avoid rate limits.
 
-If you see `429 You exceeded your current quota` errors, increase delays or upgrade to paid Gemini tier.
+If you see `429 You exceeded your current quota` errors, increase delays or ensure you're using paid Gemini tier (`gemini-2.0-flash`, not `gemini-2.0-flash-exp`).
 
 ## API Keys Required
 
@@ -321,6 +400,10 @@ If you see `429 You exceeded your current quota` errors, increase delays or upgr
 | `GEMINI_API_KEY` | Recommended | Gemini for Tier 1 (cheapest) |
 | `SEC_API_KEY` | Recommended | SEC-API.io for fast filing retrieval |
 | `DEEPSEEK_API_KEY` | Optional | Alternative Tier 1 |
+| `OPENFIGI_API_KEY` | Optional | OpenFIGI for CUSIP mapping (25 req/min vs 5) |
+| `FINNHUB_API_KEY` | Optional | Finnhub for TRACE pricing (premium required for bonds) |
+| `FINRA_CLIENT_ID` | Optional | FINRA API (aggregate treasury data only) |
+| `FINRA_CLIENT_SECRET` | Optional | FINRA API secret |
 
 ## Known Complex Companies
 
@@ -339,8 +422,10 @@ These companies are flagged in `KNOWN_COMPLEX` for special handling:
 | QA checks (5x) | ~$0.006 | Verification |
 | Fix iteration | ~$0.01 | Per iteration |
 | Claude escalation | ~$0.15-0.50 | Only when needed |
+| Financial extraction | ~$0.01 | Quarterly financials from 10-Q |
 
 **Target: <$0.03 per company** with 85%+ QA score.
+**Financial extraction: ~$0.01 per quarter** for income statement, balance sheet, cash flow.
 
 ## Debugging Tips
 
@@ -352,54 +437,44 @@ These companies are flagged in `KNOWN_COMPLEX` for special handling:
 
 ## Agent Integration
 
-The `demos/` directory contains chatbot integration examples showing how AI agents use the Credible API.
+The `demos/` directory contains an agent demo showing how AI agents use the DebtStack API.
 
 ### Files
 
 | File | Description |
 |------|-------------|
-| `demos/agent_integration.py` | Full integration requiring running API |
-| `demos/agent_demo_offline.py` | Offline demo using local JSON files |
+| `demos/api_demo.py` | Simple API response demo for developers (no external deps) |
+| `demos/agent_demo.py` | AI agent demo for marketing visualizations (requires Anthropic API) |
 
 ### Tool Definitions
 
-Both demos define 4 tools for Claude function calling:
+The demo defines 10 tools for Claude function calling:
 
-```python
-TOOLS = [
-    {
-        "name": "get_company_structure",
-        "description": "Get corporate structure with debt at each entity",
-        "input_schema": {"properties": {"ticker": {"type": "string"}}, "required": ["ticker"]}
-    },
-    {
-        "name": "get_company_debt",
-        "description": "Get all debt instruments with full details",
-        "input_schema": {"properties": {"ticker": {"type": "string"}}, "required": ["ticker"]}
-    },
-    {
-        "name": "get_company_overview",
-        "description": "Get basic company info and metrics",
-        "input_schema": {"properties": {"ticker": {"type": "string"}}, "required": ["ticker"]}
-    },
-    {
-        "name": "list_available_companies",
-        "description": "List all companies in database",
-        "input_schema": {"properties": {}, "required": []}
-    }
-]
-```
+| Tool | Description |
+|------|-------------|
+| `get_company_structure` | Corporate hierarchy with debt at each entity (flat list) |
+| `get_company_hierarchy` | **NEW** Nested tree view of corporate structure |
+| `get_company_debt` | All debt instruments with full details |
+| `get_company_overview` | Basic company info and metrics |
+| `get_company_pricing` | Bond pricing (price, YTM, spread) |
+| `get_company_ownership` | **NEW** JVs, complex ownership, partial stakes |
+| `search_bonds` | **Enhanced** Search bonds by yield, spread, issuer type, guarantors, sector |
+| `search_entities` | **NEW** Search entities across ALL companies (find all VIEs, all Delaware entities) |
+| `get_sector_analytics` | **NEW** Sector-level aggregations (avg leverage, total debt) |
+| `list_available_companies` | List all companies in database |
 
 ### Running Demos
 
 ```bash
-# Offline (no API needed)
-python demos/agent_demo_offline.py
-python demos/agent_demo_offline.py "What is Transocean's debt structure?"
+# API Demo (for developers - shows raw API responses)
+python demos/api_demo.py              # Interactive menu
+python demos/api_demo.py --all        # Show all endpoints
+python demos/api_demo.py --ticker AAPL --endpoint waterfall
 
-# Full integration (requires running API)
-uvicorn app.main:app --reload
-python demos/agent_integration.py
+# Agent Demo (for marketing - requires Anthropic API key)
+python demos/agent_demo.py            # Offline interactive
+python demos/agent_demo.py --live     # With live API
+python demos/agent_demo.py --demo     # Run demo questions
 ```
 
 ### Key Implementation Details
@@ -407,11 +482,95 @@ python demos/agent_integration.py
 1. **System prompt** instructs Claude about:
    - Amounts in CENTS (divide by 100 for dollars)
    - Rates in BASIS POINTS (divide by 100 for percentage)
-   - Always cite "Credible API (extracted from SEC filings)"
+   - Always cite "DebtStack API (extracted from SEC filings)"
 
 2. **Tool execution loop**: Processes tool calls until `stop_reason != "tool_use"`
 
 3. **Offline mode**: `load_extraction()` reads from `results/{ticker}_iterative.json`
+
+## API Endpoints
+
+The API has 26 endpoints organized by function:
+
+### Company Endpoints
+| Endpoint | Description |
+|----------|-------------|
+| `GET /v1/companies` | List all companies with metrics |
+| `GET /v1/companies/{ticker}` | Company overview |
+| `GET /v1/companies/{ticker}/structure` | Entity hierarchy with debt (flat list) |
+| `GET /v1/companies/{ticker}/hierarchy` | **NEW** Entity hierarchy as nested tree |
+| `GET /v1/companies/{ticker}/ownership` | **NEW** JVs, complex ownership, partial stakes |
+| `GET /v1/companies/{ticker}/debt` | All debt instruments |
+| `GET /v1/companies/{ticker}/metrics` | Detailed credit metrics |
+| `GET /v1/companies/{ticker}/entities` | List entities with filters |
+| `GET /v1/companies/{ticker}/entities/{id}` | Entity detail with children |
+| `GET /v1/companies/{ticker}/entities/{id}/debt` | Debt at specific entity |
+| `GET /v1/companies/{ticker}/guarantees` | All guarantee relationships |
+| `GET /v1/companies/{ticker}/debt/{id}` | Debt instrument detail |
+| `GET /v1/companies/{ticker}/financials` | Quarterly financial statements |
+| `GET /v1/companies/{ticker}/ratios` | Computed credit ratios (leverage, coverage) |
+| `GET /v1/companies/{ticker}/obligor-group` | SEC Rule 13-01 Obligor Group data |
+| `GET /v1/companies/{ticker}/pricing` | Bond pricing for all instruments |
+| `GET /v1/companies/{ticker}/debt/{id}/pricing` | Pricing for specific bond |
+| `GET /v1/companies/{ticker}/maturity-waterfall` | Debt maturity waterfall by year |
+
+### Search Endpoints
+| Endpoint | Description |
+|----------|-------------|
+| `GET /v1/search/companies` | Search with filters (sector, debt range, risk flags) |
+| `GET /v1/search/debt` | Search debt across all companies (enhanced filters) |
+| `GET /v1/search/entities` | **NEW** Search entities across ALL companies |
+
+### Analytics Endpoints
+| Endpoint | Description |
+|----------|-------------|
+| `GET /v1/compare/companies` | Side-by-side comparison (up to 10) |
+| `GET /v1/analytics/sectors` | **NEW** Sector-level aggregations (leverage, debt totals) |
+
+### System Endpoints
+| Endpoint | Description |
+|----------|-------------|
+| `GET /v1/health` | Health check |
+| `GET /v1/status` | API status and data coverage |
+| `GET /v1/sectors` | List sectors with company counts |
+
+### Search Filters
+
+**Company Search** (`/v1/search/companies`):
+- `q`: Text search (name or ticker)
+- `sector`: Filter by sector
+- `min_debt`, `max_debt`: Debt range (in cents)
+- `has_secured_debt`: Boolean filter
+- `has_structural_sub`: Boolean filter
+- `has_near_term_maturity`: Boolean filter
+- `sort_by`: ticker, total_debt, entity_count
+- `sort_order`: asc, desc
+
+**Debt Search** (`/v1/search/debt`):
+- `seniority`: senior_secured, senior_unsecured, subordinated
+- `security_type`: first_lien, second_lien, unsecured
+- `instrument_type`: term_loan_b, senior_notes, etc.
+- `min_rate`, `max_rate`: Interest rate range (basis points)
+- `maturity_before`, `maturity_after`: Date filters
+- `rate_type`: fixed, floating
+- `issuer_type`: **NEW** Filter by issuer entity type (holdco, opco, subsidiary, spv)
+- `has_guarantors`: **NEW** Filter debt with/without guarantors
+- `min_outstanding`, `max_outstanding`: **NEW** Outstanding amount range
+- `has_cusip`: **NEW** Filter tradeable bonds
+- `currency`: **NEW** Filter by currency
+- `sector`: **NEW** Filter by company sector
+- `min_ytm_bps`, `max_ytm_bps`: Yield to maturity range
+- `min_spread_bps`, `max_spread_bps`: Spread to treasury range
+- `has_pricing`: Filter bonds with pricing data
+
+**Entity Search** (`/v1/search/entities`): **NEW**
+- `entity_type`: holdco, opco, subsidiary, spv, jv, finco, vie
+- `jurisdiction`: Filter by jurisdiction (e.g., Delaware, Cayman Islands)
+- `is_guarantor`: Filter by guarantor status
+- `is_vie`: Filter VIE entities
+- `is_unrestricted`: Filter unrestricted subsidiaries
+- `has_debt`: Filter entities with/without debt issued
+- `q`: Text search on entity name
 
 ## Migrations
 
@@ -423,3 +582,8 @@ alembic revision -m "description"  # Create new
 Current:
 - `001_initial_schema`: Core tables
 - `002_ownership_links`: Complex ownership + VIE columns
+- `003_expand_benchmark_column`: Expanded benchmark/rate_type columns
+- `004_add_company_financials`: Quarterly financial statement table
+- `005_add_obligor_group_financials`: SEC Rule 13-01 Obligor Group table
+- `006_add_bond_pricing`: Bond pricing table
+- `007_make_cusip_nullable`: Allow NULL cusip for estimated pricing

@@ -55,8 +55,8 @@ from app.services.tiered_extraction import (
     ClaudeClient,
     ModelTier,
     calculate_cost,
-    parse_json_robust,
 )
+from app.services.utils import parse_json_robust
 from app.services.qa_agent import QAAgent, QAReport, QACheck, QACheckStatus
 
 
@@ -201,6 +201,65 @@ Search for and extract any missing items. Return JSON:
 }}"""
 
 
+# Combined fix prompt - fixes ALL issues in one call for speed
+COMBINED_FIX_PROMPT = """Fix ALL the issues found in this extraction. Address entities, debt, and completeness in ONE response.
+
+CURRENT EXTRACTION:
+- Entities ({entity_count}): {current_entities}
+- Debt ({debt_count}): {current_debt}
+
+ALL ISSUES FOUND:
+{all_issues}
+
+REFERENCE DOCUMENTS:
+=== Exhibit 21 (Subsidiaries) ===
+{exhibit_21}
+
+=== Debt Sections from Filings ===
+{debt_content}
+
+FIX EVERYTHING in one response. Return JSON:
+{{
+  "fixed_entities": [
+    {{
+      "name": "Entity name matching Exhibit 21 exactly",
+      "entity_type": "subsidiary|holdco|finco|spv|jv|vie",
+      "jurisdiction": "State/Country",
+      "formation_type": "Corp|LLC|Ltd|LP",
+      "owners": [{{"parent_name": "Parent", "ownership_pct": 100, "ownership_type": "direct"}}],
+      "is_material": true,
+      "is_domestic": true
+    }}
+  ],
+  "entities_to_remove": ["Names of incorrect entities to remove"],
+  "fixed_debt": [
+    {{
+      "name": "Debt instrument name",
+      "issuer_name": "Issuer entity name",
+      "instrument_type": "term_loan|revolver|senior_notes|subordinated_notes|commercial_paper",
+      "seniority": "senior_secured|senior_unsecured|subordinated",
+      "security_type": "first_lien|second_lien|unsecured",
+      "principal": 100000000000,
+      "outstanding": 100000000000,
+      "rate_type": "fixed|floating",
+      "interest_rate": 500,
+      "maturity_date": "2029-01-15",
+      "guarantor_names": []
+    }}
+  ],
+  "debt_to_update": [
+    {{"name": "Existing debt name", "field": "outstanding", "new_value": 150000000000}}
+  ],
+  "explanation": "Summary of all fixes made"
+}}
+
+IMPORTANT:
+- Amounts in CENTS ($1B = 100000000000)
+- Rates in BASIS POINTS (5% = 500)
+- Match entity names EXACTLY as in Exhibit 21
+- Only include items that need fixing, not the entire extraction"""
+
+
 class IterativeExtractionService:
     """
     Iterative extraction with QA feedback loop.
@@ -321,6 +380,31 @@ class IterativeExtractionService:
 
         return extraction
 
+    def _merge_combined_fixes(self, extraction: dict, fixes: dict) -> dict:
+        """Merge all fixes (entities, debt, completeness) from combined fix call."""
+        # Apply entity fixes
+        extraction = self._merge_entity_fixes(extraction, fixes)
+
+        # Apply debt fixes
+        extraction = self._merge_debt_fixes(extraction, fixes)
+
+        # Apply any additional items from completeness
+        if "additional_entities" in fixes:
+            extraction = self._merge_completeness_fixes(extraction, fixes)
+
+        return extraction
+
+    def _collect_all_issues(self, qa_report: QAReport) -> str:
+        """Collect all issues from QA report for combined fix prompt."""
+        issues = []
+        for check in qa_report.checks:
+            if check.status in (QACheckStatus.FAIL, QACheckStatus.WARN):
+                issue_text = f"[{check.status.value.upper()}] {check.name}: {check.message}"
+                if check.details:
+                    issue_text += f"\n  Details: {json.dumps(check.details)[:500]}"
+                issues.append(issue_text)
+        return "\n".join(issues) if issues else "No specific issues identified"
+
     def _determine_action(self, qa_report: QAReport) -> IterationAction:
         """Determine what action to take based on QA results."""
         if qa_report.overall_score >= self.quality_threshold:
@@ -409,11 +493,43 @@ class IterativeExtractionService:
 
         prompt = EXTRACTION_PROMPT_TEMPLATE.format(context=context[:max_total])
 
-        extraction, tokens_in, tokens_out = await self.gemini.extract(context[:150000])
-        initial_cost = calculate_cost(ModelTier.TIER1_GEMINI, tokens_in, tokens_out)
+        # Smart model selection: use Claude for complex companies (large Exhibit 21)
+        # This avoids Gemini output truncation for companies with many subsidiaries
+        exhibit_21_size = 0
+        for key, content in filings.items():
+            if "exhibit_21" in key.lower():
+                exhibit_21_size = len(content)
+                break
+
+        # If Exhibit 21 is large (>30KB), company likely has many subsidiaries
+        # Use Claude directly to avoid truncation issues
+        use_claude_directly = exhibit_21_size > 30000
+
+        initial_model = "gemini-2.0-flash"
+        if use_claude_directly and self.claude:
+            print(f"    Large company detected (Exhibit 21: {exhibit_21_size//1000}KB), using Claude...")
+            initial_model = "claude-sonnet"
+            extraction, tokens_in, tokens_out = await self.claude.extract_sonnet(context[:150000])
+            initial_cost = calculate_cost(ModelTier.TIER2_SONNET, tokens_in, tokens_out)
+        else:
+            # Try Gemini first, fall back to Claude if rate limited or JSON truncated
+            try:
+                extraction, tokens_in, tokens_out = await self.gemini.extract(context[:150000])
+                initial_cost = calculate_cost(ModelTier.TIER1_GEMINI, tokens_in, tokens_out)
+            except Exception as e:
+                error_str = str(e)
+                if "429" in error_str or "quota" in error_str.lower() or "ResourceExhausted" in error_str:
+                    print(f"    Gemini rate limited, falling back to Claude...")
+                elif "Could not parse JSON" in error_str or "truncat" in error_str.lower():
+                    print(f"    Gemini output truncated, falling back to Claude...")
+                else:
+                    raise  # Re-raise other errors
+                initial_model = "claude-sonnet"
+                extraction, tokens_in, tokens_out = await self.claude.extract_sonnet(context[:150000])
+                initial_cost = calculate_cost(ModelTier.TIER2_SONNET, tokens_in, tokens_out)
         self.total_cost += initial_cost
 
-        print(f"    Extracted: {len(extraction.get('entities', []))} entities, "
+        print(f"    Extracted ({initial_model}): {len(extraction.get('entities', []))} entities, "
               f"{len(extraction.get('debt_instruments', []))} debt, cost: ${initial_cost:.4f}")
 
         # Step 2: QA check
@@ -442,96 +558,46 @@ class IterativeExtractionService:
                 print(f"\n  Quality threshold met ({current_qa.overall_score:.0f}% >= {self.quality_threshold}%)")
                 break
 
-            print(f"\n  [Iteration {i}] Fixing issues...")
+            print(f"\n  [Iteration {i}] Fixing all issues in single call...")
             iter_start = datetime.now()
             iter_cost = 0.0
             issues_fixed = []
 
-            action = self._determine_action(current_qa)
+            # Collect ALL issues for combined fix
+            all_issues = self._collect_all_issues(current_qa)
 
-            if action == IterationAction.FIX_ENTITIES:
-                # Get entity-related issues
-                entity_issues = []
-                for check in current_qa.checks:
-                    if check.status in (QACheckStatus.FAIL, QACheckStatus.WARN):
-                        if "entity" in check.name.lower() or "completeness" in check.name.lower():
-                            if check.details:
-                                entity_issues.append(json.dumps(check.details))
-                            entity_issues.append(check.message)
+            # Get reference content
+            exhibit_21 = ""
+            for key in filings:
+                if "exhibit_21" in key.lower():
+                    exhibit_21 = filings[key][:30000]
+                    break
 
-                if entity_issues:
-                    print(f"    Fixing entities...")
-                    exhibit_21 = filings.get("exhibit_21", "")
+            debt_content = "\n".join(
+                f"=== {k} ===\n{v[:15000]}"
+                for k, v in filings.items()
+                if any(t in k.lower() for t in ["10-k", "10-q", "8-k"])
+            )[:40000]
 
-                    prompt = ENTITY_FIX_PROMPT.format(
-                        current_entities=json.dumps(current_extraction.get("entities", []), indent=2)[:5000],
-                        issues="\n".join(entity_issues),
-                        exhibit_21=exhibit_21[:30000] if exhibit_21 else "Not available",
-                    )
+            # Build combined fix prompt
+            prompt = COMBINED_FIX_PROMPT.format(
+                entity_count=len(current_extraction.get("entities", [])),
+                debt_count=len(current_extraction.get("debt_instruments", [])),
+                current_entities=json.dumps(current_extraction.get("entities", [])[:20], indent=2)[:3000],
+                current_debt=json.dumps(current_extraction.get("debt_instruments", [])[:15], indent=2)[:3000],
+                all_issues=all_issues,
+                exhibit_21=exhibit_21 if exhibit_21 else "Not available",
+                debt_content=debt_content,
+            )
 
-                    try:
-                        fixes = self._call_gemini_fix(prompt)
-                        current_extraction = self._merge_entity_fixes(current_extraction, fixes)
-                        issues_fixed.append(f"Entities: {fixes.get('explanation', 'fixed')}")
-                        print(f"    Applied entity fixes")
-                    except Exception as e:
-                        print(f"    Entity fix failed: {e}")
-
-            elif action == IterationAction.FIX_DEBT:
-                # Get debt-related issues
-                debt_issues = []
-                for check in current_qa.checks:
-                    if check.status in (QACheckStatus.FAIL, QACheckStatus.WARN):
-                        if "debt" in check.name.lower():
-                            if check.details:
-                                debt_issues.append(json.dumps(check.details))
-                            debt_issues.append(check.message)
-
-                if debt_issues:
-                    print(f"    Fixing debt...")
-                    debt_content = "\n".join(
-                        f"=== {k} ===\n{v[:20000]}"
-                        for k, v in filings.items()
-                        if any(t in k.lower() for t in ["10-k", "10-q", "8-k"])
-                    )
-
-                    prompt = DEBT_FIX_PROMPT.format(
-                        current_debt=json.dumps(current_extraction.get("debt_instruments", []), indent=2)[:5000],
-                        issues="\n".join(debt_issues),
-                        debt_content=debt_content[:40000],
-                    )
-
-                    try:
-                        fixes = self._call_gemini_fix(prompt)
-                        current_extraction = self._merge_debt_fixes(current_extraction, fixes)
-                        issues_fixed.append(f"Debt: {fixes.get('explanation', 'fixed')}")
-                        print(f"    Applied debt fixes")
-                    except Exception as e:
-                        print(f"    Debt fix failed: {e}")
-
-            # Also check completeness issues
-            for check in current_qa.checks:
-                if check.name == "Completeness Check" and check.status in (QACheckStatus.FAIL, QACheckStatus.WARN):
-                    missing = check.details or {}
-                    missed_entities = missing.get("missed_entities", [])
-                    missed_debt = missing.get("missed_debt", [])
-
-                    if missed_entities or missed_debt:
-                        print(f"    Fixing completeness...")
-                        prompt = COMPLETENESS_FIX_PROMPT.format(
-                            entity_count=len(current_extraction.get("entities", [])),
-                            debt_count=len(current_extraction.get("debt_instruments", [])),
-                            missing_items=json.dumps({"missed_entities": missed_entities, "missed_debt": missed_debt}),
-                            filing_content="\n".join(v[:15000] for v in filings.values())[:50000],
-                        )
-
-                        try:
-                            fixes = self._call_gemini_fix(prompt)
-                            current_extraction = self._merge_completeness_fixes(current_extraction, fixes)
-                            issues_fixed.append(f"Completeness: {fixes.get('explanation', 'fixed')}")
-                            print(f"    Applied completeness fixes")
-                        except Exception as e:
-                            print(f"    Completeness fix failed: {e}")
+            try:
+                # Single LLM call to fix everything
+                fixes = self._call_gemini_fix(prompt)
+                current_extraction = self._merge_combined_fixes(current_extraction, fixes)
+                issues_fixed.append(f"Combined fix: {fixes.get('explanation', 'applied')}")
+                print(f"    Applied combined fixes")
+            except Exception as e:
+                print(f"    Combined fix failed: {e}")
 
             # Re-run QA
             print(f"    Re-running QA...")
@@ -544,7 +610,7 @@ class IterativeExtractionService:
 
             iterations.append(IterationResult(
                 iteration=i,
-                action=action,
+                action=IterationAction.FIX_ENTITIES,  # Combined fix covers all
                 extraction=current_extraction.copy(),
                 qa_score=current_qa.overall_score,
                 issues_fixed=issues_fixed,

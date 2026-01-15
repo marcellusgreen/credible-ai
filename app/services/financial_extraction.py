@@ -1,0 +1,547 @@
+"""
+Financial Extraction Service for DebtStack.ai
+
+Extracts quarterly financial data from SEC 10-Q and 10-K filings.
+"""
+
+import asyncio
+import json
+import os
+import re
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any, Optional
+from uuid import UUID
+
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models import Company, CompanyFinancials
+from app.services.extraction import SecApiClient, clean_filing_html
+from app.services.qa_agent import parse_json_robust
+
+# Import API clients
+import anthropic
+import google.generativeai as genai
+
+
+# =============================================================================
+# PROMPTS
+# =============================================================================
+
+SYSTEM_PROMPT = """You are a financial analyst extracting quarterly financial data from SEC 10-Q/10-K filings.
+
+Your job is to extract specific financial metrics from the filing's financial statements:
+- Consolidated Statements of Operations (Income Statement)
+- Consolidated Balance Sheets
+- Consolidated Statements of Cash Flows
+
+CRITICAL RULES:
+1. All amounts must be in USD CENTS (multiply dollars by 100)
+   - $1 million = 100,000,000 cents
+   - $1 billion = 100,000,000,000 cents
+2. Use QUARTERLY figures for income statement and cash flow (not year-to-date, unless Q4)
+3. Use PERIOD END figures for balance sheet
+4. Return null for any metric you cannot find - do not estimate or guess
+5. If EBITDA is not directly disclosed, calculate it as: operating_income + depreciation_amortization
+"""
+
+FINANCIAL_EXTRACTION_PROMPT = """
+Extract quarterly financial data from this SEC filing.
+
+COMPANY: {company_name} ({ticker})
+FILING TYPE: {filing_type}
+PERIOD END: {period_end}
+
+FILING CONTENT:
+{filing_content}
+
+Extract and return this JSON structure:
+
+{{
+  "fiscal_year": {fiscal_year},
+  "fiscal_quarter": {fiscal_quarter},
+  "period_end_date": "{period_end}",
+
+  // INCOME STATEMENT (quarterly figures, in cents)
+  "revenue": null,                    // Net sales, revenues, or total revenues
+  "cost_of_revenue": null,            // Cost of sales, cost of goods sold
+  "gross_profit": null,               // Revenue minus cost of revenue
+  "operating_income": null,           // Operating income/loss (EBIT)
+  "interest_expense": null,           // Interest expense (positive number)
+  "net_income": null,                 // Net income/loss attributable to company
+  "depreciation_amortization": null,  // D&A (often in cash flow statement)
+  "ebitda": null,                     // If disclosed, or operating_income + D&A
+
+  // BALANCE SHEET (as of period end, in cents)
+  "cash_and_equivalents": null,       // Cash and cash equivalents
+  "total_current_assets": null,       // Total current assets
+  "total_assets": null,               // Total assets
+  "total_current_liabilities": null,  // Total current liabilities
+  "total_debt": null,                 // Total debt (short + long term)
+  "total_liabilities": null,          // Total liabilities
+  "stockholders_equity": null,        // Total stockholders' equity
+
+  // CASH FLOW (quarterly figures, in cents)
+  "operating_cash_flow": null,        // Net cash from operating activities
+  "investing_cash_flow": null,        // Net cash from investing activities (usually negative)
+  "financing_cash_flow": null,        // Net cash from financing activities
+  "capex": null,                      // Capital expenditures (positive number)
+
+  "uncertainties": []                 // List any metrics that couldn't be found
+}}
+
+EXTRACTION TIPS:
+- Revenue: Look for "Net sales", "Revenues", "Total net revenues"
+- Interest expense: Usually below operating income, may be "Interest expense, net"
+- D&A: Often in cash flow statement under "Depreciation and amortization"
+- Total debt: May need to sum "Current portion of long-term debt" + "Long-term debt"
+- EBITDA: Some companies disclose "Adjusted EBITDA" in MD&A section
+
+IMPORTANT:
+- For 10-Q filings, extract QUARTERLY data (3 months)
+- For 10-K filings, you may need to calculate Q4 = Full Year - 9 Month YTD
+- Use exact numbers from the filing, converted to cents
+- Return null (not 0) for missing data
+"""
+
+FINANCIAL_SECTIONS_KEYWORDS = [
+    "consolidated statements of operations",
+    "consolidated balance sheets",
+    "consolidated statements of cash flows",
+    "statements of income",
+    "financial statements",
+    "net revenues",
+    "total revenues",
+    "cost of sales",
+    "operating income",
+    "interest expense",
+    "net income",
+    "total assets",
+    "total liabilities",
+    "stockholders' equity",
+    "cash and cash equivalents",
+    "depreciation and amortization",
+    "capital expenditures",
+]
+
+
+# =============================================================================
+# PYDANTIC MODELS
+# =============================================================================
+
+class ExtractedFinancials(BaseModel):
+    """Validated financial extraction result."""
+
+    fiscal_year: int
+    fiscal_quarter: int = Field(ge=1, le=4)
+    period_end_date: str
+
+    # Income Statement
+    revenue: Optional[int] = None
+    cost_of_revenue: Optional[int] = None
+    gross_profit: Optional[int] = None
+    operating_income: Optional[int] = None
+    interest_expense: Optional[int] = None
+    net_income: Optional[int] = None
+    depreciation_amortization: Optional[int] = None
+    ebitda: Optional[int] = None
+
+    # Balance Sheet
+    cash_and_equivalents: Optional[int] = None
+    total_current_assets: Optional[int] = None
+    total_assets: Optional[int] = None
+    total_current_liabilities: Optional[int] = None
+    total_debt: Optional[int] = None
+    total_liabilities: Optional[int] = None
+    stockholders_equity: Optional[int] = None
+
+    # Cash Flow
+    operating_cash_flow: Optional[int] = None
+    investing_cash_flow: Optional[int] = None
+    financing_cash_flow: Optional[int] = None
+    capex: Optional[int] = None
+
+    uncertainties: list[str] = Field(default_factory=list)
+
+    @field_validator("period_end_date")
+    @classmethod
+    def validate_date(cls, v: str) -> str:
+        try:
+            datetime.strptime(v, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError(f"Invalid date format: {v}. Expected YYYY-MM-DD")
+        return v
+
+
+# =============================================================================
+# EXTRACTION FUNCTIONS
+# =============================================================================
+
+def extract_financial_sections(filing_content: str, max_chars: int = 150000) -> str:
+    """Extract financial statement sections from a large filing."""
+    if len(filing_content) <= max_chars:
+        return filing_content
+
+    # Find sections containing financial data
+    content_lower = filing_content.lower()
+    sections = []
+
+    for keyword in FINANCIAL_SECTIONS_KEYWORDS:
+        # Find all occurrences of the keyword
+        start = 0
+        while True:
+            idx = content_lower.find(keyword, start)
+            if idx == -1:
+                break
+
+            # Extract context around the keyword (20K chars)
+            section_start = max(0, idx - 1000)
+            section_end = min(len(filing_content), idx + 20000)
+            section = filing_content[section_start:section_end]
+
+            if section not in sections:
+                sections.append(section)
+
+            start = idx + len(keyword)
+
+            # Limit sections to avoid context overflow
+            if sum(len(s) for s in sections) > max_chars:
+                break
+
+        if sum(len(s) for s in sections) > max_chars:
+            break
+
+    if not sections:
+        # Fallback: return first chunk
+        return filing_content[:max_chars]
+
+    combined = "\n\n---\n\n".join(sections)
+    return combined[:max_chars]
+
+
+def determine_fiscal_period(filing_date: str, filing_type: str) -> tuple[int, int]:
+    """Determine fiscal year and quarter from filing date."""
+    try:
+        d = datetime.strptime(filing_date, "%Y-%m-%d")
+    except ValueError:
+        # Default to current year Q4
+        today = date.today()
+        return today.year, 4
+
+    year = d.year
+    month = d.month
+
+    if filing_type == "10-K":
+        # 10-K is annual report, covers full year ending in that month
+        # Most companies have fiscal year ending Dec, but some differ
+        quarter = 4
+    else:
+        # 10-Q quarters
+        if month <= 3:
+            quarter = 4
+            year -= 1  # Q4 of previous year
+        elif month <= 6:
+            quarter = 1
+        elif month <= 9:
+            quarter = 2
+        else:
+            quarter = 3
+
+    return year, quarter
+
+
+async def extract_financials(
+    ticker: str,
+    cik: Optional[str] = None,
+    filing_type: str = "10-Q",
+    use_claude: bool = False,
+) -> Optional[ExtractedFinancials]:
+    """
+    Extract financial data from the most recent 10-Q or 10-K filing.
+
+    Args:
+        ticker: Stock ticker symbol
+        cik: SEC Central Index Key (optional)
+        filing_type: "10-Q" or "10-K"
+        use_claude: Use Claude instead of Gemini for extraction
+
+    Returns:
+        ExtractedFinancials object or None if extraction failed
+    """
+    # Fetch the filing
+    sec_api_key = os.getenv("SEC_API_KEY")
+    if not sec_api_key:
+        print("SEC_API_KEY not set")
+        return None
+
+    sec_client = SecApiClient(api_key=sec_api_key)
+    filings = sec_client.get_filings_by_ticker(
+        ticker,
+        form_types=[filing_type],
+        max_filings=1,
+        cik=cik,
+    )
+
+    if not filings:
+        print(f"No {filing_type} filings found for {ticker}")
+        return None
+
+    filing = filings[0]
+    filing_url = filing.get("linkToFilingDetails", "")
+    filing_date = filing.get("filedAt", "")[:10]  # Extract date part
+
+    # Download filing content
+    content = sec_client.get_filing_content(filing_url)
+    if not content:
+        print(f"Failed to download filing content for {ticker}")
+        return None
+
+    # Clean HTML if needed
+    if content.strip().startswith("<") or content.strip().startswith("<?xml"):
+        content = clean_filing_html(content)
+
+    # Extract financial sections
+    content = extract_financial_sections(content)
+
+    # Determine fiscal period
+    fiscal_year, fiscal_quarter = determine_fiscal_period(filing_date, filing_type)
+
+    # Get company name (try to extract from filing or use ticker)
+    company_name = ticker  # Fallback
+
+    # Build prompt
+    prompt = FINANCIAL_EXTRACTION_PROMPT.format(
+        company_name=company_name,
+        ticker=ticker,
+        filing_type=filing_type,
+        period_end=filing_date,
+        fiscal_year=fiscal_year,
+        fiscal_quarter=fiscal_quarter,
+        filing_content=content,
+    )
+
+    # Call LLM
+    if use_claude:
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=4000,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        response_text = response.content[0].text
+    else:
+        # Configure Gemini
+        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+        model = genai.GenerativeModel(
+            model_name="gemini-2.0-flash",
+            generation_config={
+                "temperature": 0.1,
+                "response_mime_type": "application/json",
+                "max_output_tokens": 4000,
+            },
+            system_instruction=SYSTEM_PROMPT,
+        )
+        response = model.generate_content(prompt)
+        response_text = response.text
+
+    # Parse response
+    try:
+        data = parse_json_robust(response_text)
+        if data:
+            # Calculate EBITDA if not provided
+            if data.get("ebitda") is None:
+                operating = data.get("operating_income")
+                da = data.get("depreciation_amortization")
+                if operating is not None and da is not None:
+                    data["ebitda"] = operating + da
+
+            return ExtractedFinancials(**data)
+    except Exception as e:
+        print(f"Failed to parse financial extraction: {e}")
+        print(f"Response: {response_text[:500]}...")
+
+    return None
+
+
+async def save_financials_to_db(
+    session: AsyncSession,
+    ticker: str,
+    financials: ExtractedFinancials,
+    source_filing: Optional[str] = None,
+) -> Optional[CompanyFinancials]:
+    """Save extracted financials to database."""
+    # Find company
+    result = await session.execute(
+        select(Company).where(Company.ticker == ticker)
+    )
+    company = result.scalar_one_or_none()
+
+    if not company:
+        print(f"Company not found: {ticker}")
+        return None
+
+    # Check if record already exists
+    result = await session.execute(
+        select(CompanyFinancials).where(
+            CompanyFinancials.company_id == company.id,
+            CompanyFinancials.fiscal_year == financials.fiscal_year,
+            CompanyFinancials.fiscal_quarter == financials.fiscal_quarter,
+        )
+    )
+    existing = result.scalar_one_or_none()
+
+    if existing:
+        # Update existing record
+        for field in [
+            "revenue", "cost_of_revenue", "gross_profit", "operating_income",
+            "interest_expense", "net_income", "depreciation_amortization", "ebitda",
+            "cash_and_equivalents", "total_current_assets", "total_assets",
+            "total_current_liabilities", "total_debt", "total_liabilities",
+            "stockholders_equity", "operating_cash_flow", "investing_cash_flow",
+            "financing_cash_flow", "capex",
+        ]:
+            value = getattr(financials, field)
+            if value is not None:
+                setattr(existing, field, value)
+        existing.source_filing = source_filing
+        existing.extracted_at = datetime.utcnow()
+        await session.commit()
+        return existing
+
+    # Create new record
+    record = CompanyFinancials(
+        company_id=company.id,
+        fiscal_year=financials.fiscal_year,
+        fiscal_quarter=financials.fiscal_quarter,
+        period_end_date=datetime.strptime(financials.period_end_date, "%Y-%m-%d").date(),
+        filing_type="10-Q" if financials.fiscal_quarter < 4 else "10-K",
+        revenue=financials.revenue,
+        cost_of_revenue=financials.cost_of_revenue,
+        gross_profit=financials.gross_profit,
+        operating_income=financials.operating_income,
+        interest_expense=financials.interest_expense,
+        net_income=financials.net_income,
+        depreciation_amortization=financials.depreciation_amortization,
+        ebitda=financials.ebitda,
+        cash_and_equivalents=financials.cash_and_equivalents,
+        total_current_assets=financials.total_current_assets,
+        total_assets=financials.total_assets,
+        total_current_liabilities=financials.total_current_liabilities,
+        total_debt=financials.total_debt,
+        total_liabilities=financials.total_liabilities,
+        stockholders_equity=financials.stockholders_equity,
+        operating_cash_flow=financials.operating_cash_flow,
+        investing_cash_flow=financials.investing_cash_flow,
+        financing_cash_flow=financials.financing_cash_flow,
+        capex=financials.capex,
+        source_filing=source_filing,
+    )
+    session.add(record)
+    await session.commit()
+
+    return record
+
+
+async def get_latest_financials(
+    session: AsyncSession,
+    company_id: UUID,
+) -> Optional[CompanyFinancials]:
+    """Get the most recent financial data for a company."""
+    result = await session.execute(
+        select(CompanyFinancials)
+        .where(CompanyFinancials.company_id == company_id)
+        .order_by(
+            CompanyFinancials.fiscal_year.desc(),
+            CompanyFinancials.fiscal_quarter.desc(),
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_trailing_financials(
+    session: AsyncSession,
+    company_id: UUID,
+    quarters: int = 4,
+) -> list[CompanyFinancials]:
+    """Get trailing N quarters of financial data."""
+    result = await session.execute(
+        select(CompanyFinancials)
+        .where(CompanyFinancials.company_id == company_id)
+        .order_by(
+            CompanyFinancials.fiscal_year.desc(),
+            CompanyFinancials.fiscal_quarter.desc(),
+        )
+        .limit(quarters)
+    )
+    return list(result.scalars().all())
+
+
+def calculate_ttm_metrics(financials: list[CompanyFinancials]) -> dict:
+    """
+    Calculate trailing twelve month (TTM) metrics from quarterly data.
+
+    Returns dict with TTM values for income statement items.
+    """
+    if len(financials) < 4:
+        return {}
+
+    ttm = {
+        "revenue": 0,
+        "operating_income": 0,
+        "ebitda": 0,
+        "interest_expense": 0,
+        "net_income": 0,
+    }
+
+    for q in financials[:4]:
+        if q.revenue:
+            ttm["revenue"] += q.revenue
+        if q.operating_income:
+            ttm["operating_income"] += q.operating_income
+        if q.ebitda:
+            ttm["ebitda"] += q.ebitda
+        if q.interest_expense:
+            ttm["interest_expense"] += q.interest_expense
+        if q.net_income:
+            ttm["net_income"] += q.net_income
+
+    return ttm
+
+
+def calculate_credit_ratios(
+    total_debt: int,
+    cash: int,
+    ebitda: int,
+    interest_expense: int,
+    operating_income: int,
+) -> dict:
+    """
+    Calculate key credit ratios.
+
+    Args:
+        total_debt: Total debt in cents
+        cash: Cash and equivalents in cents
+        ebitda: EBITDA in cents (should be TTM)
+        interest_expense: Interest expense in cents (should be TTM)
+        operating_income: Operating income in cents (should be TTM)
+
+    Returns:
+        Dict with calculated ratios
+    """
+    ratios = {}
+
+    if ebitda and ebitda > 0:
+        ratios["leverage_ratio"] = round(total_debt / ebitda, 2)
+        ratios["net_leverage_ratio"] = round((total_debt - cash) / ebitda, 2)
+
+    if interest_expense and interest_expense > 0:
+        if ebitda:
+            ratios["interest_coverage_ebitda"] = round(ebitda / interest_expense, 2)
+        if operating_income:
+            ratios["interest_coverage_ebit"] = round(operating_income / interest_expense, 2)
+
+    return ratios

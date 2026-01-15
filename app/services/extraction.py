@@ -518,18 +518,21 @@ class SecApiClient:
 
         print(f"  Found {len(filings)} filings via SEC-API")
 
+        # Prepare all download tasks for parallel execution
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+
+        download_tasks = []  # List of (key, url, is_exhibit) tuples
+
         for filing in filings:
             form_type = filing.get("formType", "")
             filed_at = filing.get("filedAt", "")[:10]  # Just the date part
             key = f"{form_type}_{filed_at}"
 
-            # Get main filing content
+            # Main filing
             filing_url = filing.get("linkToFilingDetails", "")
             if filing_url:
-                content = self.get_filing_content(filing_url)
-                if content:
-                    filings_content[key] = content
-                    print(f"    [OK] Downloaded {key}")
+                download_tasks.append((key, filing_url, False))
 
             # For 10-K, also get Exhibit 21 (subsidiaries)
             if include_exhibits and form_type == "10-K":
@@ -538,20 +541,49 @@ class SecApiClient:
                     if "21" in doc_type:
                         exhibit_url = doc.get("documentUrl", "")
                         if exhibit_url:
-                            ex_content = self.get_filing_content(exhibit_url)
-                            if ex_content:
-                                ex_key = f"exhibit_21_{filed_at}"
-                                filings_content[ex_key] = ex_content
-                                print(f"      [OK] Downloaded Exhibit 21")
+                            ex_key = f"exhibit_21_{filed_at}"
+                            download_tasks.append((ex_key, exhibit_url, True))
                     # Also get credit agreements (Exhibit 10)
                     elif "10" in doc_type and "CREDIT" in doc.get("description", "").upper():
                         exhibit_url = doc.get("documentUrl", "")
                         if exhibit_url:
-                            ex_content = self.get_filing_content(exhibit_url)
-                            if ex_content:
-                                ex_key = f"exhibit_10_{filed_at}_{doc_type}"
-                                filings_content[ex_key] = ex_content
-                                print(f"      [OK] Downloaded {doc_type}")
+                            ex_key = f"exhibit_10_{filed_at}_{doc_type}"
+                            download_tasks.append((ex_key, exhibit_url, True))
+
+        # Download all files in parallel using ThreadPoolExecutor
+        # SEC-API handles rate limiting internally, so parallel is safe
+        async def download_file(key: str, url: str, is_exhibit: bool):
+            try:
+                # Run synchronous download in thread pool
+                loop = asyncio.get_event_loop()
+                content = await loop.run_in_executor(None, self.get_filing_content, url)
+                if content:
+                    return (key, content, is_exhibit)
+            except Exception as e:
+                pass
+            return None
+
+        # Execute all downloads concurrently (limit concurrency to 5)
+        semaphore = asyncio.Semaphore(5)
+
+        async def bounded_download(key, url, is_exhibit):
+            async with semaphore:
+                return await download_file(key, url, is_exhibit)
+
+        results = await asyncio.gather(
+            *[bounded_download(key, url, is_ex) for key, url, is_ex in download_tasks],
+            return_exceptions=True
+        )
+
+        # Process results
+        for result in results:
+            if result and not isinstance(result, Exception):
+                key, content, is_exhibit = result
+                filings_content[key] = content
+                if is_exhibit:
+                    print(f"      [OK] Downloaded {key}")
+                else:
+                    print(f"    [OK] Downloaded {key}")
 
         return filings_content
 
@@ -561,7 +593,7 @@ class SECEdgarClient:
 
     BASE_URL = "https://data.sec.gov"
     ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data"
-    USER_AGENT = "Credible.ai contact@credible.ai"
+    USER_AGENT = "DebtStack.ai contact@debtstack.ai"
 
     def __init__(self):
         self.client = httpx.AsyncClient(
@@ -1034,11 +1066,37 @@ async def save_extraction_to_db(
 
         # Create ownership_links for ALL owners (including the primary)
         for owner in owners:
-            if owner.parent_name not in entity_name_to_id:
-                # External owner (e.g., JV partner outside the company)
-                continue
+            # Try to find parent by exact name first
+            parent_entity_id = entity_name_to_id.get(owner.parent_name)
 
-            parent_entity_id = entity_name_to_id[owner.parent_name]
+            # If not found, try case-insensitive match
+            if parent_entity_id is None:
+                parent_name_lower = owner.parent_name.lower().strip()
+                for name, eid in entity_name_to_id.items():
+                    if name.lower().strip() == parent_name_lower:
+                        parent_entity_id = eid
+                        break
+
+            if parent_entity_id is None:
+                # Parent not found - this is an external owner or name mismatch
+                # For JVs with external partners, still record the relationship
+                # using the holdco as parent (first entity)
+                if owner.is_joint_venture or owner.jv_partner_name:
+                    # Find the holdco (first entity, usually the parent company)
+                    holdco_id = next(iter(entity_name_to_id.values()), None)
+                    if holdco_id:
+                        ownership_link = OwnershipLink(
+                            id=uuid4(),
+                            parent_entity_id=holdco_id,
+                            child_entity_id=entity_id,
+                            ownership_pct=owner.ownership_pct,
+                            ownership_type=owner.ownership_type or "jv_external",
+                            is_joint_venture=True,
+                            jv_partner_name=owner.jv_partner_name or owner.parent_name,  # Capture external partner name
+                            consolidation_method=ext_entity.consolidation_method,
+                        )
+                        db.add(ownership_link)
+                continue
 
             ownership_link = OwnershipLink(
                 id=uuid4(),
