@@ -1,5 +1,7 @@
 # DebtStack.ai
 
+*Formerly Credible AI - the GitHub repo URL reflects the old name*
+
 > The credit API for AI agents
 
 Corporate structure and debt analysis is complex. Even with AI, achieving accuracy, speed, and cost-effectiveness requires significant engineering. DebtStack.ai does this hard work once, giving you instant API access to pre-computed, quality-assured credit data.
