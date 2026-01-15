@@ -84,9 +84,19 @@ def cached_response(cache: CompanyCache, data: Any) -> ORJSONResponse:
 # =============================================================================
 
 
+@router.get("/ping", tags=["System"])
+async def ping():
+    """Simple ping endpoint for load balancer health checks.
+
+    Does not check database - just confirms the app is running.
+    Use /health for full health status including database.
+    """
+    return {"status": "ok"}
+
+
 @router.get("/health", tags=["System"])
 async def health_check(db: AsyncSession = Depends(get_db)):
-    """Health check endpoint."""
+    """Full health check endpoint with database verification."""
     checks = {}
 
     # Database check
