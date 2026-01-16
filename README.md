@@ -38,7 +38,6 @@ Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
 
 - **Primitives API**: 5 core endpoints optimized for AI agents with field selection
 - **30+ REST API endpoints** for comprehensive credit data access
-- **GraphQL API**: Flexible queries at `/graphql`
 - **Iterative QA Extraction**: 5 automated verification checks with targeted fixes until 85%+ quality threshold
 - **Individual Debt Instruments**: Each bond, note, and credit facility extracted separately (not just totals)
 - **Complex Corporate Structures**: Multiple owners, joint ventures, VIEs, partial ownership
@@ -157,11 +156,6 @@ See `docs/PRIMITIVES_API_SPEC.md` for full specification.
 | `GET /v1/compare/companies` | Side-by-side comparison (up to 10) |
 | `GET /v1/analytics/sectors` | Sector-level aggregations |
 
-### GraphQL
-| Endpoint | Description |
-|----------|-------------|
-| `POST /graphql` | Flexible GraphQL queries |
-
 ### System
 | Endpoint | Description |
 |----------|-------------|
@@ -234,8 +228,6 @@ credible/
 │   ├── api/
 │   │   ├── routes.py              # Legacy FastAPI endpoints
 │   │   └── primitives.py          # Primitives API (5 core endpoints)
-│   ├── graphql/
-│   │   └── schema.py              # GraphQL schema with Strawberry
 │   ├── core/
 │   │   ├── config.py              # Configuration
 │   │   ├── database.py            # Database connection

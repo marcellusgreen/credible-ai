@@ -17,7 +17,6 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 **What's Working**:
 - **Primitives API**: 5 core endpoints optimized for AI agents (field selection, powerful filters)
-- **GraphQL API**: Flexible queries via Strawberry at `/graphql`
 - **Legacy REST API**: 26 endpoints for detailed company data
 - Iterative extraction with QA feedback loop (5 checks, 85% threshold)
 - Gemini for extraction (~$0.008), Claude for escalation
@@ -48,7 +47,6 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 |------|---------|
 | `app/api/primitives.py` | **Primitives API** - 5 core endpoints for agents |
 | `app/api/routes.py` | Legacy FastAPI endpoints (26 routes) |
-| `app/graphql/schema.py` | GraphQL schema with Strawberry |
 | `app/core/cache.py` | Redis cache client (Upstash) |
 | `app/services/iterative_extraction.py` | Main extraction with QA loop |
 | `app/services/qa_agent.py` | 5-check QA verification |
@@ -98,10 +96,6 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 **Analytics**: `/v1/compare/companies`, `/v1/analytics/sectors`
 
 **System**: `/v1/ping`, `/v1/health`, `/v1/status`, `/v1/sectors`
-
-### GraphQL
-
-**Endpoint**: `/graphql` (with GraphiQL playground)
 
 ## Key Design Decisions
 

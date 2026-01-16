@@ -14,12 +14,9 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import ORJSONResponse
 import structlog
 
-from strawberry.fastapi import GraphQLRouter
-
 from app.api.routes import router as api_router
 from app.api.primitives import router as primitives_router
 from app.core.config import get_settings
-from app.graphql import schema as graphql_schema
 
 settings = get_settings()
 
@@ -105,10 +102,6 @@ app.include_router(api_router, prefix="/v1")
 # Include Primitives API (new endpoints optimized for agents)
 app.include_router(primitives_router, prefix="/v1")
 
-# Include GraphQL endpoint
-graphql_app = GraphQLRouter(graphql_schema)
-app.include_router(graphql_app, prefix="/graphql")
-
 
 # Root redirect to docs
 @app.get("/", include_in_schema=False)
@@ -119,7 +112,6 @@ async def root():
         "description": "The credit API for AI agents",
         "version": settings.api_version,
         "docs": "/docs",
-        "graphql": "/graphql",
         "primitives": {
             "companies": "/v1/companies",
             "bonds": "/v1/bonds",
