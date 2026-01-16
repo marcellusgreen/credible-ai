@@ -95,6 +95,18 @@ async def ping():
     return {"status": "ok"}
 
 
+@router.get("/debug/config", tags=["System"], include_in_schema=False)
+async def debug_config():
+    """Debug endpoint to check config (remove in production)."""
+    from app.core.config import get_settings
+    settings = get_settings()
+    return {
+        "has_redis_url": settings.redis_url is not None,
+        "redis_url_prefix": settings.redis_url[:20] + "..." if settings.redis_url else None,
+        "environment": settings.environment,
+    }
+
+
 @router.get("/health", tags=["System"])
 async def health_check(db: AsyncSession = Depends(get_db)):
     """Full health check endpoint with database and cache verification."""
