@@ -120,13 +120,18 @@ async def health_check(db: AsyncSession = Depends(get_db)):
         checks["database"] = f"unhealthy: {str(e)}"
 
     # Redis cache check
-    try:
-        if await cache_ping():
-            checks["cache"] = "healthy"
-        else:
-            checks["cache"] = "not configured"
-    except Exception as e:
-        checks["cache"] = f"unhealthy: {str(e)}"
+    from app.core.config import get_settings
+    settings = get_settings()
+    if not settings.redis_url:
+        checks["cache"] = "not configured"
+    else:
+        try:
+            if await cache_ping():
+                checks["cache"] = "healthy"
+            else:
+                checks["cache"] = "connection failed"
+        except Exception as e:
+            checks["cache"] = f"error: {str(e)}"
 
     # Only database is required for healthy status
     healthy = checks["database"] == "healthy"
