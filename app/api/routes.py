@@ -126,10 +126,11 @@ async def health_check(db: AsyncSession = Depends(get_db)):
         checks["cache"] = "not configured"
     else:
         try:
-            if await cache_ping():
+            success, message = await cache_ping()
+            if success:
                 checks["cache"] = "healthy"
             else:
-                checks["cache"] = "connection failed"
+                checks["cache"] = f"failed: {message}"
         except Exception as e:
             checks["cache"] = f"error: {str(e)}"
 

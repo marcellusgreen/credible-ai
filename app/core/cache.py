@@ -71,13 +71,13 @@ async def cache_delete(key: str) -> bool:
     return False
 
 
-async def cache_ping() -> bool:
-    """Check if Redis is reachable."""
+async def cache_ping() -> tuple[bool, str]:
+    """Check if Redis is reachable. Returns (success, message)."""
     client = await get_redis()
     if client:
         try:
             await client.ping()
-            return True
-        except Exception:
-            return False
-    return False
+            return True, "connected"
+        except Exception as e:
+            return False, str(e)
+    return False, "no client"
