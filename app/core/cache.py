@@ -17,10 +17,12 @@ async def get_redis() -> Optional[redis.Redis]:
         return None
 
     if _redis_client is None:
+        # Upstash requires TLS - the rediss:// scheme handles this
         _redis_client = redis.from_url(
             settings.redis_url,
             encoding="utf-8",
             decode_responses=True,
+            ssl_cert_reqs=None,  # Don't verify SSL cert (Upstash uses self-signed)
         )
 
     return _redis_client
