@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
+from app.core.cache import cache_ping
 from app.models import Company, CompanyCache, CompanyFinancials, CompanyMetrics, Entity, DebtInstrument, Guarantee, ObligorGroupFinancials, BondPricing, OwnershipLink
 from app.services.yield_calculation import get_staleness_indicator
 
@@ -96,7 +97,7 @@ async def ping():
 
 @router.get("/health", tags=["System"])
 async def health_check(db: AsyncSession = Depends(get_db)):
-    """Full health check endpoint with database verification."""
+    """Full health check endpoint with database and cache verification."""
     checks = {}
 
     # Database check
@@ -106,7 +107,17 @@ async def health_check(db: AsyncSession = Depends(get_db)):
     except Exception as e:
         checks["database"] = f"unhealthy: {str(e)}"
 
-    healthy = all(v == "healthy" for v in checks.values())
+    # Redis cache check
+    try:
+        if await cache_ping():
+            checks["cache"] = "healthy"
+        else:
+            checks["cache"] = "not configured"
+    except Exception as e:
+        checks["cache"] = f"unhealthy: {str(e)}"
+
+    # Only database is required for healthy status
+    healthy = checks["database"] == "healthy"
 
     return {
         "status": "healthy" if healthy else "degraded",
