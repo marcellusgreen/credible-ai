@@ -1,29 +1,28 @@
 """
 Primitives API for DebtStack.ai
 
-6 core primitives optimized for AI agents:
+5 core primitives optimized for AI agents:
 1. GET /v1/companies - Horizontal company search
 2. GET /v1/bonds - Horizontal bond search
-3. GET /v1/companies/{ticker}/documents - Vertical document search
+3. GET /v1/bonds/resolve - Bond identifier resolution
 4. POST /v1/entities/traverse - Graph traversal
 5. GET /v1/pricing - Bond pricing data
-6. GET /v1/bonds/resolve - Bond identifier resolution
 """
 
+import re
 from datetime import date, datetime
-from typing import Any, Optional, List, Set
+from typing import Optional, List, Set
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
-from fastapi.responses import ORJSONResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func, or_, and_, case, desc, asc
+from sqlalchemy import select, func, or_, and_, desc, asc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models import (
     Company, CompanyMetrics, Entity, DebtInstrument,
-    Guarantee, BondPricing, OwnershipLink
+    Guarantee, BondPricing,
 )
 
 router = APIRouter()
@@ -95,6 +94,25 @@ def filter_dict(data: dict, fields: Optional[Set[str]]) -> dict:
     return {k: v for k, v in data.items() if k in fields}
 
 
+def parse_comma_list(value: Optional[str], uppercase: bool = True) -> List[str]:
+    """Parse comma-separated string into list, optionally uppercasing."""
+    if not value:
+        return []
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    return [item.upper() for item in items] if uppercase else items
+
+
+def apply_sort(query, sort: str, column_map: dict, default_column):
+    """Apply sort to query based on sort parameter (prefix '-' for descending)."""
+    sort_desc = sort.startswith("-")
+    sort_field = sort[1:] if sort_desc else sort
+    sort_column = column_map.get(sort_field, default_column)
+
+    if sort_desc:
+        return query.order_by(desc(sort_column).nulls_last())
+    return query.order_by(asc(sort_column).nulls_last())
+
+
 # =============================================================================
 # PRIMITIVE 1: search.companies
 # =============================================================================
@@ -154,10 +172,9 @@ async def search_companies(
     filters = []
 
     # Ticker filter (comma-separated)
-    if ticker:
-        ticker_list = [t.strip().upper() for t in ticker.split(",") if t.strip()]
-        if ticker_list:
-            filters.append(CompanyMetrics.ticker.in_(ticker_list))
+    ticker_list = parse_comma_list(ticker)
+    if ticker_list:
+        filters.append(CompanyMetrics.ticker.in_(ticker_list))
 
     # Classification filters
     if sector:
@@ -204,10 +221,7 @@ async def search_companies(
     # Get total count
     total = await db.scalar(count_query)
 
-    # Parse sort parameter
-    sort_desc = sort.startswith("-")
-    sort_field = sort[1:] if sort_desc else sort
-
+    # Apply sorting
     sort_column_map = {
         "ticker": CompanyMetrics.ticker,
         "name": Company.name,
@@ -220,12 +234,7 @@ async def search_companies(
         "nearest_maturity": CompanyMetrics.nearest_maturity,
         "subordination_score": CompanyMetrics.subordination_score,
     }
-
-    sort_column = sort_column_map.get(sort_field, CompanyMetrics.ticker)
-    if sort_desc:
-        query = query.order_by(desc(sort_column).nulls_last())
-    else:
-        query = query.order_by(asc(sort_column).nulls_last())
+    query = apply_sort(query, sort, sort_column_map, CompanyMetrics.ticker)
 
     # Apply pagination
     query = query.offset(offset).limit(limit)
@@ -367,16 +376,14 @@ async def search_bonds(
         filters.append(DebtInstrument.is_active == is_active)
 
     # Ticker filter
-    if ticker:
-        ticker_list = [t.strip().upper() for t in ticker.split(",") if t.strip()]
-        if ticker_list:
-            filters.append(Company.ticker.in_(ticker_list))
+    ticker_list = parse_comma_list(ticker)
+    if ticker_list:
+        filters.append(Company.ticker.in_(ticker_list))
 
     # CUSIP filter
-    if cusip:
-        cusip_list = [c.strip().upper() for c in cusip.split(",") if c.strip()]
-        if cusip_list:
-            filters.append(DebtInstrument.cusip.in_(cusip_list))
+    cusip_list = parse_comma_list(cusip)
+    if cusip_list:
+        filters.append(DebtInstrument.cusip.in_(cusip_list))
 
     # Classification filters
     if sector:
@@ -459,10 +466,7 @@ async def search_bonds(
 
     total = await db.scalar(count_query)
 
-    # Parse sort parameter
-    sort_desc = sort.startswith("-")
-    sort_field = sort[1:] if sort_desc else sort
-
+    # Apply sorting
     sort_column_map = {
         "maturity_date": DebtInstrument.maturity_date,
         "coupon_rate": DebtInstrument.interest_rate,
@@ -476,11 +480,7 @@ async def search_bonds(
         sort_column_map["pricing.spread"] = BondPricing.spread_to_treasury_bps
         sort_column_map["pricing.last_price"] = BondPricing.last_price
 
-    sort_column = sort_column_map.get(sort_field, DebtInstrument.maturity_date)
-    if sort_desc:
-        query = query.order_by(desc(sort_column).nulls_last())
-    else:
-        query = query.order_by(asc(sort_column).nulls_last())
+    query = apply_sort(query, sort, sort_column_map, DebtInstrument.maturity_date)
 
     # Apply pagination
     query = query.offset(offset).limit(limit)
@@ -630,7 +630,6 @@ async def resolve_bond(
 
         if maturity_year is not None:
             # Filter to bonds maturing in that year
-            from datetime import date
             year_start = date(maturity_year, 1, 1)
             year_end = date(maturity_year, 12, 31)
             filters.append(DebtInstrument.maturity_date.between(year_start, year_end))
@@ -649,7 +648,6 @@ async def resolve_bond(
                 ))
 
             # Look for percentage pattern (e.g., "8%" or "8.5%")
-            import re
             pct_match = re.search(r'(\d+\.?\d*)\s*%', q)
             if pct_match:
                 coupon_val = float(pct_match.group(1))
@@ -1177,16 +1175,14 @@ async def search_pricing(
     filters = []
 
     # Ticker filter
-    if ticker:
-        ticker_list = [t.strip().upper() for t in ticker.split(",") if t.strip()]
-        if ticker_list:
-            filters.append(Company.ticker.in_(ticker_list))
+    ticker_list = parse_comma_list(ticker)
+    if ticker_list:
+        filters.append(Company.ticker.in_(ticker_list))
 
     # CUSIP filter
-    if cusip:
-        cusip_list = [c.strip().upper() for c in cusip.split(",") if c.strip()]
-        if cusip_list:
-            filters.append(BondPricing.cusip.in_(cusip_list))
+    cusip_list = parse_comma_list(cusip)
+    if cusip_list:
+        filters.append(BondPricing.cusip.in_(cusip_list))
 
     # YTM filters
     if min_ytm is not None:
@@ -1221,11 +1217,8 @@ async def search_pricing(
 
     total = await db.scalar(count_query)
 
-    # Sort
-    sort_desc = sort.startswith("-")
-    sort_field = sort[1:] if sort_desc else sort
-
-    sort_map = {
+    # Apply sorting
+    sort_column_map = {
         "ytm": BondPricing.ytm_bps,
         "spread": BondPricing.spread_to_treasury_bps,
         "last_price": BondPricing.last_price,
@@ -1233,12 +1226,7 @@ async def search_pricing(
         "maturity_date": DebtInstrument.maturity_date,
         "company_ticker": Company.ticker,
     }
-
-    sort_col = sort_map.get(sort_field, BondPricing.ytm_bps)
-    if sort_desc:
-        query = query.order_by(desc(sort_col).nulls_last())
-    else:
-        query = query.order_by(asc(sort_col).nulls_last())
+    query = apply_sort(query, sort, sort_column_map, BondPricing.ytm_bps)
 
     query = query.offset(offset).limit(limit)
 
