@@ -1,5 +1,5 @@
 """
-Credible.ai - The credit API for AI agents
+DebtStack.ai - The credit API for AI agents
 
 Main FastAPI application entry point.
 """
@@ -14,8 +14,11 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import ORJSONResponse
 import structlog
 
+from strawberry.fastapi import GraphQLRouter
+
 from app.api.routes import router as api_router
 from app.core.config import get_settings
+from app.graphql import schema as graphql_schema
 
 settings = get_settings()
 
@@ -39,10 +42,10 @@ logger = structlog.get_logger()
 async def lifespan(app: FastAPI) -> AsyncGenerator:
     """Application lifespan manager."""
     # Startup
-    logger.info("Starting Credible.ai API", version=settings.api_version)
+    logger.info("Starting DebtStack.ai API", version=settings.api_version)
     yield
     # Shutdown
-    logger.info("Shutting down Credible.ai API")
+    logger.info("Shutting down DebtStack.ai API")
 
 
 # Create FastAPI app
@@ -98,16 +101,21 @@ async def logging_middleware(request: Request, call_next):
 # Include API routes
 app.include_router(api_router, prefix="/v1")
 
+# Include GraphQL endpoint
+graphql_app = GraphQLRouter(graphql_schema)
+app.include_router(graphql_app, prefix="/graphql")
+
 
 # Root redirect to docs
 @app.get("/", include_in_schema=False)
 async def root():
     """Redirect to API documentation."""
     return {
-        "name": "Credible.ai",
+        "name": "DebtStack.ai",
         "description": "The credit API for AI agents",
         "version": settings.api_version,
         "docs": "/docs",
+        "graphql": "/graphql",
         "endpoints": {
             "companies": "/v1/companies",
             "health": "/v1/health",
