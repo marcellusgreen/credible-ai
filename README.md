@@ -36,7 +36,9 @@ Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
 
 ## Features
 
-- **26 REST API endpoints** for comprehensive credit data access
+- **Primitives API**: 5 core endpoints optimized for AI agents with field selection
+- **30+ REST API endpoints** for comprehensive credit data access
+- **GraphQL API**: Flexible queries at `/graphql`
 - **Iterative QA Extraction**: 5 automated verification checks with targeted fixes until 85%+ quality threshold
 - **Individual Debt Instruments**: Each bond, note, and credit facility extracted separately (not just totals)
 - **Complex Corporate Structures**: Multiple owners, joint ventures, VIEs, partial ownership
@@ -81,25 +83,60 @@ uvicorn app.main:app --reload
 ### 5. Query
 
 ```bash
-# Get corporate structure with debt at each entity
+# Primitives API - optimized for AI agents
+# Search companies with field selection
+curl "http://localhost:8000/v1/companies?ticker=AAPL,MSFT,GOOGL&fields=ticker,name,net_leverage_ratio&sort=-net_leverage_ratio"
+
+# Search bonds with pricing
+curl "http://localhost:8000/v1/bonds?seniority=senior_unsecured&min_ytm=8.0&has_pricing=true"
+
+# Resolve bond identifier
+curl "http://localhost:8000/v1/bonds/resolve?q=RIG%208%25%202027"
+
+# Traverse entity relationships (find guarantors)
+curl -X POST "http://localhost:8000/v1/entities/traverse" \
+  -H "Content-Type: application/json" \
+  -d '{"start":{"type":"bond","id":"893830AK8"},"relationships":["guarantees"]}'
+
+# Legacy endpoints also available
 curl http://localhost:8000/v1/companies/AAPL/structure
-
-# Get all debt instruments
-curl http://localhost:8000/v1/companies/AAPL/debt
-
-# Get quarterly financials
 curl http://localhost:8000/v1/companies/CHTR/financials
-
-# Search high-yield debt
-curl "http://localhost:8000/v1/search/debt?min_rate=700&seniority=senior_secured"
 ```
 
 ## API Endpoints
 
-### Company Data
+### Primitives API (Optimized for AI Agents)
+
+These 5 endpoints are designed for agents writing code - simple REST, field selection, powerful filtering.
+
 | Endpoint | Description |
 |----------|-------------|
-| `GET /v1/companies` | List all companies with metrics |
+| `GET /v1/companies` | Search companies with field selection and 15+ filters |
+| `GET /v1/bonds` | Search bonds across all companies with pricing |
+| `GET /v1/bonds/resolve` | Resolve bond identifiers (CUSIP lookup, fuzzy search) |
+| `POST /v1/entities/traverse` | Graph traversal for guarantor chains, org structure |
+| `GET /v1/pricing` | Bond pricing data with YTM/spread filters |
+
+**Example - Field Selection:**
+```bash
+curl "/v1/companies?ticker=AAPL,MSFT&fields=ticker,name,net_leverage_ratio&sort=-net_leverage_ratio"
+```
+
+**Example - Bond Search:**
+```bash
+curl "/v1/bonds?seniority=senior_unsecured&min_ytm=8.0&has_pricing=true"
+```
+
+**Example - Entity Traversal:**
+```bash
+curl -X POST "/v1/entities/traverse" -d '{"start":{"type":"bond","id":"893830AK8"},"relationships":["guarantees"]}'
+```
+
+See `docs/PRIMITIVES_API_SPEC.md` for full specification.
+
+### Company Data (Legacy)
+| Endpoint | Description |
+|----------|-------------|
 | `GET /v1/companies/{ticker}` | Company overview |
 | `GET /v1/companies/{ticker}/structure` | Entity hierarchy with debt |
 | `GET /v1/companies/{ticker}/hierarchy` | Nested tree view |
@@ -111,7 +148,7 @@ curl "http://localhost:8000/v1/search/debt?min_rate=700&seniority=senior_secured
 | `GET /v1/companies/{ticker}/guarantees` | Guarantee relationships |
 | `GET /v1/companies/{ticker}/maturity-waterfall` | Debt maturity by year |
 
-### Search & Analytics
+### Search & Analytics (Legacy)
 | Endpoint | Description |
 |----------|-------------|
 | `GET /v1/search/companies` | Search with filters (sector, debt, risk flags) |
@@ -119,6 +156,11 @@ curl "http://localhost:8000/v1/search/debt?min_rate=700&seniority=senior_secured
 | `GET /v1/search/entities` | Search entities across all companies |
 | `GET /v1/compare/companies` | Side-by-side comparison (up to 10) |
 | `GET /v1/analytics/sectors` | Sector-level aggregations |
+
+### GraphQL
+| Endpoint | Description |
+|----------|-------------|
+| `POST /graphql` | Flexible GraphQL queries |
 
 ### System
 | Endpoint | Description |
@@ -189,9 +231,15 @@ The extraction:
 ```
 credible/
 ├── app/
-│   ├── api/routes.py              # FastAPI endpoints (26 routes)
-│   ├── core/config.py             # Configuration
-│   ├── core/database.py           # Database connection
+│   ├── api/
+│   │   ├── routes.py              # Legacy FastAPI endpoints
+│   │   └── primitives.py          # Primitives API (5 core endpoints)
+│   ├── graphql/
+│   │   └── schema.py              # GraphQL schema with Strawberry
+│   ├── core/
+│   │   ├── config.py              # Configuration
+│   │   ├── database.py            # Database connection
+│   │   └── cache.py               # Redis cache client
 │   ├── models/schema.py           # SQLAlchemy models
 │   └── services/
 │       ├── iterative_extraction.py  # Main extraction with QA loop
@@ -204,12 +252,14 @@ credible/
 ├── alembic/                       # Database migrations
 ├── docs/                          # Documentation
 │   ├── DEPLOYMENT.md              # Deployment guide
-│   └── ACCOUNT_SETUP.md           # Vendor account setup
+│   ├── ACCOUNT_SETUP.md           # Vendor account setup
+│   └── PRIMITIVES_API_SPEC.md     # Primitives API specification
 └── results/                       # Extraction outputs
 ```
 
 ## Documentation
 
+- `docs/PRIMITIVES_API_SPEC.md` - **Primitives API specification** with examples
 - `docs/DEPLOYMENT.md` - Full deployment guide for Railway
 - `docs/ACCOUNT_SETUP.md` - Step-by-step vendor account setup
 - `CLAUDE.md` - AI assistant context for development

@@ -12,14 +12,17 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 **Database**: 178 companies | 3,085 entities | 1,805 debt instruments | 30 priced bonds
 
-**Deployment**: Railway (in progress) with Neon PostgreSQL
+**Deployment**: Railway with Neon PostgreSQL + Upstash Redis
+- Live at: `https://credible-ai-production.up.railway.app`
 
 **What's Working**:
+- **Primitives API**: 5 core endpoints optimized for AI agents (field selection, powerful filters)
+- **GraphQL API**: Flexible queries via Strawberry at `/graphql`
+- **Legacy REST API**: 26 endpoints for detailed company data
 - Iterative extraction with QA feedback loop (5 checks, 85% threshold)
 - Gemini for extraction (~$0.008), Claude for escalation
 - SEC-API.io integration (paid tier)
-- PostgreSQL on Neon Cloud
-- FastAPI REST API (26 endpoints)
+- PostgreSQL on Neon Cloud, Redis on Upstash
 - S&P 100 / NASDAQ 100 company coverage
 - Financial statement extraction (income, balance sheet, cash flow)
 - Credit ratio calculations
@@ -43,7 +46,10 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 
 | File | Purpose |
 |------|---------|
-| `app/api/routes.py` | FastAPI endpoints (26 routes) |
+| `app/api/primitives.py` | **Primitives API** - 5 core endpoints for agents |
+| `app/api/routes.py` | Legacy FastAPI endpoints (26 routes) |
+| `app/graphql/schema.py` | GraphQL schema with Strawberry |
+| `app/core/cache.py` | Redis cache client (Upstash) |
 | `app/services/iterative_extraction.py` | Main extraction with QA loop |
 | `app/services/qa_agent.py` | 5-check QA verification |
 | `app/services/tiered_extraction.py` | LLM clients and prompts |
@@ -67,7 +73,23 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 - `company_cache`: Pre-computed JSON responses
 - `company_metrics`: Computed credit metrics
 
-## API Endpoints (26 total)
+## API Endpoints
+
+### Primitives API (5 endpoints - optimized for agents)
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/v1/companies` | GET | Search companies with field selection |
+| `/v1/bonds` | GET | Search bonds with pricing filters |
+| `/v1/bonds/resolve` | GET | Resolve CUSIP/bond identifiers |
+| `/v1/entities/traverse` | POST | Graph traversal (guarantors, structure) |
+| `/v1/pricing` | GET | Bond pricing data |
+
+**Field selection**: `?fields=ticker,name,net_leverage_ratio`
+**Sorting**: `?sort=-net_leverage_ratio` (prefix `-` for descending)
+**Filtering**: `?min_ytm=8.0&seniority=senior_unsecured`
+
+### Legacy REST Endpoints (26 total)
 
 **Company**: `/v1/companies/{ticker}` - overview, structure, hierarchy, debt, metrics, financials, ratios, pricing, guarantees, entities, maturity-waterfall
 
@@ -76,6 +98,10 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 **Analytics**: `/v1/compare/companies`, `/v1/analytics/sectors`
 
 **System**: `/v1/ping`, `/v1/health`, `/v1/status`, `/v1/sectors`
+
+### GraphQL
+
+**Endpoint**: `/graphql` (with GraphiQL playground)
 
 ## Key Design Decisions
 
@@ -106,6 +132,7 @@ python scripts/update_pricing.py --ticker AAPL
 | Variable | Required | Purpose |
 |----------|----------|---------|
 | `DATABASE_URL` | Yes | PostgreSQL (use `sslmode=require` for Neon) |
+| `REDIS_URL` | Optional | Redis cache (Upstash, use `rediss://` for TLS) |
 | `ANTHROPIC_API_KEY` | Yes | Claude for escalation |
 | `GEMINI_API_KEY` | Recommended | Gemini for extraction |
 | `SEC_API_KEY` | Recommended | SEC-API.io for filing retrieval |
@@ -152,3 +179,38 @@ Current migrations: 001 (initial) through 007 (cusip nullable)
 | Claude escalation | ~$0.15-0.50 |
 
 **Target: <$0.03 per company** with 85%+ QA score.
+
+## Agent Usage Examples
+
+```python
+import requests
+
+BASE = "https://credible-ai-production.up.railway.app/v1"
+
+# Q: Which MAG7 company has highest leverage?
+r = requests.get(f"{BASE}/companies", params={
+    "ticker": "AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA",
+    "fields": "ticker,name,net_leverage_ratio",
+    "sort": "-net_leverage_ratio",
+    "limit": 1
+})
+
+# Q: Find high-yield bonds
+r = requests.get(f"{BASE}/bonds", params={
+    "seniority": "senior_unsecured",
+    "min_ytm": 8.0,
+    "has_pricing": True
+})
+
+# Q: Who guarantees this bond?
+r = requests.post(f"{BASE}/entities/traverse", json={
+    "start": {"type": "bond", "id": "893830AK8"},
+    "relationships": ["guarantees"],
+    "direction": "inbound"
+})
+
+# Q: Resolve bond identifier
+r = requests.get(f"{BASE}/bonds/resolve", params={"q": "RIG 8% 2027"})
+```
+
+See `docs/PRIMITIVES_API_SPEC.md` for full specification.
