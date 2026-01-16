@@ -17,6 +17,7 @@ import structlog
 from strawberry.fastapi import GraphQLRouter
 
 from app.api.routes import router as api_router
+from app.api.primitives import router as primitives_router
 from app.core.config import get_settings
 from app.graphql import schema as graphql_schema
 
@@ -98,8 +99,11 @@ async def logging_middleware(request: Request, call_next):
     return response
 
 
-# Include API routes
+# Include API routes (legacy endpoints)
 app.include_router(api_router, prefix="/v1")
+
+# Include Primitives API (new endpoints optimized for agents)
+app.include_router(primitives_router, prefix="/v1")
 
 # Include GraphQL endpoint
 graphql_app = GraphQLRouter(graphql_schema)
@@ -116,9 +120,16 @@ async def root():
         "version": settings.api_version,
         "docs": "/docs",
         "graphql": "/graphql",
-        "endpoints": {
+        "primitives": {
             "companies": "/v1/companies",
+            "bonds": "/v1/bonds",
+            "pricing": "/v1/pricing",
+            "resolve": "/v1/bonds/resolve",
+            "traverse": "/v1/entities/traverse",
+        },
+        "system": {
             "health": "/v1/health",
+            "status": "/v1/status",
         },
     }
 

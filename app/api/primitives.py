@@ -1,0 +1,1280 @@
+"""
+Primitives API for DebtStack.ai
+
+6 core primitives optimized for AI agents:
+1. GET /v1/companies - Horizontal company search
+2. GET /v1/bonds - Horizontal bond search
+3. GET /v1/companies/{ticker}/documents - Vertical document search
+4. POST /v1/entities/traverse - Graph traversal
+5. GET /v1/pricing - Bond pricing data
+6. GET /v1/bonds/resolve - Bond identifier resolution
+"""
+
+from datetime import date, datetime
+from typing import Any, Optional, List, Set
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Body
+from fastapi.responses import ORJSONResponse
+from pydantic import BaseModel, Field
+from sqlalchemy import select, func, or_, and_, case, desc, asc
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_db
+from app.models import (
+    Company, CompanyMetrics, Entity, DebtInstrument,
+    Guarantee, BondPricing, OwnershipLink
+)
+
+router = APIRouter()
+
+
+# =============================================================================
+# FIELD SELECTION HELPER
+# =============================================================================
+
+# Available fields for each resource type
+COMPANY_FIELDS = {
+    "ticker", "name", "sector", "industry", "cik",
+    "total_debt", "secured_debt", "unsecured_debt", "net_debt",
+    "leverage_ratio", "net_leverage_ratio", "interest_coverage", "secured_leverage",
+    "entity_count", "guarantor_count",
+    "subordination_risk", "subordination_score",
+    "has_structural_sub", "has_floating_rate", "has_near_term_maturity",
+    "has_holdco_debt", "has_opco_debt", "has_unrestricted_subs",
+    "nearest_maturity", "weighted_avg_maturity",
+    "debt_due_1yr", "debt_due_2yr", "debt_due_3yr",
+    "sp_rating", "moodys_rating", "rating_bucket",
+}
+
+BOND_FIELDS = {
+    "id", "name", "cusip", "isin",
+    "company_ticker", "company_name", "company_sector",
+    "issuer_name", "issuer_type", "issuer_id",
+    "instrument_type", "seniority", "security_type",
+    "commitment", "principal", "outstanding", "currency",
+    "rate_type", "coupon_rate", "spread_bps", "benchmark", "floor_bps",
+    "issue_date", "maturity_date",
+    "is_active", "is_drawn",
+    "pricing", "guarantor_count",
+}
+
+PRICING_FIELDS = {
+    "cusip", "isin", "bond_name",
+    "company_ticker", "company_name",
+    "last_price", "last_trade_date", "last_trade_volume",
+    "ytm", "ytm_bps", "spread", "spread_bps", "treasury_benchmark",
+    "price_source", "staleness_days",
+    "coupon_rate", "maturity_date", "seniority",
+}
+
+
+def parse_fields(fields_param: Optional[str], available: Set[str]) -> Optional[Set[str]]:
+    """Parse comma-separated fields parameter and validate against available fields."""
+    if not fields_param:
+        return None  # Return all fields
+
+    requested = {f.strip() for f in fields_param.split(",") if f.strip()}
+    invalid = requested - available
+    if invalid:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_FIELDS",
+                "message": f"Invalid fields: {', '.join(invalid)}",
+                "available_fields": sorted(available)
+            }
+        )
+    return requested
+
+
+def filter_dict(data: dict, fields: Optional[Set[str]]) -> dict:
+    """Filter dictionary to only include requested fields."""
+    if fields is None:
+        return data
+    return {k: v for k, v in data.items() if k in fields}
+
+
+# =============================================================================
+# PRIMITIVE 1: search.companies
+# =============================================================================
+
+
+@router.get("/companies", tags=["Primitives"])
+async def search_companies(
+    # Ticker filter (supports comma-separated list)
+    ticker: Optional[str] = Query(None, description="Comma-separated tickers (e.g., AAPL,MSFT,GOOGL)"),
+    # Classification filters
+    sector: Optional[str] = Query(None, description="Filter by sector"),
+    industry: Optional[str] = Query(None, description="Filter by industry"),
+    rating_bucket: Optional[str] = Query(None, description="Rating bucket: IG, HY-BB, HY-B, HY-CCC, NR"),
+    # Leverage filters
+    min_leverage: Optional[float] = Query(None, description="Minimum leverage ratio"),
+    max_leverage: Optional[float] = Query(None, description="Maximum leverage ratio"),
+    min_net_leverage: Optional[float] = Query(None, description="Minimum net leverage ratio"),
+    max_net_leverage: Optional[float] = Query(None, description="Maximum net leverage ratio"),
+    # Debt amount filters
+    min_debt: Optional[int] = Query(None, description="Minimum total debt (cents)"),
+    max_debt: Optional[int] = Query(None, description="Maximum total debt (cents)"),
+    # Boolean filters
+    has_structural_sub: Optional[bool] = Query(None, description="Has structural subordination"),
+    has_floating_rate: Optional[bool] = Query(None, description="Has floating rate debt"),
+    has_near_term_maturity: Optional[bool] = Query(None, description="Debt maturing within 24 months"),
+    has_holdco_debt: Optional[bool] = Query(None, description="Has holdco-level debt"),
+    has_opco_debt: Optional[bool] = Query(None, description="Has opco-level debt"),
+    # Field selection
+    fields: Optional[str] = Query(None, description="Comma-separated fields to return"),
+    # Sorting
+    sort: str = Query("ticker", description="Sort field, prefix with - for descending (e.g., -net_leverage_ratio)"),
+    # Pagination
+    limit: int = Query(50, ge=1, le=100, description="Results per page"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Search companies with powerful filtering and field selection.
+
+    Supports filtering by sector, leverage, ratings, risk flags, and more.
+    Use `fields` parameter to request only the data you need.
+
+    **Example:** Find MAG7 company with highest leverage:
+    ```
+    GET /v1/companies?ticker=AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA&fields=ticker,name,net_leverage_ratio&sort=-net_leverage_ratio&limit=1
+    ```
+    """
+    # Parse and validate fields
+    selected_fields = parse_fields(fields, COMPANY_FIELDS)
+
+    # Build query
+    query = select(CompanyMetrics, Company).join(
+        Company, CompanyMetrics.company_id == Company.id
+    )
+    count_query = select(func.count()).select_from(CompanyMetrics)
+
+    filters = []
+
+    # Ticker filter (comma-separated)
+    if ticker:
+        ticker_list = [t.strip().upper() for t in ticker.split(",") if t.strip()]
+        if ticker_list:
+            filters.append(CompanyMetrics.ticker.in_(ticker_list))
+
+    # Classification filters
+    if sector:
+        filters.append(CompanyMetrics.sector.ilike(f"%{sector}%"))
+    if industry:
+        filters.append(CompanyMetrics.industry.ilike(f"%{industry}%"))
+    if rating_bucket:
+        filters.append(CompanyMetrics.rating_bucket == rating_bucket)
+
+    # Leverage filters
+    if min_leverage is not None:
+        filters.append(CompanyMetrics.leverage_ratio >= min_leverage)
+    if max_leverage is not None:
+        filters.append(CompanyMetrics.leverage_ratio <= max_leverage)
+    if min_net_leverage is not None:
+        filters.append(CompanyMetrics.net_leverage_ratio >= min_net_leverage)
+    if max_net_leverage is not None:
+        filters.append(CompanyMetrics.net_leverage_ratio <= max_net_leverage)
+
+    # Debt amount filters
+    if min_debt is not None:
+        filters.append(CompanyMetrics.total_debt >= min_debt)
+    if max_debt is not None:
+        filters.append(CompanyMetrics.total_debt <= max_debt)
+
+    # Boolean filters
+    if has_structural_sub is not None:
+        filters.append(CompanyMetrics.has_structural_sub == has_structural_sub)
+    if has_floating_rate is not None:
+        filters.append(CompanyMetrics.has_floating_rate == has_floating_rate)
+    if has_near_term_maturity is not None:
+        filters.append(CompanyMetrics.has_near_term_maturity == has_near_term_maturity)
+    if has_holdco_debt is not None:
+        filters.append(CompanyMetrics.has_holdco_debt == has_holdco_debt)
+    if has_opco_debt is not None:
+        filters.append(CompanyMetrics.has_opco_debt == has_opco_debt)
+
+    if filters:
+        query = query.where(and_(*filters))
+        count_query = count_query.join(
+            Company, CompanyMetrics.company_id == Company.id
+        ).where(and_(*filters))
+
+    # Get total count
+    total = await db.scalar(count_query)
+
+    # Parse sort parameter
+    sort_desc = sort.startswith("-")
+    sort_field = sort[1:] if sort_desc else sort
+
+    sort_column_map = {
+        "ticker": CompanyMetrics.ticker,
+        "name": Company.name,
+        "sector": CompanyMetrics.sector,
+        "total_debt": CompanyMetrics.total_debt,
+        "leverage_ratio": CompanyMetrics.leverage_ratio,
+        "net_leverage_ratio": CompanyMetrics.net_leverage_ratio,
+        "interest_coverage": CompanyMetrics.interest_coverage,
+        "entity_count": CompanyMetrics.entity_count,
+        "nearest_maturity": CompanyMetrics.nearest_maturity,
+        "subordination_score": CompanyMetrics.subordination_score,
+    }
+
+    sort_column = sort_column_map.get(sort_field, CompanyMetrics.ticker)
+    if sort_desc:
+        query = query.order_by(desc(sort_column).nulls_last())
+    else:
+        query = query.order_by(asc(sort_column).nulls_last())
+
+    # Apply pagination
+    query = query.offset(offset).limit(limit)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    # Build response with field selection
+    data = []
+    for m, c in rows:
+        company_data = {
+            "ticker": m.ticker,
+            "name": c.name,
+            "sector": m.sector,
+            "industry": m.industry,
+            "cik": c.cik,
+            "total_debt": m.total_debt,
+            "secured_debt": m.secured_debt,
+            "unsecured_debt": m.unsecured_debt,
+            "net_debt": m.net_debt,
+            "leverage_ratio": float(m.leverage_ratio) if m.leverage_ratio else None,
+            "net_leverage_ratio": float(m.net_leverage_ratio) if m.net_leverage_ratio else None,
+            "interest_coverage": float(m.interest_coverage) if m.interest_coverage else None,
+            "secured_leverage": float(m.secured_leverage) if m.secured_leverage else None,
+            "entity_count": m.entity_count,
+            "guarantor_count": m.guarantor_count,
+            "subordination_risk": m.subordination_risk,
+            "subordination_score": float(m.subordination_score) if m.subordination_score else None,
+            "has_structural_sub": m.has_structural_sub,
+            "has_floating_rate": m.has_floating_rate,
+            "has_near_term_maturity": m.has_near_term_maturity,
+            "has_holdco_debt": m.has_holdco_debt,
+            "has_opco_debt": m.has_opco_debt,
+            "has_unrestricted_subs": m.has_unrestricted_subs,
+            "nearest_maturity": m.nearest_maturity.isoformat() if m.nearest_maturity else None,
+            "weighted_avg_maturity": float(m.weighted_avg_maturity) if m.weighted_avg_maturity else None,
+            "debt_due_1yr": m.debt_due_1yr,
+            "debt_due_2yr": m.debt_due_2yr,
+            "debt_due_3yr": m.debt_due_3yr,
+            "sp_rating": m.sp_rating,
+            "moodys_rating": m.moodys_rating,
+            "rating_bucket": m.rating_bucket,
+        }
+        data.append(filter_dict(company_data, selected_fields))
+
+    return {
+        "data": data,
+        "meta": {
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "fields": list(selected_fields) if selected_fields else "all",
+        }
+    }
+
+
+# =============================================================================
+# PRIMITIVE 2: search.bonds
+# =============================================================================
+
+
+@router.get("/bonds", tags=["Primitives"])
+async def search_bonds(
+    # Company/identifier filters
+    ticker: Optional[str] = Query(None, description="Company ticker(s), comma-separated"),
+    cusip: Optional[str] = Query(None, description="CUSIP(s), comma-separated"),
+    sector: Optional[str] = Query(None, description="Company sector"),
+    # Classification filters
+    seniority: Optional[str] = Query(None, description="senior_secured, senior_unsecured, subordinated"),
+    security_type: Optional[str] = Query(None, description="first_lien, second_lien, unsecured"),
+    instrument_type: Optional[str] = Query(None, description="term_loan_b, senior_notes, revolver, etc."),
+    issuer_type: Optional[str] = Query(None, description="Issuer entity type: holdco, opco, subsidiary"),
+    rate_type: Optional[str] = Query(None, description="fixed, floating"),
+    currency: Optional[str] = Query(None, description="Currency code (USD, EUR)"),
+    # Rate filters
+    min_coupon: Optional[float] = Query(None, description="Minimum coupon rate (%)"),
+    max_coupon: Optional[float] = Query(None, description="Maximum coupon rate (%)"),
+    # Yield/pricing filters
+    min_ytm: Optional[float] = Query(None, description="Minimum yield to maturity (%)"),
+    max_ytm: Optional[float] = Query(None, description="Maximum yield to maturity (%)"),
+    min_spread: Optional[int] = Query(None, description="Minimum spread to treasury (bps)"),
+    max_spread: Optional[int] = Query(None, description="Maximum spread to treasury (bps)"),
+    # Maturity filters
+    maturity_before: Optional[date] = Query(None, description="Maturity before date (YYYY-MM-DD)"),
+    maturity_after: Optional[date] = Query(None, description="Maturity after date (YYYY-MM-DD)"),
+    # Amount filters
+    min_outstanding: Optional[int] = Query(None, description="Minimum outstanding (cents)"),
+    max_outstanding: Optional[int] = Query(None, description="Maximum outstanding (cents)"),
+    # Boolean filters
+    has_pricing: Optional[bool] = Query(None, description="Has pricing data"),
+    has_guarantors: Optional[bool] = Query(None, description="Has guarantor entities"),
+    has_cusip: Optional[bool] = Query(None, description="Has CUSIP (tradeable)"),
+    is_active: Optional[bool] = Query(True, description="Is active (default: true)"),
+    # Field selection
+    fields: Optional[str] = Query(None, description="Comma-separated fields to return"),
+    # Sorting
+    sort: str = Query("maturity_date", description="Sort field (prefix - for desc)"),
+    # Pagination
+    limit: int = Query(50, ge=1, le=100, description="Results per page"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Search bonds across all companies with comprehensive filtering.
+
+    **Example:** Find senior unsecured bonds yielding >8%:
+    ```
+    GET /v1/bonds?seniority=senior_unsecured&min_ytm=8.0&has_pricing=true&sort=-pricing.ytm
+    ```
+    """
+    # Parse and validate fields
+    selected_fields = parse_fields(fields, BOND_FIELDS)
+
+    # Determine if we need pricing join
+    needs_pricing = any([min_ytm, max_ytm, min_spread, max_spread, has_pricing])
+    pricing_sort = sort.replace("-", "").startswith("pricing")
+    needs_pricing = needs_pricing or pricing_sort
+
+    # Build base query
+    if needs_pricing:
+        query = select(DebtInstrument, Company, Entity, BondPricing).join(
+            Company, DebtInstrument.company_id == Company.id
+        ).join(
+            Entity, DebtInstrument.issuer_id == Entity.id
+        ).outerjoin(
+            BondPricing, DebtInstrument.id == BondPricing.debt_instrument_id
+        )
+    else:
+        query = select(DebtInstrument, Company, Entity).join(
+            Company, DebtInstrument.company_id == Company.id
+        ).join(
+            Entity, DebtInstrument.issuer_id == Entity.id
+        )
+
+    filters = []
+
+    # Active filter (default true)
+    if is_active is not None:
+        filters.append(DebtInstrument.is_active == is_active)
+
+    # Ticker filter
+    if ticker:
+        ticker_list = [t.strip().upper() for t in ticker.split(",") if t.strip()]
+        if ticker_list:
+            filters.append(Company.ticker.in_(ticker_list))
+
+    # CUSIP filter
+    if cusip:
+        cusip_list = [c.strip().upper() for c in cusip.split(",") if c.strip()]
+        if cusip_list:
+            filters.append(DebtInstrument.cusip.in_(cusip_list))
+
+    # Classification filters
+    if sector:
+        filters.append(Company.sector.ilike(f"%{sector}%"))
+    if seniority:
+        filters.append(DebtInstrument.seniority == seniority)
+    if security_type:
+        filters.append(DebtInstrument.security_type == security_type)
+    if instrument_type:
+        filters.append(DebtInstrument.instrument_type == instrument_type)
+    if issuer_type:
+        filters.append(Entity.entity_type == issuer_type)
+    if rate_type:
+        filters.append(DebtInstrument.rate_type == rate_type)
+    if currency:
+        filters.append(DebtInstrument.currency == currency.upper())
+
+    # Rate filters (stored in bps)
+    if min_coupon is not None:
+        filters.append(DebtInstrument.interest_rate >= int(min_coupon * 100))
+    if max_coupon is not None:
+        filters.append(DebtInstrument.interest_rate <= int(max_coupon * 100))
+
+    # Maturity filters
+    if maturity_before:
+        filters.append(DebtInstrument.maturity_date <= maturity_before)
+    if maturity_after:
+        filters.append(DebtInstrument.maturity_date >= maturity_after)
+
+    # Amount filters
+    if min_outstanding is not None:
+        filters.append(DebtInstrument.outstanding >= min_outstanding)
+    if max_outstanding is not None:
+        filters.append(DebtInstrument.outstanding <= max_outstanding)
+
+    # CUSIP presence filter
+    if has_cusip is True:
+        filters.append(DebtInstrument.cusip.isnot(None))
+    elif has_cusip is False:
+        filters.append(DebtInstrument.cusip.is_(None))
+
+    # Pricing filters
+    if needs_pricing:
+        if min_ytm is not None:
+            filters.append(BondPricing.ytm_bps >= int(min_ytm * 100))
+        if max_ytm is not None:
+            filters.append(BondPricing.ytm_bps <= int(max_ytm * 100))
+        if min_spread is not None:
+            filters.append(BondPricing.spread_to_treasury_bps >= min_spread)
+        if max_spread is not None:
+            filters.append(BondPricing.spread_to_treasury_bps <= max_spread)
+        if has_pricing is True:
+            filters.append(BondPricing.last_price.isnot(None))
+        elif has_pricing is False:
+            filters.append(or_(BondPricing.last_price.is_(None), BondPricing.id.is_(None)))
+
+    # Guarantors filter (subquery)
+    if has_guarantors is not None:
+        guarantor_subq = select(Guarantee.debt_instrument_id).distinct()
+        if has_guarantors:
+            filters.append(DebtInstrument.id.in_(guarantor_subq))
+        else:
+            filters.append(DebtInstrument.id.notin_(guarantor_subq))
+
+    if filters:
+        query = query.where(and_(*filters))
+
+    # Count query
+    count_query = select(func.count(DebtInstrument.id.distinct())).select_from(DebtInstrument).join(
+        Company, DebtInstrument.company_id == Company.id
+    ).join(
+        Entity, DebtInstrument.issuer_id == Entity.id
+    )
+    if needs_pricing:
+        count_query = count_query.outerjoin(
+            BondPricing, DebtInstrument.id == BondPricing.debt_instrument_id
+        )
+    if filters:
+        count_query = count_query.where(and_(*filters))
+
+    total = await db.scalar(count_query)
+
+    # Parse sort parameter
+    sort_desc = sort.startswith("-")
+    sort_field = sort[1:] if sort_desc else sort
+
+    sort_column_map = {
+        "maturity_date": DebtInstrument.maturity_date,
+        "coupon_rate": DebtInstrument.interest_rate,
+        "outstanding": DebtInstrument.outstanding,
+        "name": DebtInstrument.name,
+        "issuer_type": Entity.entity_type,
+        "company_ticker": Company.ticker,
+    }
+    if needs_pricing:
+        sort_column_map["pricing.ytm"] = BondPricing.ytm_bps
+        sort_column_map["pricing.spread"] = BondPricing.spread_to_treasury_bps
+        sort_column_map["pricing.last_price"] = BondPricing.last_price
+
+    sort_column = sort_column_map.get(sort_field, DebtInstrument.maturity_date)
+    if sort_desc:
+        query = query.order_by(desc(sort_column).nulls_last())
+    else:
+        query = query.order_by(asc(sort_column).nulls_last())
+
+    # Apply pagination
+    query = query.offset(offset).limit(limit)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    # Get guarantor counts for returned bonds
+    bond_ids = [row[0].id for row in rows]
+    guarantor_counts = {}
+    if bond_ids:
+        gc_result = await db.execute(
+            select(Guarantee.debt_instrument_id, func.count(Guarantee.id))
+            .where(Guarantee.debt_instrument_id.in_(bond_ids))
+            .group_by(Guarantee.debt_instrument_id)
+        )
+        guarantor_counts = {row[0]: row[1] for row in gc_result}
+
+    # Build response
+    data = []
+    for row in rows:
+        if needs_pricing:
+            d, c, issuer, pricing = row
+        else:
+            d, c, issuer = row
+            pricing = None
+
+        bond_data = {
+            "id": str(d.id),
+            "name": d.name,
+            "cusip": d.cusip,
+            "isin": d.isin,
+            "company_ticker": c.ticker,
+            "company_name": c.name,
+            "company_sector": c.sector,
+            "issuer_name": issuer.name,
+            "issuer_type": issuer.entity_type,
+            "issuer_id": str(issuer.id),
+            "instrument_type": d.instrument_type,
+            "seniority": d.seniority,
+            "security_type": d.security_type,
+            "commitment": d.commitment,
+            "principal": d.principal,
+            "outstanding": d.outstanding,
+            "currency": d.currency,
+            "rate_type": d.rate_type,
+            "coupon_rate": d.interest_rate / 100 if d.interest_rate else None,
+            "spread_bps": d.spread_bps,
+            "benchmark": d.benchmark,
+            "floor_bps": d.floor_bps,
+            "issue_date": d.issue_date.isoformat() if d.issue_date else None,
+            "maturity_date": d.maturity_date.isoformat() if d.maturity_date else None,
+            "is_active": d.is_active,
+            "is_drawn": d.is_drawn,
+            "guarantor_count": guarantor_counts.get(d.id, 0),
+        }
+
+        # Add pricing if available
+        if pricing:
+            bond_data["pricing"] = {
+                "last_price": float(pricing.last_price) if pricing.last_price else None,
+                "last_trade_date": pricing.last_trade_date.isoformat() if pricing.last_trade_date else None,
+                "ytm": pricing.ytm_bps / 100 if pricing.ytm_bps else None,
+                "ytm_bps": pricing.ytm_bps,
+                "spread": pricing.spread_to_treasury_bps,
+                "spread_bps": pricing.spread_to_treasury_bps,
+                "treasury_benchmark": pricing.treasury_benchmark,
+                "price_source": pricing.price_source,
+                "staleness_days": pricing.staleness_days,
+            }
+        elif needs_pricing or (selected_fields and "pricing" in selected_fields):
+            bond_data["pricing"] = None
+
+        data.append(filter_dict(bond_data, selected_fields))
+
+    return {
+        "data": data,
+        "meta": {
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+    }
+
+
+# =============================================================================
+# PRIMITIVE 6: resolve.bond
+# =============================================================================
+
+
+@router.get("/bonds/resolve", tags=["Primitives"])
+async def resolve_bond(
+    q: Optional[str] = Query(None, description="Free-text search (e.g., 'RIG 8% 2027')"),
+    cusip: Optional[str] = Query(None, description="Exact CUSIP lookup"),
+    isin: Optional[str] = Query(None, description="Exact ISIN lookup"),
+    ticker: Optional[str] = Query(None, description="Company ticker"),
+    coupon: Optional[float] = Query(None, description="Coupon rate (%)"),
+    maturity_year: Optional[int] = Query(None, description="Maturity year"),
+    match_mode: str = Query("fuzzy", description="Match mode: exact, fuzzy"),
+    limit: int = Query(5, ge=1, le=20, description="Max matches to return"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Resolve bond identifiers - map between descriptions, CUSIPs, and issuers.
+
+    **Examples:**
+    - Find CUSIP for a bond: `GET /v1/bonds/resolve?q=RIG%208%25%202027`
+    - Lookup by CUSIP: `GET /v1/bonds/resolve?cusip=89157VAG8`
+    """
+    if not any([q, cusip, isin, ticker]):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "MISSING_PARAMETER",
+                "message": "At least one of q, cusip, isin, or ticker is required"
+            }
+        )
+
+    query = select(DebtInstrument, Company, Entity).join(
+        Company, DebtInstrument.company_id == Company.id
+    ).join(
+        Entity, DebtInstrument.issuer_id == Entity.id
+    ).where(DebtInstrument.is_active == True)
+
+    filters = []
+    exact_match = False
+
+    # Exact identifier lookups
+    if cusip:
+        filters.append(DebtInstrument.cusip == cusip.upper())
+        exact_match = True
+    elif isin:
+        filters.append(DebtInstrument.isin == isin.upper())
+        exact_match = True
+    else:
+        # Fuzzy/text search
+        if ticker:
+            filters.append(Company.ticker == ticker.upper())
+
+        if coupon is not None:
+            # Allow +/- 0.5% tolerance for fuzzy matching
+            if match_mode == "exact":
+                filters.append(DebtInstrument.interest_rate == int(coupon * 100))
+            else:
+                coupon_bps = int(coupon * 100)
+                filters.append(DebtInstrument.interest_rate.between(coupon_bps - 50, coupon_bps + 50))
+
+        if maturity_year is not None:
+            # Filter to bonds maturing in that year
+            from datetime import date
+            year_start = date(maturity_year, 1, 1)
+            year_end = date(maturity_year, 12, 31)
+            filters.append(DebtInstrument.maturity_date.between(year_start, year_end))
+
+        # Free-text search
+        if q:
+            # Parse the query string for patterns
+            q_upper = q.upper()
+
+            # Try to extract ticker (first word if it's short)
+            words = q_upper.split()
+            if words and len(words[0]) <= 5 and not words[0].replace(".", "").isdigit():
+                filters.append(or_(
+                    Company.ticker == words[0],
+                    Company.ticker.ilike(f"%{words[0]}%")
+                ))
+
+            # Look for percentage pattern (e.g., "8%" or "8.5%")
+            import re
+            pct_match = re.search(r'(\d+\.?\d*)\s*%', q)
+            if pct_match:
+                coupon_val = float(pct_match.group(1))
+                coupon_bps = int(coupon_val * 100)
+                if match_mode == "exact":
+                    filters.append(DebtInstrument.interest_rate == coupon_bps)
+                else:
+                    filters.append(DebtInstrument.interest_rate.between(coupon_bps - 25, coupon_bps + 25))
+
+            # Look for year pattern (e.g., "2027" or "due 2027")
+            year_match = re.search(r'(?:due\s+)?(\d{4})', q)
+            if year_match:
+                year = int(year_match.group(1))
+                if 2020 <= year <= 2060:
+                    year_start = date(year, 1, 1)
+                    year_end = date(year, 12, 31)
+                    filters.append(DebtInstrument.maturity_date.between(year_start, year_end))
+
+            # Also search in bond name
+            filters.append(or_(
+                DebtInstrument.name.ilike(f"%{q}%"),
+                True  # Don't fail if name doesn't match
+            ))
+
+    if filters:
+        query = query.where(and_(*filters))
+
+    query = query.limit(limit)
+    result = await db.execute(query)
+    rows = result.all()
+
+    # Calculate confidence scores
+    matches = []
+    for d, c, issuer in rows:
+        confidence = 1.0 if exact_match else 0.8
+
+        # Boost confidence based on match quality
+        if cusip and d.cusip == cusip.upper():
+            confidence = 1.0
+        elif isin and d.isin == isin.upper():
+            confidence = 1.0
+
+        # Get guarantor count
+        gc_result = await db.execute(
+            select(func.count(Guarantee.id)).where(Guarantee.debt_instrument_id == d.id)
+        )
+        guarantor_count = gc_result.scalar() or 0
+
+        matches.append({
+            "confidence": confidence,
+            "bond": {
+                "id": str(d.id),
+                "name": d.name,
+                "cusip": d.cusip,
+                "isin": d.isin,
+                "company_ticker": c.ticker,
+                "company_name": c.name,
+                "coupon_rate": d.interest_rate / 100 if d.interest_rate else None,
+                "maturity_date": d.maturity_date.isoformat() if d.maturity_date else None,
+                "seniority": d.seniority,
+                "issuer": {
+                    "name": issuer.name,
+                    "entity_type": issuer.entity_type,
+                },
+                "outstanding": d.outstanding,
+                "guarantor_count": guarantor_count,
+            }
+        })
+
+    # Sort by confidence
+    matches.sort(key=lambda x: x["confidence"], reverse=True)
+
+    # Generate suggestions if no exact match
+    suggestions = []
+    if not exact_match and matches:
+        # Check if user might have meant a different year
+        if maturity_year or (q and re.search(r'\d{4}', q)):
+            actual_years = set(m["bond"]["maturity_date"][:4] for m in matches if m["bond"]["maturity_date"])
+            if actual_years:
+                suggestions.append(f"Found bonds maturing in: {', '.join(sorted(actual_years))}")
+
+    return {
+        "data": {
+            "query": q or cusip or isin or f"ticker={ticker}",
+            "matches": matches,
+            "exact_match": exact_match and len(matches) > 0,
+            "suggestions": suggestions if suggestions else None,
+        }
+    }
+
+
+# =============================================================================
+# PRIMITIVE 4: traverse.entities
+# =============================================================================
+
+
+class TraversalStart(BaseModel):
+    type: str = Field(..., description="Start type: company, bond, or entity")
+    id: str = Field(..., description="Identifier: ticker, CUSIP, or entity UUID")
+
+
+class TraversalRequest(BaseModel):
+    start: TraversalStart
+    relationships: List[str] = Field(
+        default=["subsidiaries"],
+        description="Relationships to traverse: guarantees, subsidiaries, parents, debt"
+    )
+    direction: str = Field(default="outbound", description="Direction: outbound, inbound, both")
+    depth: int = Field(default=3, ge=1, le=10, description="Max traversal depth")
+    filters: Optional[dict] = Field(default=None, description="Entity filters")
+    fields: Optional[List[str]] = Field(default=None, description="Fields to return")
+
+
+@router.post("/entities/traverse", tags=["Primitives"])
+async def traverse_entities(
+    request: TraversalRequest = Body(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Traverse entity relationships for guarantor chains, org structure, and subordination analysis.
+
+    **Example:** Find guarantors for a bond:
+    ```json
+    {
+      "start": {"type": "bond", "id": "89157VAG8"},
+      "relationships": ["guarantees"],
+      "direction": "inbound"
+    }
+    ```
+
+    **Example:** Get full corporate structure:
+    ```json
+    {
+      "start": {"type": "company", "id": "RIG"},
+      "relationships": ["subsidiaries"],
+      "direction": "outbound",
+      "depth": 10
+    }
+    ```
+    """
+    # Resolve start point
+    start_data = {}
+    company_id = None
+    entity_ids = []
+    debt_id = None
+
+    if request.start.type == "company":
+        # Find company by ticker
+        result = await db.execute(
+            select(Company).where(Company.ticker == request.start.id.upper())
+        )
+        company = result.scalar_one_or_none()
+        if not company:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "INVALID_TICKER", "message": f"Company '{request.start.id}' not found"}
+            )
+        start_data = {"type": "company", "id": request.start.id.upper(), "name": company.name}
+        company_id = company.id
+
+        # Get root entities for this company
+        root_result = await db.execute(
+            select(Entity).where(Entity.company_id == company_id, Entity.parent_id.is_(None))
+        )
+        entity_ids = [e.id for e in root_result.scalars().all()]
+
+    elif request.start.type == "bond":
+        # Find bond by CUSIP or ID
+        if len(request.start.id) == 9:  # CUSIP
+            result = await db.execute(
+                select(DebtInstrument, Company).join(Company, DebtInstrument.company_id == Company.id)
+                .where(DebtInstrument.cusip == request.start.id.upper())
+            )
+        else:  # UUID
+            try:
+                debt_uuid = UUID(request.start.id)
+                result = await db.execute(
+                    select(DebtInstrument, Company).join(Company, DebtInstrument.company_id == Company.id)
+                    .where(DebtInstrument.id == debt_uuid)
+                )
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "INVALID_ID", "message": "Invalid bond identifier"}
+                )
+
+        row = result.first()
+        if not row:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "INVALID_CUSIP", "message": f"Bond '{request.start.id}' not found"}
+            )
+
+        debt, company = row
+        start_data = {
+            "type": "bond",
+            "id": debt.cusip or str(debt.id),
+            "name": debt.name,
+            "company": company.ticker
+        }
+        debt_id = debt.id
+        company_id = company.id
+
+    elif request.start.type == "entity":
+        # Find entity by UUID
+        try:
+            entity_uuid = UUID(request.start.id)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "INVALID_ID", "message": "Invalid entity UUID"}
+            )
+
+        result = await db.execute(
+            select(Entity, Company).join(Company, Entity.company_id == Company.id)
+            .where(Entity.id == entity_uuid)
+        )
+        row = result.first()
+        if not row:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "INVALID_ENTITY", "message": f"Entity '{request.start.id}' not found"}
+            )
+
+        entity, company = row
+        start_data = {
+            "type": "entity",
+            "id": str(entity.id),
+            "name": entity.name,
+            "company": company.ticker
+        }
+        entity_ids = [entity.id]
+        company_id = company.id
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_TYPE", "message": f"Invalid start type: {request.start.type}"}
+        )
+
+    # Process relationships
+    traversal_results = []
+
+    for relationship in request.relationships:
+        if relationship == "guarantees":
+            # Find guarantors for a bond or bonds guaranteed by an entity
+            if debt_id:
+                # Inbound: find entities that guarantee this bond
+                result = await db.execute(
+                    select(Guarantee, Entity)
+                    .join(Entity, Guarantee.guarantor_id == Entity.id)
+                    .where(Guarantee.debt_instrument_id == debt_id)
+                )
+                entities = []
+                for guarantee, entity in result:
+                    entity_data = {
+                        "id": str(entity.id),
+                        "name": entity.name,
+                        "entity_type": entity.entity_type,
+                        "jurisdiction": entity.jurisdiction,
+                        "is_guarantor": entity.is_guarantor,
+                        "guarantee_type": guarantee.guarantee_type,
+                    }
+                    if request.filters:
+                        # Apply filters
+                        if request.filters.get("entity_type") and entity.entity_type not in request.filters["entity_type"]:
+                            continue
+                        if request.filters.get("is_guarantor") is not None and entity.is_guarantor != request.filters["is_guarantor"]:
+                            continue
+                    entities.append(entity_data)
+
+                traversal_results.append({
+                    "relationship": "guarantees",
+                    "direction": "inbound",
+                    "entities": entities
+                })
+
+        elif relationship == "subsidiaries":
+            # Find child entities
+            if not company_id:
+                continue
+
+            # BFS traversal
+            visited = set()
+            current_level = entity_ids if entity_ids else []
+            all_entities = []
+            current_depth = 0
+
+            # If starting from company, get all root entities first
+            if not entity_ids:
+                root_result = await db.execute(
+                    select(Entity).where(Entity.company_id == company_id, Entity.parent_id.is_(None))
+                )
+                current_level = [e.id for e in root_result.scalars().all()]
+
+                # Add root entities
+                for eid in current_level:
+                    e_result = await db.execute(select(Entity).where(Entity.id == eid))
+                    e = e_result.scalar_one_or_none()
+                    if e:
+                        all_entities.append({
+                            "id": str(e.id),
+                            "name": e.name,
+                            "entity_type": e.entity_type,
+                            "jurisdiction": e.jurisdiction,
+                            "is_guarantor": e.is_guarantor,
+                            "is_borrower": e.is_borrower,
+                            "is_vie": e.is_vie,
+                            "is_unrestricted": e.is_unrestricted,
+                            "parent_id": None,
+                            "depth": 0,
+                        })
+                        visited.add(e.id)
+
+            while current_level and current_depth < request.depth:
+                current_depth += 1
+
+                # Get children of current level
+                result = await db.execute(
+                    select(Entity).where(
+                        Entity.parent_id.in_(current_level),
+                        Entity.id.notin_(visited) if visited else True
+                    )
+                )
+                children = result.scalars().all()
+
+                next_level = []
+                for child in children:
+                    if child.id in visited:
+                        continue
+                    visited.add(child.id)
+
+                    # Apply filters
+                    if request.filters:
+                        if request.filters.get("entity_type"):
+                            allowed_types = request.filters["entity_type"]
+                            if isinstance(allowed_types, str):
+                                allowed_types = [allowed_types]
+                            if child.entity_type not in allowed_types:
+                                continue
+                        if request.filters.get("is_guarantor") is not None:
+                            if child.is_guarantor != request.filters["is_guarantor"]:
+                                continue
+                        if request.filters.get("is_vie") is not None:
+                            if child.is_vie != request.filters["is_vie"]:
+                                continue
+                        if request.filters.get("jurisdiction"):
+                            if not child.jurisdiction or request.filters["jurisdiction"].lower() not in child.jurisdiction.lower():
+                                continue
+
+                    entity_data = {
+                        "id": str(child.id),
+                        "name": child.name,
+                        "entity_type": child.entity_type,
+                        "jurisdiction": child.jurisdiction,
+                        "is_guarantor": child.is_guarantor,
+                        "is_borrower": child.is_borrower,
+                        "is_vie": child.is_vie,
+                        "is_unrestricted": child.is_unrestricted,
+                        "parent_id": str(child.parent_id) if child.parent_id else None,
+                        "depth": current_depth,
+                    }
+
+                    # Get debt at entity if requested
+                    if request.fields and "debt_at_entity" in request.fields:
+                        debt_result = await db.execute(
+                            select(func.sum(DebtInstrument.outstanding), func.count(DebtInstrument.id))
+                            .where(DebtInstrument.issuer_id == child.id)
+                        )
+                        debt_row = debt_result.first()
+                        entity_data["debt_at_entity"] = {
+                            "total_outstanding": debt_row[0] if debt_row else 0,
+                            "instrument_count": debt_row[1] if debt_row else 0,
+                        }
+
+                    all_entities.append(entity_data)
+                    next_level.append(child.id)
+
+                current_level = next_level
+
+            traversal_results.append({
+                "relationship": "subsidiaries",
+                "direction": "outbound",
+                "entities": all_entities,
+                "depth_reached": current_depth,
+            })
+
+        elif relationship == "parents":
+            # Traverse upward to parent entities
+            if not entity_ids:
+                continue
+
+            all_parents = []
+            current = entity_ids[0] if entity_ids else None
+            current_depth = 0
+
+            while current and current_depth < request.depth:
+                result = await db.execute(
+                    select(Entity).where(Entity.id == current)
+                )
+                entity = result.scalar_one_or_none()
+                if not entity or not entity.parent_id:
+                    break
+
+                parent_result = await db.execute(
+                    select(Entity).where(Entity.id == entity.parent_id)
+                )
+                parent = parent_result.scalar_one_or_none()
+                if not parent:
+                    break
+
+                all_parents.append({
+                    "id": str(parent.id),
+                    "name": parent.name,
+                    "entity_type": parent.entity_type,
+                    "jurisdiction": parent.jurisdiction,
+                    "is_guarantor": parent.is_guarantor,
+                    "depth": current_depth + 1,
+                })
+
+                current = parent.id
+                current_depth += 1
+
+            traversal_results.append({
+                "relationship": "parents",
+                "direction": "inbound",
+                "entities": all_parents,
+            })
+
+        elif relationship == "debt":
+            # Find debt issued at entity/entities
+            if entity_ids:
+                target_ids = entity_ids
+            elif company_id:
+                # Get all entity IDs for company
+                result = await db.execute(
+                    select(Entity.id).where(Entity.company_id == company_id)
+                )
+                target_ids = [r[0] for r in result.all()]
+            else:
+                continue
+
+            result = await db.execute(
+                select(DebtInstrument)
+                .where(DebtInstrument.issuer_id.in_(target_ids), DebtInstrument.is_active == True)
+                .order_by(DebtInstrument.maturity_date)
+            )
+            debts = result.scalars().all()
+
+            debt_list = []
+            for d in debts:
+                debt_list.append({
+                    "id": str(d.id),
+                    "name": d.name,
+                    "cusip": d.cusip,
+                    "issuer_id": str(d.issuer_id),
+                    "seniority": d.seniority,
+                    "outstanding": d.outstanding,
+                    "maturity_date": d.maturity_date.isoformat() if d.maturity_date else None,
+                })
+
+            traversal_results.append({
+                "relationship": "debt",
+                "direction": "outbound",
+                "instruments": debt_list,
+            })
+
+    # Build summary
+    summary = {}
+    for tr in traversal_results:
+        if "entities" in tr:
+            summary[f"{tr['relationship']}_count"] = len(tr["entities"])
+        elif "instruments" in tr:
+            summary[f"{tr['relationship']}_count"] = len(tr["instruments"])
+
+    return {
+        "data": {
+            "start": start_data,
+            "traversal": traversal_results[0] if len(traversal_results) == 1 else traversal_results,
+            "summary": summary,
+        }
+    }
+
+
+# =============================================================================
+# PRIMITIVE 5: search.pricing
+# =============================================================================
+
+
+@router.get("/pricing", tags=["Primitives"])
+async def search_pricing(
+    ticker: Optional[str] = Query(None, description="Company ticker(s), comma-separated"),
+    cusip: Optional[str] = Query(None, description="CUSIP(s), comma-separated"),
+    min_ytm: Optional[float] = Query(None, description="Minimum YTM (%)"),
+    max_ytm: Optional[float] = Query(None, description="Maximum YTM (%)"),
+    min_spread: Optional[int] = Query(None, description="Minimum spread (bps)"),
+    max_spread: Optional[int] = Query(None, description="Maximum spread (bps)"),
+    max_staleness: Optional[int] = Query(None, description="Maximum staleness days"),
+    fields: Optional[str] = Query(None, description="Fields to return"),
+    sort: str = Query("-ytm", description="Sort field"),
+    limit: int = Query(50, ge=1, le=100, description="Results per page"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Search bond pricing data from FINRA TRACE.
+
+    **Example:** Get pricing for all RIG bonds:
+    ```
+    GET /v1/pricing?ticker=RIG
+    ```
+
+    **Example:** Find high-yield bonds:
+    ```
+    GET /v1/pricing?min_ytm=8.0&sort=-ytm
+    ```
+    """
+    selected_fields = parse_fields(fields, PRICING_FIELDS)
+
+    query = select(BondPricing, DebtInstrument, Company).join(
+        DebtInstrument, BondPricing.debt_instrument_id == DebtInstrument.id
+    ).join(
+        Company, DebtInstrument.company_id == Company.id
+    ).where(BondPricing.last_price.isnot(None))
+
+    filters = []
+
+    # Ticker filter
+    if ticker:
+        ticker_list = [t.strip().upper() for t in ticker.split(",") if t.strip()]
+        if ticker_list:
+            filters.append(Company.ticker.in_(ticker_list))
+
+    # CUSIP filter
+    if cusip:
+        cusip_list = [c.strip().upper() for c in cusip.split(",") if c.strip()]
+        if cusip_list:
+            filters.append(BondPricing.cusip.in_(cusip_list))
+
+    # YTM filters
+    if min_ytm is not None:
+        filters.append(BondPricing.ytm_bps >= int(min_ytm * 100))
+    if max_ytm is not None:
+        filters.append(BondPricing.ytm_bps <= int(max_ytm * 100))
+
+    # Spread filters
+    if min_spread is not None:
+        filters.append(BondPricing.spread_to_treasury_bps >= min_spread)
+    if max_spread is not None:
+        filters.append(BondPricing.spread_to_treasury_bps <= max_spread)
+
+    # Staleness filter
+    if max_staleness is not None:
+        filters.append(or_(
+            BondPricing.staleness_days <= max_staleness,
+            BondPricing.staleness_days.is_(None)
+        ))
+
+    if filters:
+        query = query.where(and_(*filters))
+
+    # Count
+    count_query = select(func.count()).select_from(BondPricing).join(
+        DebtInstrument, BondPricing.debt_instrument_id == DebtInstrument.id
+    ).join(
+        Company, DebtInstrument.company_id == Company.id
+    ).where(BondPricing.last_price.isnot(None))
+    if filters:
+        count_query = count_query.where(and_(*filters))
+
+    total = await db.scalar(count_query)
+
+    # Sort
+    sort_desc = sort.startswith("-")
+    sort_field = sort[1:] if sort_desc else sort
+
+    sort_map = {
+        "ytm": BondPricing.ytm_bps,
+        "spread": BondPricing.spread_to_treasury_bps,
+        "last_price": BondPricing.last_price,
+        "staleness_days": BondPricing.staleness_days,
+        "maturity_date": DebtInstrument.maturity_date,
+        "company_ticker": Company.ticker,
+    }
+
+    sort_col = sort_map.get(sort_field, BondPricing.ytm_bps)
+    if sort_desc:
+        query = query.order_by(desc(sort_col).nulls_last())
+    else:
+        query = query.order_by(asc(sort_col).nulls_last())
+
+    query = query.offset(offset).limit(limit)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    data = []
+    for pricing, debt, company in rows:
+        item = {
+            "cusip": pricing.cusip or debt.cusip,
+            "isin": debt.isin,
+            "bond_name": debt.name,
+            "company_ticker": company.ticker,
+            "company_name": company.name,
+            "last_price": float(pricing.last_price) if pricing.last_price else None,
+            "last_trade_date": pricing.last_trade_date.isoformat() if pricing.last_trade_date else None,
+            "last_trade_volume": pricing.last_trade_volume,
+            "ytm": pricing.ytm_bps / 100 if pricing.ytm_bps else None,
+            "ytm_bps": pricing.ytm_bps,
+            "spread": pricing.spread_to_treasury_bps,
+            "spread_bps": pricing.spread_to_treasury_bps,
+            "treasury_benchmark": pricing.treasury_benchmark,
+            "price_source": pricing.price_source,
+            "staleness_days": pricing.staleness_days,
+            "coupon_rate": debt.interest_rate / 100 if debt.interest_rate else None,
+            "maturity_date": debt.maturity_date.isoformat() if debt.maturity_date else None,
+            "seniority": debt.seniority,
+        }
+        data.append(filter_dict(item, selected_fields))
+
+    return {
+        "data": data,
+        "meta": {
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "as_of": datetime.utcnow().isoformat() + "Z",
+        }
+    }
