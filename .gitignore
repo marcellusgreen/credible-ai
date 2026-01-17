@@ -52,6 +52,10 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+nul
+
+# Claude Code temp files
+tmpclaude-*
 
 # Local data
 *.db

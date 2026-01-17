@@ -9,12 +9,15 @@ Primitives API for DebtStack.ai
 5. GET /v1/pricing - Bond pricing data
 """
 
+import csv
+import io
 import re
 from datetime import date, datetime
 from typing import Optional, List, Set
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func, or_, and_, desc, asc
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +29,58 @@ from app.models import (
 )
 
 router = APIRouter()
+
+
+# =============================================================================
+# CSV EXPORT HELPER
+# =============================================================================
+
+def flatten_dict(d: dict, parent_key: str = '', sep: str = '_') -> dict:
+    """Flatten nested dictionary for CSV export."""
+    items = []
+    for k, v in d.items():
+        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+        if isinstance(v, dict):
+            items.extend(flatten_dict(v, new_key, sep).items())
+        else:
+            items.append((new_key, v))
+    return dict(items)
+
+
+def to_csv_response(data: List[dict], filename: str = "export.csv") -> StreamingResponse:
+    """Convert list of dicts to CSV streaming response."""
+    if not data:
+        # Return empty CSV with just headers
+        output = io.StringIO()
+        output.write("")
+        output.seek(0)
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
+    # Flatten nested dicts
+    flat_data = [flatten_dict(row) for row in data]
+
+    # Get all unique keys across all rows
+    all_keys = set()
+    for row in flat_data:
+        all_keys.update(row.keys())
+    fieldnames = sorted(all_keys)
+
+    # Write CSV
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction='ignore')
+    writer.writeheader()
+    writer.writerows(flat_data)
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 
 # =============================================================================
@@ -147,6 +202,8 @@ async def search_companies(
     # Pagination
     limit: int = Query(50, ge=1, le=100, description="Results per page"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
+    # Export format
+    format: str = Query("json", description="Response format: json or csv"),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -154,10 +211,16 @@ async def search_companies(
 
     Supports filtering by sector, leverage, ratings, risk flags, and more.
     Use `fields` parameter to request only the data you need.
+    Use `format=csv` for CSV export (useful for bulk data).
 
     **Example:** Find MAG7 company with highest leverage:
     ```
     GET /v1/companies?ticker=AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA&fields=ticker,name,net_leverage_ratio&sort=-net_leverage_ratio&limit=1
+    ```
+
+    **Example:** Export all companies to CSV:
+    ```
+    GET /v1/companies?format=csv&limit=100
     ```
     """
     # Parse and validate fields
@@ -280,6 +343,10 @@ async def search_companies(
         }
         data.append(filter_dict(company_data, selected_fields))
 
+    # Return CSV if requested
+    if format.lower() == "csv":
+        return to_csv_response(data, filename="companies.csv")
+
     return {
         "data": data,
         "meta": {
@@ -335,14 +402,23 @@ async def search_bonds(
     # Pagination
     limit: int = Query(50, ge=1, le=100, description="Results per page"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
+    # Export format
+    format: str = Query("json", description="Response format: json or csv"),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Search bonds across all companies with comprehensive filtering.
 
+    Use `format=csv` for CSV export (useful for bulk data).
+
     **Example:** Find senior unsecured bonds yielding >8%:
     ```
     GET /v1/bonds?seniority=senior_unsecured&min_ytm=8.0&has_pricing=true&sort=-pricing.ytm
+    ```
+
+    **Example:** Export all bonds to CSV:
+    ```
+    GET /v1/bonds?format=csv&limit=100
     ```
     """
     # Parse and validate fields
@@ -555,6 +631,10 @@ async def search_bonds(
             bond_data["pricing"] = None
 
         data.append(filter_dict(bond_data, selected_fields))
+
+    # Return CSV if requested
+    if format.lower() == "csv":
+        return to_csv_response(data, filename="bonds.csv")
 
     return {
         "data": data,
@@ -1149,19 +1229,22 @@ async def search_pricing(
     sort: str = Query("-ytm", description="Sort field"),
     limit: int = Query(50, ge=1, le=100, description="Results per page"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
+    format: str = Query("json", description="Response format: json or csv"),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Search bond pricing data from FINRA TRACE.
+
+    Use `format=csv` for CSV export.
 
     **Example:** Get pricing for all RIG bonds:
     ```
     GET /v1/pricing?ticker=RIG
     ```
 
-    **Example:** Find high-yield bonds:
+    **Example:** Export pricing to CSV:
     ```
-    GET /v1/pricing?min_ytm=8.0&sort=-ytm
+    GET /v1/pricing?format=csv
     ```
     """
     selected_fields = parse_fields(fields, PRICING_FIELDS)
@@ -1256,6 +1339,10 @@ async def search_pricing(
             "seniority": debt.seniority,
         }
         data.append(filter_dict(item, selected_fields))
+
+    # Return CSV if requested
+    if format.lower() == "csv":
+        return to_csv_response(data, filename="pricing.csv")
 
     return {
         "data": data,
