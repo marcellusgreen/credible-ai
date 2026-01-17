@@ -1413,6 +1413,37 @@ async def refresh_company_cache(
     has_unrestricted_subs = any(e.is_unrestricted for e in entities)
     has_floating_rate = any(d.rate_type == "floating" for d in debt_instruments)
 
+    # Maturity profile calculations
+    from datetime import timedelta
+    today = date.today()
+
+    # Debt due in each year bucket
+    debt_due_1yr = sum(
+        d.outstanding or 0 for d in debt_instruments
+        if d.maturity_date and d.maturity_date <= today + timedelta(days=365)
+    )
+    debt_due_2yr = sum(
+        d.outstanding or 0 for d in debt_instruments
+        if d.maturity_date and today + timedelta(days=365) < d.maturity_date <= today + timedelta(days=730)
+    )
+    debt_due_3yr = sum(
+        d.outstanding or 0 for d in debt_instruments
+        if d.maturity_date and today + timedelta(days=730) < d.maturity_date <= today + timedelta(days=1095)
+    )
+
+    # Near-term maturity flag (debt due in next 24 months)
+    has_near_term_maturity = (debt_due_1yr > 0) or (debt_due_2yr > 0)
+
+    # Weighted average maturity (in years)
+    if total_debt > 0:
+        weighted_avg_maturity = sum(
+            (d.outstanding or 0) * max(0, (d.maturity_date - today).days / 365.0)
+            for d in debt_instruments
+            if d.maturity_date and d.outstanding
+        ) / total_debt
+    else:
+        weighted_avg_maturity = None
+
     # Simple subordination score
     if has_structural_sub:
         subordination_risk = "moderate"
@@ -1431,12 +1462,18 @@ async def refresh_company_cache(
 
     if metrics:
         metrics.sector = company.sector
+        metrics.industry = company.industry
         metrics.total_debt = total_debt
         metrics.secured_debt = secured_debt
         metrics.unsecured_debt = unsecured_debt
         metrics.entity_count = len(entities)
         metrics.guarantor_count = sum(1 for e in entities if e.is_guarantor)
         metrics.nearest_maturity = nearest_maturity
+        metrics.debt_due_1yr = debt_due_1yr
+        metrics.debt_due_2yr = debt_due_2yr
+        metrics.debt_due_3yr = debt_due_3yr
+        metrics.weighted_avg_maturity = weighted_avg_maturity
+        metrics.has_near_term_maturity = has_near_term_maturity
         metrics.subordination_risk = subordination_risk
         metrics.subordination_score = subordination_score
         metrics.has_holdco_debt = has_holdco_debt
@@ -1449,12 +1486,18 @@ async def refresh_company_cache(
             ticker=ticker,
             company_id=company_id,
             sector=company.sector,
+            industry=company.industry,
             total_debt=total_debt,
             secured_debt=secured_debt,
             unsecured_debt=unsecured_debt,
             entity_count=len(entities),
             guarantor_count=sum(1 for e in entities if e.is_guarantor),
             nearest_maturity=nearest_maturity,
+            debt_due_1yr=debt_due_1yr,
+            debt_due_2yr=debt_due_2yr,
+            debt_due_3yr=debt_due_3yr,
+            weighted_avg_maturity=weighted_avg_maturity,
+            has_near_term_maturity=has_near_term_maturity,
             subordination_risk=subordination_risk,
             subordination_score=subordination_score,
             has_holdco_debt=has_holdco_debt,
