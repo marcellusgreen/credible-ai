@@ -137,11 +137,11 @@ The 6th primitive `search.documents` isn't implemented. Would enable:
 ### Data Quality
 - [ ] Validate CUSIP mappings against FINRA (deferred - CUSIPs not needed for MVP)
 - [x] Fix any ticker/CIK mismatches - Done 2026-01-17 (137 companies updated)
-- [ ] Clean up entity name normalization edge cases
+- [x] Clean up entity name normalization edge cases - Done 2026-01-17
 
 ### API Enhancements
 - [x] Add CSV export option for bulk data - Done 2026-01-17
-- [ ] Add ETag caching headers
+- [x] Add ETag caching headers - Done 2026-01-17
 - [ ] Rate limiting implementation
 
 ### Extraction Pipeline
@@ -201,6 +201,20 @@ When starting a new session, read this file first, then:
 ---
 
 ## Session Log
+
+### 2026-01-17 (Session 8)
+- ✅ Improved entity name normalization in `utils.py`:
+  - Handles multiple spaces, "The " prefix, common suffix variations
+  - Normalizes Inc/Inc./Corporation, LLC/L.L.C., Ltd/Ltd./Limited, Corp/Corp./Corporation
+  - Handles commas before suffixes (e.g., "Foo, Inc." -> "foo inc")
+- ✅ Added ETag caching headers to Primitives API:
+  - Added `If-None-Match` header support to `/v1/companies`, `/v1/bonds`, `/v1/pricing`
+  - Returns 304 Not Modified when data unchanged
+  - Adds `ETag` and `Cache-Control: private, max-age=60` headers to responses
+  - ETags generated from MD5 hash of response content
+- **Files modified**:
+  - `app/services/utils.py`: Enhanced `normalize_name()` function
+  - `app/api/primitives.py`: Added ETag helper functions and header support
 
 ### 2026-01-17 (Session 7)
 - ✅ Added CSV export to Primitives API:

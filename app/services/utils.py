@@ -129,11 +129,61 @@ def clean_html(content: str) -> str:
 
 
 def normalize_name(name: str) -> str:
-    """Normalize entity name for matching (case-insensitive, ignore trailing punctuation)."""
+    """
+    Normalize entity name for matching.
+
+    Handles:
+    - Case insensitivity (ABC Corp -> abc corp)
+    - Trailing punctuation (Ltd. -> Ltd)
+    - Multiple spaces (Foo  Bar -> Foo Bar)
+    - Common suffix variations (Inc. vs Inc, LLC vs L.L.C.)
+    - The/the prefix variations
+    - Commas before suffixes (Foo, Inc. -> Foo Inc)
+    """
     if not name:
         return ""
+
     # Lowercase and strip whitespace
     normalized = name.lower().strip()
-    # Remove trailing periods (Ltd. vs Ltd)
+
+    # Normalize whitespace (multiple spaces -> single space)
+    normalized = re.sub(r'\s+', ' ', normalized)
+
+    # Remove "the " prefix if present
+    if normalized.startswith("the "):
+        normalized = normalized[4:]
+
+    # Normalize common suffix variations (order matters - check longer suffixes first)
+    suffix_map = [
+        (', corporation', ' corp'),
+        (' corporation', ' corp'),
+        (', limited', ' ltd'),
+        (' limited', ' ltd'),
+        (', l.l.c.', ' llc'),
+        (' l.l.c.', ' llc'),
+        (', inc.', ' inc'),
+        (', inc', ' inc'),
+        (' inc.', ' inc'),
+        (', llc', ' llc'),
+        (', ltd.', ' ltd'),
+        (', ltd', ' ltd'),
+        (' ltd.', ' ltd'),
+        (', corp.', ' corp'),
+        (', corp', ' corp'),
+        (' corp.', ' corp'),
+        (', co.', ' co'),
+        (' co.', ' co'),
+        (', l.p.', ' lp'),
+        (' l.p.', ' lp'),
+        (', lp', ' lp'),
+    ]
+
+    for old, new in suffix_map:
+        if normalized.endswith(old):
+            normalized = normalized[:-len(old)] + new
+            break
+
+    # Remove trailing periods
     normalized = normalized.rstrip('.')
+
     return normalized

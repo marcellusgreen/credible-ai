@@ -10,14 +10,16 @@ Primitives API for DebtStack.ai
 """
 
 import csv
+import hashlib
 import io
+import json
 import re
 from datetime import date, datetime
 from typing import Optional, List, Set
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Body
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Body, Header, Response
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func, or_, and_, desc, asc
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -80,6 +82,39 @@ def to_csv_response(data: List[dict], filename: str = "export.csv") -> Streaming
         iter([output.getvalue()]),
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+# =============================================================================
+# ETAG CACHING HELPER
+# =============================================================================
+
+def generate_etag(data: dict | list) -> str:
+    """Generate ETag from response data using MD5 hash."""
+    # Serialize to JSON with sorted keys for consistent hashing
+    content = json.dumps(data, sort_keys=True, default=str)
+    return hashlib.md5(content.encode()).hexdigest()
+
+
+def check_etag(if_none_match: Optional[str], etag: str) -> bool:
+    """Check if client's ETag matches (return True if 304 should be returned)."""
+    if not if_none_match:
+        return False
+    # Handle multiple ETags in If-None-Match header
+    client_etags = [e.strip().strip('"') for e in if_none_match.split(',')]
+    return etag in client_etags or '*' in client_etags
+
+
+def etag_response(data: dict, if_none_match: Optional[str] = None) -> Response:
+    """Return JSON response with ETag header, or 304 if unchanged."""
+    etag = generate_etag(data)
+
+    if check_etag(if_none_match, etag):
+        return Response(status_code=304, headers={"ETag": f'"{etag}"'})
+
+    return JSONResponse(
+        content=data,
+        headers={"ETag": f'"{etag}"', "Cache-Control": "private, max-age=60"}
     )
 
 
@@ -204,6 +239,8 @@ async def search_companies(
     offset: int = Query(0, ge=0, description="Pagination offset"),
     # Export format
     format: str = Query("json", description="Response format: json or csv"),
+    # ETag support
+    if_none_match: Optional[str] = Header(None, description="ETag for conditional request"),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -347,7 +384,7 @@ async def search_companies(
     if format.lower() == "csv":
         return to_csv_response(data, filename="companies.csv")
 
-    return {
+    response_data = {
         "data": data,
         "meta": {
             "total": total,
@@ -356,6 +393,7 @@ async def search_companies(
             "fields": list(selected_fields) if selected_fields else "all",
         }
     }
+    return etag_response(response_data, if_none_match)
 
 
 # =============================================================================
@@ -404,6 +442,8 @@ async def search_bonds(
     offset: int = Query(0, ge=0, description="Pagination offset"),
     # Export format
     format: str = Query("json", description="Response format: json or csv"),
+    # ETag support
+    if_none_match: Optional[str] = Header(None, description="ETag for conditional request"),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -636,7 +676,7 @@ async def search_bonds(
     if format.lower() == "csv":
         return to_csv_response(data, filename="bonds.csv")
 
-    return {
+    response_data = {
         "data": data,
         "meta": {
             "total": total,
@@ -644,6 +684,7 @@ async def search_bonds(
             "offset": offset,
         }
     }
+    return etag_response(response_data, if_none_match)
 
 
 # =============================================================================
@@ -1230,6 +1271,8 @@ async def search_pricing(
     limit: int = Query(50, ge=1, le=100, description="Results per page"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
     format: str = Query("json", description="Response format: json or csv"),
+    # ETag support
+    if_none_match: Optional[str] = Header(None, description="ETag for conditional request"),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -1344,7 +1387,7 @@ async def search_pricing(
     if format.lower() == "csv":
         return to_csv_response(data, filename="pricing.csv")
 
-    return {
+    response_data = {
         "data": data,
         "meta": {
             "total": total,
@@ -1353,3 +1396,4 @@ async def search_pricing(
             "as_of": datetime.utcnow().isoformat() + "Z",
         }
     }
+    return etag_response(response_data, if_none_match)
