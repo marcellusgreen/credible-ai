@@ -1,6 +1,6 @@
-# Credible.ai - Context Handoff
+# DebtStack.ai - Context Handoff
 
-Use this prompt to continue work on Credible.ai after clearing context.
+Use this prompt to continue work on DebtStack.ai after clearing context.
 
 ---
 
@@ -9,7 +9,7 @@ Use this prompt to continue work on Credible.ai after clearing context.
 Copy and paste this to continue:
 
 ```
-I'm continuing work on Credible.ai, a credit data API for AI agents. Please read CLAUDE.md for full context.
+I'm continuing work on DebtStack.ai, a credit data API for AI agents. Please read CLAUDE.md for full context.
 
 ## Current State (January 2026)
 
@@ -48,7 +48,7 @@ I'm continuing work on Credible.ai, a credit data API for AI agents. Please read
 - `demos/agent_demo_offline.py` - Test agent integration
 
 **Environment:**
-- GitHub: https://github.com/marcellusgreen/credible-ai
+- GitHub: https://github.com/marcellusgreen/debtstack-ai
 - Database: Neon PostgreSQL (connection in .env)
 - APIs: Anthropic (paid), Gemini (free tier), SEC-API.io (paid)
 

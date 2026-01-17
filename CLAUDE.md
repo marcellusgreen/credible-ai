@@ -2,6 +2,8 @@
 
 Context for AI assistants working on the DebtStack.ai codebase.
 
+> **IMPORTANT**: Before starting work, read `WORKPLAN.md` for current priorities, active tasks, and session history. Update the session log at the end of each session.
+
 ## Project Overview
 
 DebtStack.ai is a credit data API for AI agents. It extracts corporate structure and debt information from SEC filings, then serves pre-computed responses via a FastAPI REST API.

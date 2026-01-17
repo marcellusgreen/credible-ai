@@ -5,15 +5,15 @@ services:
   db:
     image: postgres:15-alpine
     environment:
-      POSTGRES_USER: credible
-      POSTGRES_PASSWORD: credible
-      POSTGRES_DB: credible
+      POSTGRES_USER: debtstack
+      POSTGRES_PASSWORD: debtstack
+      POSTGRES_DB: debtstack
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U credible"]
+      test: ["CMD-SHELL", "pg_isready -U debtstack"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -29,13 +29,13 @@ services:
       timeout: 5s
       retries: 5
 
-  # Credible API
+  # DebtStack API
   api:
     build: .
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql+asyncpg://credible:credible@db:5432/credible
+      DATABASE_URL: postgresql+asyncpg://debtstack:debtstack@db:5432/debtstack
       REDIS_URL: redis://redis:6379
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       SECRET_KEY: ${SECRET_KEY:-dev-secret-key}

@@ -1,1 +1,1 @@
-"""Credible.ai - The credit API for AI agents."""
+"""DebtStack.ai - The credit API for AI agents."""

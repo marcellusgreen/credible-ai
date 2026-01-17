@@ -60,14 +60,14 @@ def convert_to_extraction_result(raw: dict, ticker: str) -> ExtractionResult:
             formation_type=e.get('formation_type'),
             owners=owners,
             consolidation_method=e.get('consolidation_method', 'full'),
-            is_guarantor=e.get('is_guarantor', False),
-            is_borrower=e.get('is_borrower', False),
-            is_restricted=e.get('is_restricted', True),
-            is_unrestricted=e.get('is_unrestricted', False),
-            is_material=e.get('is_material', True),
-            is_domestic=e.get('is_domestic', True),
-            is_vie=e.get('is_vie', False),
-            vie_primary_beneficiary=e.get('vie_primary_beneficiary', False),
+            is_guarantor=e.get('is_guarantor') or False,
+            is_borrower=e.get('is_borrower') or False,
+            is_restricted=e.get('is_restricted') if e.get('is_restricted') is not None else True,
+            is_unrestricted=e.get('is_unrestricted') or False,
+            is_material=e.get('is_material') if e.get('is_material') is not None else True,
+            is_domestic=e.get('is_domestic') if e.get('is_domestic') is not None else True,
+            is_vie=e.get('is_vie') or False,
+            vie_primary_beneficiary=e.get('vie_primary_beneficiary') or False,
         ))
 
     debt_instruments = []

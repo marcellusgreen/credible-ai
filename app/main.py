@@ -96,11 +96,11 @@ async def logging_middleware(request: Request, call_next):
     return response
 
 
-# Include API routes (legacy endpoints)
-app.include_router(api_router, prefix="/v1")
-
-# Include Primitives API (new endpoints optimized for agents)
+# Include Primitives API first (takes precedence for /companies, /bonds, /pricing)
 app.include_router(primitives_router, prefix="/v1")
+
+# Include legacy API routes (company-specific endpoints like /companies/{ticker}/debt)
+app.include_router(api_router, prefix="/v1")
 
 
 # Root redirect to docs
