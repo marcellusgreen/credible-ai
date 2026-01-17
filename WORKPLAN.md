@@ -147,7 +147,7 @@ The 6th primitive `search.documents` isn't implemented. Would enable:
 ### Extraction Pipeline
 - [ ] Extract ISINs from filings (deferred - not needed for MVP)
 - [x] Extract issue_date more reliably - Done 2026-01-17
-- [ ] Extract floor_bps for floating rate debt
+- [x] Extract floor_bps for floating rate debt - Done 2026-01-17
 
 ### Infrastructure
 - [x] Clean up temp directories (`tmpclaude-*`) - Done 2026-01-17, added to .gitignore
@@ -233,6 +233,11 @@ When starting a new session, read this file first, then:
   - `app/services/extraction.py`: Added `estimate_issue_date()` function
 - **Files created**:
   - `scripts/backfill_issue_dates.py`: Backfill issue_date for existing records
+- ✅ Improved floor_bps extraction for floating rate debt:
+  - Enhanced extraction prompts with specific guidance for floor extraction
+  - Added examples: "SOFR floor of 0.50%" = floor_bps: 50
+  - Note: floor_bps cannot be estimated (unlike issue_date) - must be extracted from filings
+  - Current coverage: 15/316 floating rate instruments (4.7%) - will improve on re-extraction
 
 ### 2026-01-17 (Session 7)
 - ✅ Added CSV export to Primitives API:

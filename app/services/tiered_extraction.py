@@ -279,7 +279,15 @@ WHERE TO FIND INDIVIDUAL DEBT INSTRUMENTS:
 
 REQUIRED: For each debt instrument extract:
 - The SPECIFIC name (e.g., "8.75% Senior Notes due 2030", not just "Senior Notes")
-- The interest rate (fixed % or floating spread)
+- The interest rate:
+  - For FIXED rate: interest_rate in basis points (e.g., 850 for 8.50%)
+  - For FLOATING rate: spread_bps over benchmark (e.g., 225 for SOFR + 2.25%), benchmark name (SOFR, Prime, etc.)
+  - For FLOATING rate with floor: floor_bps - the minimum interest rate floor. Look for phrases like:
+    - "SOFR floor of 0.50%" = floor_bps: 50
+    - "subject to a 0.75% floor" = floor_bps: 75
+    - "with a floor of 1.00%" = floor_bps: 100
+    - "SOFR (with a 0% floor)" = floor_bps: 0
+    - Most term loans have floors; revolvers often do not
 - The maturity date
 - The issue_date - IMPORTANT: Look for when the debt was originally issued (e.g., "issued in June 2020", "entered into on March 15, 2021"). Common places to find this:
   - Debt footnote descriptions (e.g., "On May 15, 2020, the Company issued...")
@@ -354,7 +362,7 @@ Return JSON with this exact structure:
       "currency": "USD",
       "rate_type": "fixed|floating",
       "interest_rate": 500,
-      "spread_bps": null,
+      "spread_bps": 225,
       "benchmark": "SOFR",
       "floor_bps": 50,
       "issue_date": "2023-06-15",
