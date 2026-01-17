@@ -950,6 +950,51 @@ def parse_date(date_str: Optional[str]) -> Optional[date]:
         return None
 
 
+def estimate_issue_date(
+    maturity_date: Optional[date],
+    instrument_name: str,
+    instrument_type: str,
+) -> Optional[date]:
+    """
+    Estimate issue date when not explicitly provided.
+
+    Uses common bond/loan tenors:
+    - Senior notes: typically 7-10 year tenor
+    - Term loans: typically 5-7 year tenor
+    - Revolvers: typically 5 year tenor
+    - If name contains year hints (e.g., "due 2030"), infer from that
+    """
+    if not maturity_date:
+        return None
+
+    # Default tenors by instrument type (in years)
+    default_tenors = {
+        "senior_notes": 10,
+        "senior_secured_notes": 7,
+        "subordinated_notes": 10,
+        "term_loan_b": 7,
+        "term_loan_a": 5,
+        "term_loan": 7,
+        "revolver": 5,
+        "abl": 5,
+        "convertible_notes": 5,
+    }
+
+    tenor_years = default_tenors.get(instrument_type.lower(), 7)
+
+    # Check for tenor hints in name (e.g., "5-year", "10yr")
+    import re
+    tenor_match = re.search(r'(\d+)[-\s]?(?:year|yr)', instrument_name.lower())
+    if tenor_match:
+        tenor_years = int(tenor_match.group(1))
+
+    # Calculate estimated issue date
+    from dateutil.relativedelta import relativedelta
+    estimated = maturity_date - relativedelta(years=tenor_years)
+
+    return estimated
+
+
 async def save_extraction_to_db(
     db: AsyncSession,
     extraction: ExtractionResult,
@@ -1132,6 +1177,19 @@ async def save_extraction_to_db(
         used_debt_slugs.add(slug)
 
         debt_id = uuid4()
+
+        # Parse dates
+        parsed_issue_date = parse_date(ext_debt.issue_date)
+        parsed_maturity_date = parse_date(ext_debt.maturity_date)
+
+        # If issue_date not provided, try to estimate from maturity and instrument type
+        if not parsed_issue_date and parsed_maturity_date:
+            parsed_issue_date = estimate_issue_date(
+                parsed_maturity_date,
+                ext_debt.name,
+                ext_debt.instrument_type,
+            )
+
         debt = DebtInstrument(
             id=debt_id,
             company_id=company_id,
@@ -1150,8 +1208,8 @@ async def save_extraction_to_db(
             spread_bps=ext_debt.spread_bps,
             benchmark=ext_debt.benchmark,
             floor_bps=ext_debt.floor_bps,
-            issue_date=parse_date(ext_debt.issue_date),
-            maturity_date=parse_date(ext_debt.maturity_date),
+            issue_date=parsed_issue_date,
+            maturity_date=parsed_maturity_date,
             attributes=ext_debt.attributes,
         )
         db.add(debt)

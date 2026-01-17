@@ -17,6 +17,7 @@ import structlog
 from app.api.routes import router as api_router
 from app.api.primitives import router as primitives_router
 from app.core.config import get_settings
+from app.core.cache import check_rate_limit, DEFAULT_RATE_LIMIT, DEFAULT_RATE_WINDOW
 
 settings = get_settings()
 
@@ -93,6 +94,58 @@ async def logging_middleware(request: Request, call_next):
     )
 
     response.headers["X-Request-ID"] = request_id
+    return response
+
+
+# Rate limiting middleware
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    """Apply rate limiting based on client IP."""
+    # Skip rate limiting for health checks and docs
+    path = request.url.path
+    if path in ["/", "/docs", "/redoc", "/openapi.json", "/v1/ping", "/v1/health"]:
+        return await call_next(request)
+
+    # Get client identifier (IP address)
+    # Check X-Forwarded-For for requests behind proxy/load balancer
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        client_ip = forwarded_for.split(",")[0].strip()
+    else:
+        client_ip = request.client.host if request.client else "unknown"
+
+    # Check rate limit
+    allowed, remaining, reset = await check_rate_limit(client_ip)
+
+    if not allowed:
+        logger.warning(
+            "rate_limit_exceeded",
+            client_ip=client_ip,
+            path=path,
+        )
+        return ORJSONResponse(
+            status_code=429,
+            content={
+                "error": {
+                    "code": "rate_limit_exceeded",
+                    "message": f"Rate limit exceeded. Try again in {reset} seconds.",
+                }
+            },
+            headers={
+                "X-RateLimit-Limit": str(DEFAULT_RATE_LIMIT),
+                "X-RateLimit-Remaining": "0",
+                "X-RateLimit-Reset": str(reset),
+                "Retry-After": str(reset),
+            },
+        )
+
+    response = await call_next(request)
+
+    # Add rate limit headers to successful responses
+    response.headers["X-RateLimit-Limit"] = str(DEFAULT_RATE_LIMIT)
+    response.headers["X-RateLimit-Remaining"] = str(remaining)
+    response.headers["X-RateLimit-Reset"] = str(reset)
+
     return response
 
 

@@ -142,11 +142,11 @@ The 6th primitive `search.documents` isn't implemented. Would enable:
 ### API Enhancements
 - [x] Add CSV export option for bulk data - Done 2026-01-17
 - [x] Add ETag caching headers - Done 2026-01-17
-- [ ] Rate limiting implementation
+- [x] Rate limiting implementation - Done 2026-01-17
 
 ### Extraction Pipeline
 - [ ] Extract ISINs from filings (deferred - not needed for MVP)
-- [ ] Extract issue_date more reliably
+- [x] Extract issue_date more reliably - Done 2026-01-17
 - [ ] Extract floor_bps for floating rate debt
 
 ### Infrastructure
@@ -212,9 +212,27 @@ When starting a new session, read this file first, then:
   - Returns 304 Not Modified when data unchanged
   - Adds `ETag` and `Cache-Control: private, max-age=60` headers to responses
   - ETags generated from MD5 hash of response content
+- ✅ Implemented rate limiting:
+  - 100 requests per minute per IP (sliding window via Redis)
+  - Returns 429 with `Retry-After` header when exceeded
+  - Health/docs endpoints exempt from rate limiting
+  - Adds `X-RateLimit-*` headers to all responses
+  - Fails open if Redis unavailable
+- ✅ Improved issue_date extraction:
+  - Enhanced extraction prompts to emphasize issue_date
+  - Added `estimate_issue_date()` function to infer from maturity date + typical tenors
+  - Senior notes: 10yr, secured notes: 7yr, term loans: 5-7yr, revolvers: 5yr
+  - Auto-estimates on extraction if LLM doesn't provide issue_date
+  - Created `scripts/backfill_issue_dates.py` to update existing records
 - **Files modified**:
   - `app/services/utils.py`: Enhanced `normalize_name()` function
   - `app/api/primitives.py`: Added ETag helper functions and header support
+  - `app/core/cache.py`: Added `check_rate_limit()` function
+  - `app/main.py`: Added rate limiting middleware
+  - `app/services/tiered_extraction.py`: Enhanced extraction prompts for issue_date
+  - `app/services/extraction.py`: Added `estimate_issue_date()` function
+- **Files created**:
+  - `scripts/backfill_issue_dates.py`: Backfill issue_date for existing records
 
 ### 2026-01-17 (Session 7)
 - ✅ Added CSV export to Primitives API:

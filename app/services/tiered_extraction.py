@@ -281,6 +281,10 @@ REQUIRED: For each debt instrument extract:
 - The SPECIFIC name (e.g., "8.75% Senior Notes due 2030", not just "Senior Notes")
 - The interest rate (fixed % or floating spread)
 - The maturity date
+- The issue_date - IMPORTANT: Look for when the debt was originally issued (e.g., "issued in June 2020", "entered into on March 15, 2021"). Common places to find this:
+  - Debt footnote descriptions (e.g., "On May 15, 2020, the Company issued...")
+  - Credit agreement dates (e.g., "Credit Agreement dated as of...")
+  - If not explicitly stated, estimate from bond name: "5.00% Senior Notes due 2030" issued ~2020 (10-year bonds)
 - The principal/outstanding amount for THAT SPECIFIC instrument
 
 JOINT VENTURES AND COMPLEX OWNERSHIP - IMPORTANT:
