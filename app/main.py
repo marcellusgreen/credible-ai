@@ -18,6 +18,7 @@ from app.api.routes import router as api_router
 from app.api.primitives import router as primitives_router
 from app.core.config import get_settings
 from app.core.cache import check_rate_limit, DEFAULT_RATE_LIMIT, DEFAULT_RATE_WINDOW
+from app.core.monitoring import record_request, record_rate_limit_hit
 
 settings = get_settings()
 
@@ -73,7 +74,7 @@ app.add_middleware(
 # Request logging middleware
 @app.middleware("http")
 async def logging_middleware(request: Request, call_next):
-    """Log all requests with timing."""
+    """Log all requests with timing and record metrics."""
     import time
     import uuid
 
@@ -92,6 +93,24 @@ async def logging_middleware(request: Request, call_next):
         status=response.status_code,
         duration_ms=round(duration_ms, 2),
     )
+
+    # Record metrics for analytics (non-blocking)
+    # Get client IP for analytics
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        client_ip = forwarded_for.split(",")[0].strip()
+    else:
+        client_ip = request.client.host if request.client else "unknown"
+
+    # Fire and forget - don't await to avoid slowing down response
+    import asyncio
+    asyncio.create_task(record_request(
+        path=request.url.path,
+        method=request.method,
+        status_code=response.status_code,
+        duration_ms=duration_ms,
+        client_ip=client_ip,
+    ))
 
     response.headers["X-Request-ID"] = request_id
     return response
@@ -123,6 +142,9 @@ async def rate_limit_middleware(request: Request, call_next):
             client_ip=client_ip,
             path=path,
         )
+        # Record rate limit hit for monitoring (fire and forget)
+        import asyncio
+        asyncio.create_task(record_rate_limit_hit(client_ip))
         return ORJSONResponse(
             status_code=429,
             content={

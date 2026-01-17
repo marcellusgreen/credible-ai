@@ -1426,6 +1426,47 @@ async def get_status(db: AsyncSession = Depends(get_db)):
     }
 
 
+@router.get("/analytics/usage", tags=["System"])
+async def get_usage_analytics(
+    hours: int = 24,
+    days: int = 7,
+):
+    """
+    Get API usage analytics and metrics.
+
+    Returns hourly metrics for recent hours and daily metrics for recent days.
+    Includes request counts, error rates, latency, and rate limit hits.
+
+    Query parameters:
+    - hours: Number of hours for hourly metrics (default: 24, max: 48)
+    - days: Number of days for daily metrics (default: 7, max: 30)
+    """
+    from app.core.monitoring import (
+        get_hourly_metrics,
+        get_daily_metrics,
+        get_endpoint_breakdown,
+        check_alerts,
+    )
+
+    # Clamp values
+    hours = min(max(hours, 1), 48)
+    days = min(max(days, 1), 30)
+
+    hourly = await get_hourly_metrics(hours_back=hours)
+    daily = await get_daily_metrics(days_back=days)
+    endpoints = await get_endpoint_breakdown()
+    alerts = await check_alerts()
+
+    return {
+        "data": {
+            "hourly_metrics": hourly,
+            "daily_metrics": daily,
+            "endpoint_breakdown": endpoints,
+            "alerts": alerts,
+        },
+    }
+
+
 # =============================================================================
 # ENTITY DETAIL
 # =============================================================================

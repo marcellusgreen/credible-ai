@@ -151,8 +151,8 @@ The 6th primitive `search.documents` isn't implemented. Would enable:
 
 ### Infrastructure
 - [x] Clean up temp directories (`tmpclaude-*`) - Done 2026-01-17, added to .gitignore
-- [ ] Set up monitoring/alerting
-- [ ] Add API usage analytics
+- [x] Set up monitoring/alerting - Done 2026-01-17
+- [x] Add API usage analytics - Done 2026-01-17
 
 ---
 
@@ -165,6 +165,7 @@ The 6th primitive `search.documents` isn't implemented. Would enable:
 | Extraction with QA | `app/services/iterative_extraction.py` |
 | Metrics computation | `app/services/extraction.py` (lines 1391-1512) |
 | Database schema | `app/models/schema.py` |
+| Monitoring/analytics | `app/core/monitoring.py` |
 | Financials extraction | `scripts/extract_financials.py` |
 | Pricing updates | `scripts/update_pricing.py` |
 | CUSIP mapping | `scripts/map_cusips.py` |
@@ -238,6 +239,19 @@ When starting a new session, read this file first, then:
   - Added examples: "SOFR floor of 0.50%" = floor_bps: 50
   - Note: floor_bps cannot be estimated (unlike issue_date) - must be extracted from filings
   - Current coverage: 15/316 floating rate instruments (4.7%) - will improve on re-extraction
+- ✅ Added monitoring and API usage analytics:
+  - Created `app/core/monitoring.py` with request tracking via Redis
+  - Tracks: total requests, endpoint breakdown, latency buckets, error rates, rate limit hits
+  - Hourly metrics (48hr TTL) and daily metrics (30 day TTL)
+  - Unique client IP tracking per day
+  - Alert checks for high error rate (>5% 5xx) and high rate limiting (>10%)
+  - Added `GET /v1/analytics/usage` endpoint with hourly/daily metrics
+  - Integrated into `main.py` middleware using fire-and-forget async
+- **Files modified**:
+  - `app/main.py`: Added monitoring integration to logging and rate limit middlewares
+  - `app/api/routes.py`: Added `/v1/analytics/usage` endpoint
+- **Files created**:
+  - `app/core/monitoring.py`: Monitoring and analytics module
 
 ### 2026-01-17 (Session 7)
 - ✅ Added CSV export to Primitives API:
