@@ -106,6 +106,7 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 3. **Individual instruments**: Extract each bond separately, not totals
 4. **Name normalization**: Case-insensitive, punctuation-normalized
 5. **Robust JSON parsing**: `parse_json_robust()` handles LLM output issues
+6. **Estimated data must be flagged**: When data cannot be extracted from source documents after repeated attempts and must be estimated/inferred, it MUST be clearly marked as estimated. Users should always know when they're seeing inferred data vs. extracted data. Example: `issue_date_estimated: true` indicates the date was inferred from maturity date and typical bond tenors, not extracted from SEC filings.
 
 ## Running Extractions
 

@@ -46,6 +46,15 @@ Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
 - **Bond Pricing**: YTM and spread-to-treasury calculations
 - **Pre-computed Responses**: Sub-second API serving via cached JSON with ETag support
 
+## Data Quality Principles
+
+**Estimated data is always flagged.** When data cannot be extracted from SEC filings after repeated attempts and must be estimated or inferred, the API clearly indicates this:
+
+- `issue_date_estimated: true` - Issue date was inferred from maturity date and typical bond tenors (e.g., 10-year for senior notes), not extracted from the filing
+- Future estimated fields will follow the same pattern: `{field}_estimated: true`
+
+This transparency ensures you always know when you're working with extracted data vs. inferred data.
+
 ## Quick Start
 
 ### 1. Clone and Setup
