@@ -241,6 +241,7 @@ class DebtInstrument(Base):
 
     # Key dates
     issue_date: Mapped[Optional[date]] = mapped_column(Date)
+    issue_date_estimated: Mapped[bool] = mapped_column(Boolean, default=False)  # True if issue_date was estimated, not extracted
     maturity_date: Mapped[Optional[date]] = mapped_column(Date)
 
     # Status

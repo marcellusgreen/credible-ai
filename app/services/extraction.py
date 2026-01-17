@@ -1181,6 +1181,7 @@ async def save_extraction_to_db(
         # Parse dates
         parsed_issue_date = parse_date(ext_debt.issue_date)
         parsed_maturity_date = parse_date(ext_debt.maturity_date)
+        issue_date_estimated = False
 
         # If issue_date not provided, try to estimate from maturity and instrument type
         if not parsed_issue_date and parsed_maturity_date:
@@ -1189,6 +1190,7 @@ async def save_extraction_to_db(
                 ext_debt.name,
                 ext_debt.instrument_type,
             )
+            issue_date_estimated = True  # Mark as estimated
 
         debt = DebtInstrument(
             id=debt_id,
@@ -1209,6 +1211,7 @@ async def save_extraction_to_db(
             benchmark=ext_debt.benchmark,
             floor_bps=ext_debt.floor_bps,
             issue_date=parsed_issue_date,
+            issue_date_estimated=issue_date_estimated,
             maturity_date=parsed_maturity_date,
             attributes=ext_debt.attributes,
         )

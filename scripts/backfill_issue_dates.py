@@ -146,12 +146,16 @@ async def backfill_issue_dates(save: bool = False):
                 await db.execute(
                     update(DebtInstrument)
                     .where(DebtInstrument.id == u["id"])
-                    .values(issue_date=u["estimated_issue_date"])
+                    .values(
+                        issue_date=u["estimated_issue_date"],
+                        issue_date_estimated=True,  # Mark as estimated
+                    )
                 )
                 count += 1
 
             await db.commit()
             print(f"Updated {count} debt instruments with estimated issue dates.")
+            print("NOTE: issue_date_estimated=True for all updated records.")
         else:
             print("DRY RUN - no changes made. Use --save to apply updates.")
 

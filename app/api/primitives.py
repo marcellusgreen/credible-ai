@@ -143,7 +143,7 @@ BOND_FIELDS = {
     "instrument_type", "seniority", "security_type",
     "commitment", "principal", "outstanding", "currency",
     "rate_type", "coupon_rate", "spread_bps", "benchmark", "floor_bps",
-    "issue_date", "maturity_date",
+    "issue_date", "issue_date_estimated", "maturity_date",
     "is_active", "is_drawn",
     "pricing", "guarantor_count",
 }
@@ -648,6 +648,7 @@ async def search_bonds(
             "benchmark": d.benchmark,
             "floor_bps": d.floor_bps,
             "issue_date": d.issue_date.isoformat() if d.issue_date else None,
+            "issue_date_estimated": d.issue_date_estimated,
             "maturity_date": d.maturity_date.isoformat() if d.maturity_date else None,
             "is_active": d.is_active,
             "is_drawn": d.is_drawn,
