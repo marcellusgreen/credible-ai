@@ -500,10 +500,11 @@ class SecApiClient:
         )
 
         # Then get recent 10-Q and 8-K filings
+        # Increase limit to capture more historical credit agreements and indentures
         other_filings = self.get_filings_by_ticker(
             ticker,
             form_types=["10-Q", "8-K"],
-            max_filings=10,
+            max_filings=30,
             cik=cik
         )
 
@@ -534,20 +535,42 @@ class SecApiClient:
             if filing_url:
                 download_tasks.append((key, filing_url, False))
 
-            # For 10-K, also get Exhibit 21 (subsidiaries)
-            if include_exhibits and form_type == "10-K":
+            # Get relevant exhibits based on filing type
+            if include_exhibits:
                 for doc in filing.get("documentFormatFiles", []):
                     doc_type = doc.get("type", "").upper()
-                    if "21" in doc_type:
-                        exhibit_url = doc.get("documentUrl", "")
-                        if exhibit_url:
-                            ex_key = f"exhibit_21_{filed_at}"
+                    description = doc.get("description", "").upper()
+                    exhibit_url = doc.get("documentUrl", "")
+
+                    if not exhibit_url:
+                        continue
+
+                    # Exhibit 21 - Subsidiaries (from 10-K)
+                    if form_type == "10-K" and "21" in doc_type:
+                        ex_key = f"exhibit_21_{filed_at}"
+                        download_tasks.append((ex_key, exhibit_url, True))
+
+                    # Exhibit 10.x - Credit Agreements, Amendments (from 8-K and 10-K)
+                    # Look for EX-10.1, EX-10.2, etc. - download all, excluding obvious non-credit docs
+                    # EX-10 documents typically contain: credit agreements, amendments, loan documents
+                    elif "EX-10" in doc_type or (doc_type.startswith("10") and "." in doc_type):
+                        # Exclude employment agreements, compensation plans, leases, etc.
+                        exclude_keywords = ["EMPLOYMENT", "COMPENSATION", "BONUS", "INCENTIVE",
+                                          "SEPARATION", "SEVERANCE", "LEASE", "SUBLEASE",
+                                          "CONSULTING", "SERVICES AGREEMENT", "LICENSE"]
+                        if not any(kw in description for kw in exclude_keywords):
+                            ex_key = f"credit_agreement_{filed_at}_{doc_type.replace('.', '_')}"
                             download_tasks.append((ex_key, exhibit_url, True))
-                    # Also get credit agreements (Exhibit 10)
-                    elif "10" in doc_type and "CREDIT" in doc.get("description", "").upper():
-                        exhibit_url = doc.get("documentUrl", "")
-                        if exhibit_url:
-                            ex_key = f"exhibit_10_{filed_at}_{doc_type}"
+
+                    # Exhibit 4.x - Indentures (from 8-K primarily)
+                    # Look for EX-4.1, EX-4.2, etc. - these are almost always indentures
+                    # EX-4 documents typically contain: base indentures, supplemental indentures,
+                    # note terms, officer's certificates, forms of notes
+                    elif "EX-4" in doc_type or (doc_type.startswith("4") and "." in doc_type):
+                        # Exclude form certificates and specimens (not useful for analysis)
+                        exclude_keywords = ["FORM OF CERTIFICATE", "SPECIMEN", "RIGHTS AGREEMENT"]
+                        if not any(kw in description for kw in exclude_keywords):
+                            ex_key = f"indenture_{filed_at}_{doc_type.replace('.', '_')}"
                             download_tasks.append((ex_key, exhibit_url, True))
 
         # Download all files in parallel using ThreadPoolExecutor

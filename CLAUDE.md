@@ -12,13 +12,13 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 ## Current Status (January 2026)
 
-**Database**: 178 companies | 3,085 entities | 1,805 debt instruments | 30 priced bonds
+**Database**: 178 companies | 3,085 entities | 1,805 debt instruments | 30 priced bonds | 5,456 document sections
 
 **Deployment**: Railway with Neon PostgreSQL + Upstash Redis
 - Live at: `https://credible-ai-production.up.railway.app`
 
 **What's Working**:
-- **Primitives API**: 5 core endpoints optimized for AI agents (field selection, powerful filters)
+- **Primitives API**: 6 core endpoints optimized for AI agents (field selection, powerful filters)
 - **Legacy REST API**: 26 endpoints for detailed company data
 - Iterative extraction with QA feedback loop (5 checks, 85% threshold)
 - Gemini for extraction (~$0.008), Claude for escalation
@@ -47,7 +47,7 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 
 | File | Purpose |
 |------|---------|
-| `app/api/primitives.py` | **Primitives API** - 5 core endpoints for agents |
+| `app/api/primitives.py` | **Primitives API** - 6 core endpoints for agents |
 | `app/api/routes.py` | Legacy FastAPI endpoints (26 routes) |
 | `app/core/cache.py` | Redis cache client (Upstash) |
 | `app/services/iterative_extraction.py` | Main extraction with QA loop |
@@ -68,6 +68,7 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 - `guarantees`: Links debt to guarantor entities
 - `company_financials`: Quarterly financial statements (amounts in cents)
 - `bond_pricing`: Pricing data (YTM, spreads in basis points)
+- `document_sections`: SEC filing sections for full-text search (TSVECTOR + GIN index)
 
 **Cache Tables**:
 - `company_cache`: Pre-computed JSON responses
@@ -75,7 +76,7 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 
 ## API Endpoints
 
-### Primitives API (5 endpoints - optimized for agents)
+### Primitives API (6 endpoints - optimized for agents)
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
@@ -84,6 +85,7 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 | `/v1/bonds/resolve` | GET | Resolve CUSIP/bond identifiers |
 | `/v1/entities/traverse` | POST | Graph traversal (guarantors, structure) |
 | `/v1/pricing` | GET | Bond pricing data |
+| `/v1/documents/search` | GET | Full-text search across SEC filings |
 
 **Field selection**: `?fields=ticker,name,net_leverage_ratio`
 **Sorting**: `?sort=-net_leverage_ratio` (prefix `-` for descending)
@@ -154,7 +156,7 @@ alembic upgrade head     # Apply all
 alembic revision -m "description"  # Create new
 ```
 
-Current migrations: 001 (initial) through 007 (cusip nullable)
+Current migrations: 001 (initial) through 009 (document sections)
 
 ## Common Issues
 
@@ -208,6 +210,19 @@ r = requests.post(f"{BASE}/entities/traverse", json={
 
 # Q: Resolve bond identifier
 r = requests.get(f"{BASE}/bonds/resolve", params={"q": "RIG 8% 2027"})
+
+# Q: Search for covenant language in credit agreements
+r = requests.get(f"{BASE}/documents/search", params={
+    "q": "maintenance covenant",
+    "section_type": "credit_agreement",
+    "ticker": "CHTR"
+})
+
+# Q: Find indentures with redemption provisions
+r = requests.get(f"{BASE}/documents/search", params={
+    "q": "optional redemption",
+    "section_type": "indenture"
+})
 ```
 
 See `docs/PRIMITIVES_API_SPEC.md` for full specification.

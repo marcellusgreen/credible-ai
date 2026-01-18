@@ -260,87 +260,112 @@ curl "https://api.debtstack.ai/v1/bonds?seniority=senior_unsecured&min_ytm=8.0&h
 
 ### Endpoint
 ```
-GET /v1/companies/{ticker}/documents
+GET /v1/documents/search
 ```
 
 ### Purpose
-Deep dive into a company's SEC filings for structure analysis, covenant review, and maturity schedules.
-
-### Path Parameters
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `ticker` | string | Company ticker symbol |
+Full-text search across SEC filing sections for covenant analysis, debt structure research, and credit agreement review.
 
 ### Query Parameters
 
 | Parameter | Type | Description | Example |
 |-----------|------|-------------|---------|
-| `filing_type` | string | `10-K`, `10-Q`, `8-K`, `EX-21` | `10-K` |
-| `section` | string | Document section (see below) | `debt_footnote` |
-| `keywords` | string | Comma-separated keywords | `maturity,refinancing` |
-| `date_from` | date | Filings from date | `2023-01-01` |
-| `date_to` | date | Filings to date | `2024-12-31` |
-| `fiscal_year` | int | Specific fiscal year | `2024` |
-| `fiscal_quarter` | int | Specific quarter (1-4) | `4` |
-| `output` | string | `full`, `snippets`, `metadata` | `snippets` |
-| `limit` | int | Max results | `10` |
+| `q` | string | **Required.** Full-text search query | `subordinated` |
+| `ticker` | string | Comma-separated company tickers | `RIG,CHTR` |
+| `doc_type` | string | Filing type: `10-K`, `10-Q`, `8-K` | `10-K` |
+| `section_type` | string | Section type (see below) | `debt_footnote` |
+| `filed_after` | date | Minimum filing date | `2024-01-01` |
+| `filed_before` | date | Maximum filing date | `2025-12-31` |
+| `fields` | string | Comma-separated fields to return | `ticker,section_type,snippet` |
+| `sort` | string | Sort: `-relevance` (default), `-filing_date`, `filing_date` | `-relevance` |
+| `limit` | int | Results per page (max 100, default 50) | `20` |
+| `offset` | int | Pagination offset | `0` |
+| `format` | string | Response format: `json` (default), `csv` | `json` |
 
-### Sections
-| Section ID | Description |
-|------------|-------------|
-| `debt_footnote` | Long-term debt note (usually Note 9 or 10) |
-| `subsidiaries` | List of subsidiaries (Exhibit 21) |
-| `mda` | Management Discussion & Analysis |
-| `liquidity` | Liquidity and capital resources |
-| `covenants` | Covenant compliance |
-| `maturity_schedule` | Debt maturity schedule |
-| `guarantor_info` | Rule 13-01 Obligor Group disclosure |
-| `risk_factors` | Risk factors section |
+### Section Types
+| Section Type | Description | Source |
+|--------------|-------------|--------|
+| `exhibit_21` | Subsidiary list | 10-K Exhibit 21 |
+| `debt_footnote` | Long-term debt details (Note 9/10) | 10-K/10-Q Notes |
+| `mda_liquidity` | Liquidity and Capital Resources | MD&A section |
+| `credit_agreement` | Full credit facility documents | 8-K Exhibit 10 |
+| `indenture` | Bond indentures (covenants, events of default) | 8-K Exhibit 4 |
+| `guarantor_list` | Guarantor subsidiaries | Notes |
+| `covenants` | Financial covenant details | Notes/Exhibits |
+
+### Available Fields
+```
+id, ticker, company_name
+doc_type, filing_date, section_type, section_title
+snippet, content, content_length
+relevance_score
+```
 
 ### Example Request
 ```bash
-# Get RIG's debt structure from Note 9
-curl "https://api.debtstack.ai/v1/companies/RIG/documents?filing_type=10-K&section=debt_footnote&fiscal_year=2024&output=snippets" \
+# Find all mentions of 'subordinated' in debt footnotes
+curl "https://api.debtstack.ai/v1/documents/search?q=subordinated&section_type=debt_footnote&fields=ticker,section_type,snippet,relevance_score" \
   -H "Authorization: Bearer ds_live_xxx"
 ```
 
 ### Example Response
 ```json
 {
-  "data": {
-    "company": {
+  "data": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
       "ticker": "RIG",
-      "name": "Transocean Ltd."
+      "company_name": "Transocean Ltd.",
+      "doc_type": "10-K",
+      "filing_date": "2024-02-15",
+      "section_type": "debt_footnote",
+      "section_title": "Note 9 - Long-Term Debt",
+      "snippet": "...senior <b>subordinated</b> notes due 2028...",
+      "relevance_score": 0.85
     },
-    "documents": [
-      {
-        "filing_type": "10-K",
-        "filing_date": "2024-02-28",
-        "fiscal_year": 2024,
-        "section": "debt_footnote",
-        "title": "Note 9 - Debt",
-        "snippets": [
-          {
-            "text": "As of December 31, 2024, we had approximately $7.1 billion of long-term debt outstanding...",
-            "page": 89,
-            "relevance": 0.95
-          },
-          {
-            "text": "Our 8.00% Senior Notes due 2027 are fully and unconditionally guaranteed by certain wholly-owned subsidiaries...",
-            "page": 91,
-            "relevance": 0.88
-          }
-        ],
-        "source_url": "https://www.sec.gov/Archives/edgar/data/1451505/..."
-      }
-    ]
-  },
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440001",
+      "ticker": "CHTR",
+      "company_name": "Charter Communications, Inc.",
+      "doc_type": "10-K",
+      "filing_date": "2024-02-23",
+      "section_type": "debt_footnote",
+      "section_title": "Note 8 - Long-Term Debt",
+      "snippet": "...structurally <b>subordinated</b> to all obligations of our subsidiaries...",
+      "relevance_score": 0.78
+    }
+  ],
   "meta": {
-    "total_matches": 2,
-    "filing_count": 1
+    "query": "subordinated",
+    "total": 42,
+    "limit": 50,
+    "offset": 0,
+    "filters_applied": {
+      "section_type": "debt_footnote"
+    }
   }
 }
 ```
+
+### Example: Search Credit Agreements for Covenants
+```bash
+# Find maintenance covenants in credit agreements
+curl "https://api.debtstack.ai/v1/documents/search?q=maintenance%20covenant&section_type=credit_agreement&ticker=CHTR&sort=-filing_date" \
+  -H "Authorization: Bearer ds_live_xxx"
+```
+
+### Example: Search Indentures for Events of Default
+```bash
+# Find event of default clauses in indentures
+curl "https://api.debtstack.ai/v1/documents/search?q=event%20of%20default&section_type=indenture&limit=10" \
+  -H "Authorization: Bearer ds_live_xxx"
+```
+
+### Notes
+- Search uses PostgreSQL full-text search with relevance ranking
+- Snippets highlight matching terms with `<b>` tags
+- Credit agreements and indentures are stored as full documents (up to 500K chars)
+- Use `content` field to retrieve full section text (large responses)
 
 ---
 

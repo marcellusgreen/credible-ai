@@ -24,7 +24,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -331,6 +331,68 @@ class BondPricing(Base):
         Index("idx_bond_pricing_debt", "debt_instrument_id"),
         Index("idx_bond_pricing_cusip", "cusip"),
         Index("idx_bond_pricing_staleness", "staleness_days"),
+    )
+
+
+class DocumentSection(Base):
+    """
+    Extracted sections from SEC filings for full-text search.
+
+    Stores sections like debt footnotes, MD&A, credit agreements, etc.
+    with PostgreSQL full-text search capabilities (TSVECTOR + GIN index).
+
+    Section types:
+    - exhibit_21: Subsidiary list from 10-K Exhibit 21
+    - debt_footnote: Long-term debt details from Notes
+    - mda_liquidity: Liquidity and Capital Resources from MD&A
+    - credit_agreement: Credit facility terms from 8-K Exhibit 10
+    - guarantor_list: Guarantor subsidiaries from Notes
+    - covenants: Financial covenants from Notes/Exhibits
+    """
+
+    __tablename__ = "document_sections"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    company_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+
+    # Document metadata
+    doc_type: Mapped[str] = mapped_column(String(50), nullable=False)  # '10-K', '10-Q', '8-K'
+    filing_date: Mapped[date] = mapped_column(Date, nullable=False)
+    section_type: Mapped[str] = mapped_column(String(50), nullable=False)  # 'debt_footnote', 'exhibit_21', etc.
+    section_title: Mapped[Optional[str]] = mapped_column(String(255))
+
+    # Content
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_length: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # Full-text search vector (auto-computed via trigger in migration)
+    search_vector: Mapped[Optional[str]] = mapped_column(TSVECTOR)
+
+    # Source reference
+    sec_filing_url: Mapped[Optional[str]] = mapped_column(String(500))
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    # Relationship
+    company: Mapped["Company"] = relationship(backref="document_sections")
+
+    __table_args__ = (
+        Index("idx_document_sections_search_vector", "search_vector", postgresql_using="gin"),
+        Index("idx_document_sections_company", "company_id"),
+        Index("idx_document_sections_doc_type", "doc_type"),
+        Index("idx_document_sections_section_type", "section_type"),
+        Index("idx_document_sections_filing_date", "filing_date"),
+        Index("idx_document_sections_company_doc_section", "company_id", "doc_type", "section_type"),
     )
 
 

@@ -38,9 +38,10 @@ Your job is to extract specific financial metrics from the filing's financial st
 - Consolidated Statements of Cash Flows
 
 CRITICAL RULES:
-1. All amounts must be in USD CENTS (multiply dollars by 100)
-   - $1 million = 100,000,000 cents
-   - $1 billion = 100,000,000,000 cents
+1. Extract the EXACT numbers as shown in the filing - DO NOT convert units
+   - If the filing says "in millions" and shows "41,352", return 41352
+   - If the filing says "in thousands" and shows "41,352,000", return 41352000
+   - Just extract the raw numeric values exactly as presented
 2. Use QUARTERLY figures for income statement and cash flow (not year-to-date, unless Q4)
 3. Use PERIOD END figures for balance sheet
 4. Return null for any metric you cannot find - do not estimate or guess
@@ -64,7 +65,7 @@ Extract and return this JSON structure:
   "fiscal_quarter": {fiscal_quarter},
   "period_end_date": "{period_end}",
 
-  // INCOME STATEMENT (quarterly figures, in cents)
+  // INCOME STATEMENT (quarterly figures - use EXACT numbers from filing)
   "revenue": null,                    // Net sales, revenues, or total revenues
   "cost_of_revenue": null,            // Cost of sales, cost of goods sold
   "gross_profit": null,               // Revenue minus cost of revenue
@@ -74,7 +75,7 @@ Extract and return this JSON structure:
   "depreciation_amortization": null,  // D&A (often in cash flow statement)
   "ebitda": null,                     // If disclosed, or operating_income + D&A
 
-  // BALANCE SHEET (as of period end, in cents)
+  // BALANCE SHEET (as of period end - use EXACT numbers from filing)
   "cash_and_equivalents": null,       // Cash and cash equivalents
   "total_current_assets": null,       // Total current assets
   "total_assets": null,               // Total assets
@@ -83,7 +84,7 @@ Extract and return this JSON structure:
   "total_liabilities": null,          // Total liabilities
   "stockholders_equity": null,        // Total stockholders' equity
 
-  // CASH FLOW (quarterly figures, in cents)
+  // CASH FLOW (quarterly figures - use EXACT numbers from filing)
   "operating_cash_flow": null,        // Net cash from operating activities
   "investing_cash_flow": null,        // Net cash from investing activities (usually negative)
   "financing_cash_flow": null,        // Net cash from financing activities
@@ -100,9 +101,11 @@ EXTRACTION TIPS:
 - EBITDA: Some companies disclose "Adjusted EBITDA" in MD&A section
 
 IMPORTANT:
+- Extract the EXACT numbers as shown in the filing tables
+- DO NOT convert or multiply the numbers - just extract them as presented
+- The filing header will say "in millions" or "in thousands" - we handle conversion separately
 - For 10-Q filings, extract QUARTERLY data (3 months)
 - For 10-K filings, you may need to calculate Q4 = Full Year - 9 Month YTD
-- Use exact numbers from the filing, converted to cents
 - Return null (not 0) for missing data
 """
 
@@ -125,6 +128,79 @@ FINANCIAL_SECTIONS_KEYWORDS = [
     "depreciation and amortization",
     "capital expenditures",
 ]
+
+
+def detect_filing_scale(content: str) -> int:
+    """
+    Detect the scale used in SEC filing financial statements.
+
+    SEC filings explicitly state scale in headers like:
+    - "in millions" or "(in millions)"
+    - "in thousands" or "(in thousands)"
+    - "in billions" (rare)
+    - "dollars in millions"
+
+    Returns multiplier to convert stated values to cents:
+    - 1 if already in dollars (no scale stated)
+    - 100 for dollars to cents
+    - 100_000 for thousands to cents ($1,000 = 100,000 cents)
+    - 100_000_000 for millions to cents ($1M = 100M cents)
+    - 100_000_000_000 for billions to cents ($1B = 100B cents)
+    """
+    content_lower = content.lower()
+
+    # Find the scale indicator NEAR financial statement headers
+    # This avoids matching scales in supplementary charts/graphics
+    financial_headers = [
+        "consolidated balance sheet",
+        "consolidated statements of operations",
+        "consolidated statements of income",
+        "consolidated statements of earnings",
+        "statements of operations",
+        "balance sheets",
+    ]
+
+    # Search within 500 chars after each financial header for scale indicators
+    scale_patterns = [
+        # Millions (most common for large companies) - check first
+        (r'dollars\s+in\s+millions', 100_000_000),
+        (r'\(\s*in\s+millions\s*\)', 100_000_000),
+        (r'\(\s*\$?\s*in\s+millions\s*\)', 100_000_000),
+        (r'\bin\s+millions\b(?!\s+of\s+shares)', 100_000_000),
+        (r'\(\s*millions\s*\)', 100_000_000),
+        (r'amounts\s+in\s+millions', 100_000_000),
+
+        # Thousands (common for smaller companies)
+        (r'dollars\s+in\s+thousands', 100_000),
+        (r'\(\s*in\s+thousands\s*\)', 100_000),
+        (r'\(\s*\$?\s*in\s+thousands\s*\)', 100_000),
+        (r'\bin\s+thousands\b(?!\s+of\s+shares)', 100_000),
+        (r'\(\s*thousands\s*\)', 100_000),
+        (r'amounts\s+in\s+thousands', 100_000),
+
+        # Billions (rare - usually only in supplementary materials)
+        (r'\(\s*in\s+billions\s*\)', 100_000_000_000),
+        (r'dollars\s+in\s+billions', 100_000_000_000),
+    ]
+
+    # First, try to find scale near financial statement headers
+    for header in financial_headers:
+        header_pos = content_lower.find(header)
+        if header_pos != -1:
+            # Search in the 1000 chars following the header
+            search_region = content_lower[header_pos:header_pos + 1000]
+            for pattern, multiplier in scale_patterns:
+                if re.search(pattern, search_region):
+                    return multiplier
+
+    # Fallback: search the entire document (but prefer millions over billions)
+    # since billions is often used in supplementary charts, not main financials
+    for pattern, multiplier in scale_patterns:
+        if re.search(pattern, content_lower):
+            return multiplier
+
+    # Default: assume values are in dollars, convert to cents
+    return 100
 
 
 # =============================================================================
@@ -302,6 +378,16 @@ async def extract_financials(
     if content.strip().startswith("<") or content.strip().startswith("<?xml"):
         content = clean_filing_html(content)
 
+    # Detect scale from filing BEFORE truncating content
+    filing_scale = detect_filing_scale(content)
+    scale_name = {
+        100: "dollars",
+        100_000: "thousands",
+        100_000_000: "millions",
+        100_000_000_000: "billions",
+    }.get(filing_scale, "unknown")
+    print(f"  Detected filing scale: {scale_name} (multiplier: {filing_scale:,})")
+
     # Extract financial sections
     content = extract_financial_sections(content)
 
@@ -350,7 +436,15 @@ async def extract_financials(
     # Parse response
     try:
         data = parse_json_robust(response_text)
+
+        # Handle case where Gemini returns an array with single object
+        if isinstance(data, list) and len(data) > 0:
+            data = data[0]
+
         if data:
+            # Apply the detected scale from the filing
+            data = apply_filing_scale(data, filing_scale)
+
             # Calculate EBITDA if not provided
             if data.get("ebitda") is None:
                 operating = data.get("operating_income")
@@ -364,6 +458,46 @@ async def extract_financials(
         print(f"Response: {response_text[:500]}...")
 
     return None
+
+
+def apply_filing_scale(data: dict, scale_multiplier: int) -> dict:
+    """
+    Apply the detected filing scale to convert raw extracted values to cents.
+
+    Args:
+        data: Dictionary of extracted financial data (raw values from filing)
+        scale_multiplier: Multiplier detected from filing (e.g., 100_000_000 for "in millions")
+
+    Returns:
+        Data with all monetary values converted to cents
+    """
+    monetary_fields = [
+        "revenue", "cost_of_revenue", "gross_profit", "operating_income",
+        "interest_expense", "net_income", "depreciation_amortization", "ebitda",
+        "cash_and_equivalents", "total_current_assets", "total_assets",
+        "total_current_liabilities", "total_debt", "total_liabilities",
+        "stockholders_equity", "operating_cash_flow", "investing_cash_flow",
+        "financing_cash_flow", "capex"
+    ]
+
+    for field in monetary_fields:
+        value = data.get(field)
+        if value is None:
+            continue
+
+        # Convert string values to numbers first
+        if isinstance(value, str):
+            try:
+                # Remove commas and convert
+                value = int(value.replace(",", ""))
+            except (ValueError, TypeError):
+                data[field] = None
+                continue
+
+        # Apply the scale multiplier to convert to cents
+        data[field] = int(value * scale_multiplier)
+
+    return data
 
 
 async def save_financials_to_db(

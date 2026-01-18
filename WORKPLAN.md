@@ -1,10 +1,10 @@
 # DebtStack Work Plan
 
-Last Updated: 2026-01-17
+Last Updated: 2026-01-18
 
 ## Current Status
 
-**Database**: 177 companies | 3,085 entities | 1,805 debt instruments | 30 priced bonds
+**Database**: 178 companies | 3,085 entities | 1,805 debt instruments | 30 priced bonds | **5,456 document sections**
 **Deployment**: Live at `https://credible-ai-production.up.railway.app`
 **Infrastructure**: Railway + Neon PostgreSQL + Upstash Redis (complete)
 
@@ -25,7 +25,7 @@ Last Updated: 2026-01-17
 | `GET /v1/bonds/resolve` | ✅ Done | CUSIP/ISIN/fuzzy matching |
 | `POST /v1/entities/traverse` | ✅ Done | Graph traversal for guarantors, structure |
 | `GET /v1/pricing` | ✅ Done | FINRA TRACE data |
-| `GET /v1/companies/{ticker}/documents` | ❌ Not started | Phase 2 feature |
+| `GET /v1/documents/search` | ✅ Done | Full-text search across SEC filings |
 
 ---
 
@@ -115,20 +115,272 @@ These fields are now being computed:
 ---
 
 #### Priority 4: Document Search Primitive (New Feature)
-**Status**: ⏸️ DEFERRED - Phase 2
+**Status**: ✅ COMPLETE
 **Effort**: Large - new feature
 
-The 6th primitive `search.documents` isn't implemented. Would enable:
-- "Get RIG's debt structure from Note 9"
-- "Find all mentions of 'covenant' in recent 10-Ks"
+The 6th primitive `GET /v1/documents/search` enables full-text search across SEC filing sections:
+- "Find all mentions of 'subordinated' in debt footnotes"
+- "Search for 'covenant' across recent 10-Ks"
+- "Find companies with credit agreement amendments"
 
-**Requirements**:
-1. New table for document sections/chunks
-2. Section extraction (Note 9, MD&A, Risk Factors)
-3. Full-text search (PostgreSQL FTS or external)
-4. New API endpoint
+**Implementation Steps**:
+| Step | Status | Description |
+|------|--------|-------------|
+| 1. Migration | ✅ Done | `009_add_document_sections.py` - table + GIN index + trigger |
+| 2. SQLAlchemy Model | ✅ Done | Added `DocumentSection` to `schema.py` |
+| 3. Section Extraction | ✅ Done | `app/services/section_extraction.py` |
+| 4. API Endpoint | ✅ Done | `GET /v1/documents/search` in `primitives.py` |
+| 5. ETL Integration | ✅ Done | Hooked into `scripts/extract_iterative.py` |
+| 6. Backfill Script | ✅ Done | `scripts/backfill_document_sections.py` |
+| 7. Documentation | ✅ Done | Updated CLAUDE.md, PRIMITIVES_API_SPEC.md |
 
-**Defer to Phase 2**.
+**Section Types** (7 types):
+- `exhibit_21` - Subsidiary list from 10-K Exhibit 21
+- `debt_footnote` - Long-term debt details from Notes
+- `mda_liquidity` - Liquidity and Capital Resources from MD&A
+- `credit_agreement` - Credit facility terms from 8-K Exhibit 10 (full documents)
+- `indenture` - Bond indentures from 8-K Exhibit 4 (full documents)
+- `guarantor_list` - Guarantor subsidiaries from Notes
+- `covenants` - Financial covenants from Notes/Exhibits
+
+**Section Statistics** (as of 2026-01-18):
+| Section Type | Count | Avg Size |
+|--------------|-------|----------|
+| credit_agreement | 1,720 | ~100K chars |
+| mda_liquidity | 1,098 | - |
+| covenants | 815 | - |
+| indenture | 796 | ~100K chars |
+| debt_footnote | 552 | - |
+| guarantor_list | 247 | - |
+| exhibit_21 | 228 | - |
+| **Total** | **5,456** | - |
+
+**Database**: `document_sections` table with PostgreSQL full-text search (TSVECTOR + GIN index)
+
+---
+
+## Active Work: Agent-Friendly Enhancements
+
+Three enhancements to make DebtStack more attractive for AI agent consumption.
+
+### Enhancement 1: Confidence Scores + Metadata
+**Status**: 📋 PLANNED
+**Effort**: Large (3-5 days)
+**Priority**: HIGH (implement first)
+
+Add metadata to every field in API responses:
+- `confidence_score` (0-1 float) - How confident we are in the extracted value
+- `extraction_method` (enum) - "direct_parse", "llm_inference", "calculated"
+- `last_updated` (ISO timestamp) - When this field was last updated
+- `source_filing` (URL) - Direct SEC link to specific section
+
+**Example Response:**
+```json
+{
+  "total_debt": {
+    "value": 5000000000,
+    "confidence": 0.95,
+    "last_updated": "2024-01-15T10:30:00Z",
+    "source_filing": "https://sec.gov/Archives/edgar/data/.../10-k.htm#debt",
+    "extraction_method": "direct_parse"
+  }
+}
+```
+
+**Implementation Steps:**
+
+| Step | Description | Files |
+|------|-------------|-------|
+| 1.1 | Create migration for `extraction_metadata` table | `alembic/versions/010_add_extraction_metadata.py` |
+| 1.2 | Add `FieldMetadata` Pydantic model | `app/models/metadata.py` (new) |
+| 1.3 | Update extraction pipeline to track confidence | `app/services/iterative_extraction.py` |
+| 1.4 | Store QA scores and extraction method per-field | `app/services/qa_agent.py` |
+| 1.5 | Add `?include_metadata=true` parameter to primitives | `app/api/primitives.py` |
+| 1.6 | Create response wrapper that adds metadata | `app/api/primitives.py` |
+| 1.7 | Link entities/debt to source DocumentSection | `app/models/schema.py` |
+
+**Database Changes:**
+```sql
+-- New table for extraction metadata
+CREATE TABLE extraction_metadata (
+    id UUID PRIMARY KEY,
+    company_id UUID NOT NULL REFERENCES companies(id),
+    entity_type VARCHAR(50),  -- 'company', 'entity', 'debt', 'financial'
+    entity_id UUID,
+    field_name VARCHAR(100),
+    confidence_score NUMERIC(3,2),
+    extraction_method VARCHAR(50),
+    source_section_id UUID REFERENCES document_sections(id),
+    extracted_at TIMESTAMP,
+    extractor_model VARCHAR(50),
+    qa_check_passed BOOLEAN
+);
+
+-- Add source linking to existing tables
+ALTER TABLE entities ADD COLUMN source_section_id UUID REFERENCES document_sections(id);
+ALTER TABLE debt_instruments ADD COLUMN source_section_id UUID REFERENCES document_sections(id);
+```
+
+**Confidence Score Mapping:**
+| Source | Confidence |
+|--------|------------|
+| Direct parse from table | 0.95-1.0 |
+| LLM extraction (passed QA) | 0.80-0.95 |
+| LLM extraction (failed QA, fixed) | 0.60-0.80 |
+| Calculated from other fields | 0.85-0.95 |
+| Estimated/inferred | 0.40-0.60 |
+| Manual entry | 1.0 |
+
+**Conflicts**: None identified
+**Dependencies**: Requires `issue_date_estimated` pattern (already implemented)
+
+---
+
+### Enhancement 2: Diff/Changelog Endpoints
+**Status**: 📋 PLANNED
+**Effort**: Medium-Large (2-3 days)
+**Priority**: LOW (implement last)
+
+New endpoint: `GET /v1/companies/{ticker}/changes?since={iso_date}`
+
+Returns deltas since specified date:
+- `new_bonds`: Bonds issued after the date
+- `covenant_amendments`: Changes to existing covenants
+- `entity_restructurings`: Subsidiary additions/removals
+- `pricing_changes`: Significant yield/price movements (>50bps)
+
+**Example Response:**
+```json
+{
+  "ticker": "RIG",
+  "since": "2024-01-01",
+  "changes": {
+    "new_bonds": [
+      {"name": "8.75% Senior Notes due 2030", "issue_date": "2024-03-15", "principal": 500000000}
+    ],
+    "covenant_amendments": [
+      {"description": "Leverage covenant waived through 2024", "filing_date": "2024-02-10"}
+    ],
+    "entity_restructurings": [
+      {"type": "addition", "entity_name": "Transocean Holdings LLC", "date": "2024-01-20"}
+    ],
+    "pricing_changes": [
+      {"cusip": "893830AK8", "old_ytm": 850, "new_ytm": 920, "change_bps": 70}
+    ]
+  },
+  "snapshot_date": "2024-06-15"
+}
+```
+
+**Implementation Steps:**
+
+| Step | Description | Files |
+|------|-------------|-------|
+| 2.1 | Create `company_snapshots` table for quarterly snapshots | `alembic/versions/012_add_company_snapshots.py` |
+| 2.2 | Create snapshot service | `app/services/snapshot_service.py` (new) |
+| 2.3 | Add `/v1/companies/{ticker}/changes` endpoint | `app/api/primitives.py` |
+| 2.4 | Implement diff logic for each change type | `app/services/diff_service.py` (new) |
+| 2.5 | Create quarterly snapshot cron job | `scripts/create_quarterly_snapshots.py` |
+
+**Database Changes:**
+```sql
+CREATE TABLE company_snapshots (
+    id UUID PRIMARY KEY,
+    company_id UUID NOT NULL REFERENCES companies(id),
+    snapshot_date DATE NOT NULL,
+    snapshot_type VARCHAR(20),  -- 'quarterly', 'monthly', 'manual'
+
+    -- Snapshot data (denormalized JSON for fast comparison)
+    entities_snapshot JSONB,        -- All entities at point in time
+    debt_snapshot JSONB,            -- All debt instruments
+    metrics_snapshot JSONB,         -- CompanyMetrics at point in time
+
+    created_at TIMESTAMP,
+    UNIQUE(company_id, snapshot_date)
+);
+
+CREATE INDEX idx_snapshots_company_date ON company_snapshots(company_id, snapshot_date);
+```
+
+**Conflicts**: None identified
+**Dependencies**: Enhancement 1 (confidence scores) helpful for tracking data provenance
+
+---
+
+### Enhancement 3: Batch Operations
+**Status**: 📋 PLANNED
+**Effort**: Medium (1-2 days)
+**Priority**: MEDIUM (implement second)
+
+New endpoint: `POST /v1/batch`
+
+Accepts array of operations in single request:
+```json
+{
+  "operations": [
+    {"primitive": "search.bonds", "params": {"ticker": "TSLA"}},
+    {"primitive": "traverse.entities", "params": {"ticker": "TSLA"}},
+    {"primitive": "search.pricing", "params": {"cusip": "88160RAG3"}}
+  ]
+}
+```
+
+Returns array of results with per-operation status:
+```json
+{
+  "results": [
+    {"status": "success", "data": {...}, "operation_id": 0},
+    {"status": "success", "data": {...}, "operation_id": 1},
+    {"status": "error", "error": {"code": "NOT_FOUND", "message": "..."}, "operation_id": 2}
+  ],
+  "meta": {
+    "total_operations": 3,
+    "successful": 2,
+    "failed": 1,
+    "duration_ms": 234
+  }
+}
+```
+
+**Implementation Steps:**
+
+| Step | Description | Files |
+|------|-------------|-------|
+| 3.1 | Define batch request/response schemas | `app/api/primitives.py` |
+| 3.2 | Create primitive dispatcher | `app/services/batch_service.py` (new) |
+| 3.3 | Implement parallel execution with asyncio.gather | `app/services/batch_service.py` |
+| 3.4 | Add `/v1/batch` endpoint | `app/api/primitives.py` |
+| 3.5 | Add batch-specific rate limiting (count ops, not requests) | `app/core/cache.py` |
+| 3.6 | Document batch endpoint | `docs/PRIMITIVES_API_SPEC.md` |
+
+**Supported Primitives:**
+| Primitive Name | Maps To |
+|---------------|---------|
+| `search.companies` | `GET /v1/companies` |
+| `search.bonds` | `GET /v1/bonds` |
+| `resolve.bond` | `GET /v1/bonds/resolve` |
+| `traverse.entities` | `POST /v1/entities/traverse` |
+| `search.pricing` | `GET /v1/pricing` |
+| `search.documents` | `GET /v1/documents/search` |
+
+**Limits:**
+- Max 10 operations per batch request
+- Operations executed in parallel where possible
+- Total batch timeout: 30 seconds
+- Rate limit: Each operation counts against rate limit
+
+**Conflicts**: Rate limiting needs adjustment to count operations not requests
+**Dependencies**: None
+
+---
+
+## Implementation Order (Recommended)
+
+| Order | Enhancement | Rationale |
+|-------|-------------|-----------|
+| 1st | **Confidence Scores + Metadata** | Foundation for data quality transparency. Already have `issue_date_estimated` pattern. Most valuable for agent trust. |
+| 2nd | **Batch Operations** | Quick win, high agent utility. No schema changes, pure API layer. |
+| 3rd | **Diff/Changelog** | Requires historical data accumulation. Start snapshotting now, implement query later. |
 
 ---
 
@@ -148,6 +400,7 @@ The 6th primitive `search.documents` isn't implemented. Would enable:
 - [ ] Extract ISINs from filings (deferred - not needed for MVP)
 - [x] Extract issue_date more reliably - Done 2026-01-17
 - [x] Extract floor_bps for floating rate debt - Done 2026-01-17
+- [x] Fix scale detection in financial extraction - Done 2026-01-18 (reads scale from filing)
 
 ### Infrastructure
 - [x] Clean up temp directories (`tmpclaude-*`) - Done 2026-01-17, added to .gitignore
@@ -202,6 +455,122 @@ When starting a new session, read this file first, then:
 ---
 
 ## Session Log
+
+### 2026-01-18 (Session 11) - Financial Scale Fix & Agent Enhancements Plan
+**Part 1: Fixed Financial Extraction Scale Detection**
+- ✅ Replaced heuristic-based scale validation with filing-based detection
+- ✅ Added `detect_filing_scale()` function that reads "in millions", "in thousands" from SEC filings
+- ✅ Prioritizes scale indicators near financial statement headers (balance sheets, income statements)
+- ✅ Added `apply_filing_scale()` function to convert raw LLM output to cents
+- ✅ Updated prompts to tell LLM to extract raw numbers, not convert units
+- ✅ Tested with HD ($41.4B), COST ($67.3B), JNJ ($24B), PFE ($16.7B), MRK ($17.3B) - all correct
+
+**Files modified**:
+- `app/services/financial_extraction.py`: Replaced `validate_and_correct_scale()` with `detect_filing_scale()` + `apply_filing_scale()`
+
+**Part 2: Agent-Friendly Enhancements Plan**
+- ✅ Analyzed current extraction metadata tracking (QA scores, iterations, models)
+- ✅ Identified gap: metadata tracked in-memory but NOT persisted to database
+- ✅ Designed three enhancements for AI agent consumption:
+
+| Enhancement | Effort | Priority |
+|-------------|--------|----------|
+| 1. Confidence Scores + Metadata | Large (3-5 days) | HIGH (1st) |
+| 2. Diff/Changelog Endpoints | Medium-Large (2-3 days) | LOW (3rd) |
+| 3. Batch Operations | Medium (1-2 days) | MEDIUM (2nd) |
+
+**Key Design Decisions**:
+- Enhancement 1: Store field-level metadata in new `extraction_metadata` table, add `?include_metadata=true` param
+- Enhancement 2: Use quarterly snapshots (JSONB) for diff comparison, implement later after data accumulates
+- Enhancement 3: Pure API layer, no schema changes, parallel execution via asyncio.gather
+
+**Conflicts Identified**:
+- Rate limiting needs adjustment for batch ops (count operations not requests)
+- None for Enhancement 1 or 2
+
+**Files modified**:
+- `WORKPLAN.md`: Added complete specifications for all three enhancements
+
+### 2026-01-18 (Session 10) - Indentures, CIKs & Extraction Quality
+**Part 1: Indentures & Credit Agreements Enhancement**
+- ✅ Enhanced Document Search to capture full indentures and credit agreements
+- ✅ Completed Step 7 (Documentation): Updated CLAUDE.md and PRIMITIVES_API_SPEC.md
+
+**Part 2: Fixed Missing CIKs**
+- ✅ Added CIKs for 34 companies that were missing them
+- ✅ Looked up CIKs from SEC EDGAR company_tickers.json
+- ✅ Manual lookup for 5 companies not in primary list (CHS, DISH, DO, PARA, SWN)
+- ✅ All 177 companies now have CIK numbers
+
+**Part 3: Backfilled Document Sections for 34 Companies**
+- ✅ Created `scripts/backfill_remaining.py` to batch process companies
+- ✅ Successfully backfilled 33 companies (SPG initially failed due to PDF content)
+- ✅ Added PDF skip logic to `backfill_document_sections.py`
+- ✅ Retried and completed SPG successfully
+- **Final stats**: 5,456 total sections across 177 companies
+
+**Part 4: Fixed Gemini Extraction Quality Issues**
+- ✅ Added `validate_and_correct_scale()` function to `financial_extraction.py`:
+  - Converts string values to integers (Gemini sometimes returns strings)
+  - Handles array responses (Gemini sometimes wraps in array)
+  - Detects and corrects scale errors (10x, 100x, 1000x, 1M)
+  - Uses company-specific thresholds (mega-cap, large-cap, mid-cap)
+- ✅ Re-extracted financials for GM, MSFT, DISH, RIG with correct scale
+- ✅ Ran recompute_metrics.py to update leverage ratios
+
+**Files modified**:
+- `app/services/extraction.py`: EX-4/EX-10 download logic
+- `app/services/section_extraction.py`: Added indenture type
+- `app/services/financial_extraction.py`: Scale validation/correction
+- `scripts/backfill_document_sections.py`: PDF skip, ASCII-safe errors
+- `CLAUDE.md`, `docs/PRIMITIVES_API_SPEC.md`: Documentation updates
+
+**Files created**:
+- `scripts/backfill_remaining.py`: Batch backfill helper script
+
+**Part 5: Expanded Financials Coverage**
+- ✅ Created `scripts/batch_extract_financials.py` for batch extraction
+- ✅ Extracted financials for 66 high-debt companies (>$5B debt)
+- ✅ All extractions successful with scale validation
+- **Final stats**: 80 companies with financials, 47 with leverage ratios
+- **Known issue**: Some scale corrections over-corrected (HD, COST) - needs threshold tuning
+- Companies with valid high leverage (>4x): ABBV (6.2x), CHTR (4.5x), LUMN (6.8x), SPG (5.7x)
+
+### 2026-01-17 (Session 9) - Document Search Primitive
+- ✅ Completed Priority 4: Document Search Primitive (6/7 steps done)
+- ✅ Step 1: Created migration `alembic/versions/009_add_document_sections.py`:
+  - `document_sections` table with: id, company_id (FK), doc_type, filing_date, section_type, section_title, content, content_length, search_vector (TSVECTOR), sec_filing_url, timestamps
+  - GIN index on `search_vector` for FTS performance
+  - B-tree indexes on company_id, doc_type, section_type, filing_date
+  - Composite index on (company_id, doc_type, section_type)
+  - Trigger to auto-compute `search_vector` on INSERT/UPDATE (title weight 'A', content weight 'B')
+- ✅ Step 2: Added `DocumentSection` model to `app/models/schema.py`, exported from `__init__.py`
+- ✅ Step 3: Created `app/services/section_extraction.py`:
+  - Regex patterns for 6 section types: exhibit_21, debt_footnote, mda_liquidity, credit_agreement, guarantor_list, covenants
+  - `extract_sections_from_filing()` - extracts sections from filing content
+  - `extract_and_store_sections()` - main entry point for ETL integration
+  - `store_sections()`, `get_company_sections()`, `delete_company_sections()` - DB operations
+- ✅ Step 4: Added `GET /v1/documents/search` endpoint to `app/api/primitives.py`:
+  - Full-text search using PostgreSQL `plainto_tsquery` and `ts_rank_cd`
+  - Snippet generation with `ts_headline` (highlighted matches)
+  - Filters: q (required), ticker, doc_type, section_type, filed_after, filed_before
+  - Sorting: -relevance (default), -filing_date, filing_date
+  - Field selection, pagination, CSV export, ETag caching
+- ✅ Step 5: Integrated into ETL pipeline (`scripts/extract_iterative.py`):
+  - Calls `extract_and_store_sections()` after saving extraction to database
+  - Uses filings content that's already downloaded
+- ✅ Step 6: Created `scripts/backfill_document_sections.py`:
+  - `--ticker CHTR` for single company
+  - `--batch 20` for companies with pricing data (testing)
+  - `--all` for all companies
+  - `--dry-run` to preview without saving
+- ✅ Applied migration: `alembic upgrade head`
+- ✅ Tested backfill with RIG: 7 sections extracted (2 debt_footnote, 2 mda_liquidity, 2 covenants, 1 exhibit_21)
+- ✅ Ran Phase 1 backfill: 3 companies (ATUS, CRWV, RIG), 30 total sections
+- ✅ Search verified: Queries for "debt", "covenant", "credit facility" all working
+- ✅ Full backfill complete: **1,283 sections** across **141 companies**
+- **Section breakdown**: mda_liquidity (427), covenants (325), debt_footnote (208), exhibit_21 (178), guarantor_list (95), credit_agreement (50)
+- **Skipped**: 35 companies without CIKs, 2 with no sections extracted
 
 ### 2026-01-17 (Session 8)
 - ✅ Improved entity name normalization in `utils.py`:

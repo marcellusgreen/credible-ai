@@ -1,12 +1,13 @@
 """
 Primitives API for DebtStack.ai
 
-5 core primitives optimized for AI agents:
+6 core primitives optimized for AI agents:
 1. GET /v1/companies - Horizontal company search
 2. GET /v1/bonds - Horizontal bond search
 3. GET /v1/bonds/resolve - Bond identifier resolution
 4. POST /v1/entities/traverse - Graph traversal
 5. GET /v1/pricing - Bond pricing data
+6. GET /v1/documents/search - Full-text search across SEC filings
 """
 
 import csv
@@ -27,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models import (
     Company, CompanyMetrics, Entity, DebtInstrument,
-    Guarantee, BondPricing,
+    Guarantee, BondPricing, DocumentSection,
 )
 
 router = APIRouter()
@@ -1395,6 +1396,282 @@ async def search_pricing(
             "limit": limit,
             "offset": offset,
             "as_of": datetime.utcnow().isoformat() + "Z",
+        }
+    }
+    return etag_response(response_data, if_none_match)
+
+
+# =============================================================================
+# PRIMITIVE 6: documents.search
+# =============================================================================
+
+# Available fields for document search
+DOCUMENT_FIELDS = {
+    "id", "ticker", "company_name",
+    "doc_type", "filing_date", "section_type", "section_title",
+    "snippet", "content", "content_length",
+    "relevance_score", "sec_filing_url",
+}
+
+# Valid section types
+VALID_SECTION_TYPES = {
+    "exhibit_21", "debt_footnote", "mda_liquidity",
+    "credit_agreement", "guarantor_list", "covenants",
+}
+
+# Valid doc types
+VALID_DOC_TYPES = {"10-K", "10-Q", "8-K"}
+
+
+@router.get("/documents/search", tags=["Primitives"])
+async def search_documents(
+    # Search query (required)
+    q: str = Query(..., min_length=2, description="Full-text search query (required)"),
+    # Filters
+    ticker: Optional[str] = Query(None, description="Comma-separated tickers (e.g., AAPL,MSFT)"),
+    doc_type: Optional[str] = Query(None, description="Document type: 10-K, 10-Q, 8-K"),
+    section_type: Optional[str] = Query(None, description="Section type: exhibit_21, debt_footnote, mda_liquidity, credit_agreement, guarantor_list, covenants"),
+    filed_after: Optional[date] = Query(None, description="Min filing date (YYYY-MM-DD)"),
+    filed_before: Optional[date] = Query(None, description="Max filing date (YYYY-MM-DD)"),
+    # Field selection
+    fields: Optional[str] = Query(None, description="Comma-separated fields to return"),
+    # Sorting
+    sort: str = Query("-relevance", description="Sort field: -relevance (default), -filing_date, filing_date"),
+    # Pagination
+    limit: int = Query(50, ge=1, le=100, description="Results per page"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+    # Export format
+    format: str = Query("json", description="Response format: json or csv"),
+    # ETag support
+    if_none_match: Optional[str] = Header(None, description="ETag for conditional request"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Full-text search across SEC filing sections.
+
+    Searches debt footnotes, MD&A liquidity sections, credit agreements,
+    subsidiary lists, guarantor information, and covenant disclosures.
+
+    Uses PostgreSQL full-text search with relevance ranking.
+    Search terms are stemmed and matched intelligently.
+
+    **Section Types:**
+    - `exhibit_21`: Subsidiary list from 10-K Exhibit 21
+    - `debt_footnote`: Long-term debt details from Notes
+    - `mda_liquidity`: Liquidity and Capital Resources from MD&A
+    - `credit_agreement`: Credit facility terms from 8-K
+    - `guarantor_list`: Guarantor subsidiaries from Notes
+    - `covenants`: Financial covenants from Notes/Exhibits
+
+    **Example:** Find mentions of "subordinated" in debt footnotes:
+    ```
+    GET /v1/documents/search?q=subordinated&section_type=debt_footnote
+    ```
+
+    **Example:** Search for covenant mentions in RIG filings:
+    ```
+    GET /v1/documents/search?q=covenant&ticker=RIG
+    ```
+
+    **Example:** Find recent credit agreement amendments:
+    ```
+    GET /v1/documents/search?q=amended%20credit&section_type=credit_agreement&filed_after=2024-01-01
+    ```
+    """
+    # Parse and validate fields
+    selected_fields = parse_fields(fields, DOCUMENT_FIELDS)
+
+    # Validate section_type
+    if section_type:
+        section_types = parse_comma_list(section_type, uppercase=False)
+        invalid_sections = set(section_types) - VALID_SECTION_TYPES
+        if invalid_sections:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "INVALID_SECTION_TYPE",
+                    "message": f"Invalid section types: {', '.join(invalid_sections)}",
+                    "valid_types": sorted(VALID_SECTION_TYPES)
+                }
+            )
+    else:
+        section_types = []
+
+    # Validate doc_type
+    if doc_type:
+        doc_types = parse_comma_list(doc_type)
+        invalid_docs = set(doc_types) - VALID_DOC_TYPES
+        if invalid_docs:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "INVALID_DOC_TYPE",
+                    "message": f"Invalid doc types: {', '.join(invalid_docs)}",
+                    "valid_types": sorted(VALID_DOC_TYPES)
+                }
+            )
+    else:
+        doc_types = []
+
+    # Build the search query using PostgreSQL full-text search
+    # plainto_tsquery converts plain text to a tsquery
+    # ts_rank_cd provides relevance scoring (cover density ranking)
+    # ts_headline generates snippets with highlighted matches
+
+    from sqlalchemy import text, literal_column
+
+    # Base query with full-text search
+    # We use raw SQL for the FTS functions since SQLAlchemy doesn't have native support
+    search_query = text("""
+        SELECT
+            ds.id,
+            c.ticker,
+            c.name as company_name,
+            ds.doc_type,
+            ds.filing_date,
+            ds.section_type,
+            ds.section_title,
+            ds.content,
+            ds.content_length,
+            ds.sec_filing_url,
+            ts_rank_cd(ds.search_vector, plainto_tsquery('english', :query)) as relevance_score,
+            ts_headline('english', ds.content, plainto_tsquery('english', :query),
+                'MaxWords=50, MinWords=20, MaxFragments=1, StartSel=<b>, StopSel=</b>') as snippet
+        FROM document_sections ds
+        JOIN companies c ON ds.company_id = c.id
+        WHERE ds.search_vector @@ plainto_tsquery('english', :query)
+    """)
+
+    # Build dynamic WHERE conditions
+    conditions = []
+    params = {"query": q}
+
+    # Ticker filter
+    ticker_list = parse_comma_list(ticker)
+    if ticker_list:
+        conditions.append("c.ticker = ANY(:tickers)")
+        params["tickers"] = ticker_list
+
+    # Doc type filter
+    if doc_types:
+        conditions.append("ds.doc_type = ANY(:doc_types)")
+        params["doc_types"] = doc_types
+
+    # Section type filter
+    if section_types:
+        conditions.append("ds.section_type = ANY(:section_types)")
+        params["section_types"] = section_types
+
+    # Date filters
+    if filed_after:
+        conditions.append("ds.filing_date >= :filed_after")
+        params["filed_after"] = filed_after
+    if filed_before:
+        conditions.append("ds.filing_date <= :filed_before")
+        params["filed_before"] = filed_before
+
+    # Build full query with conditions
+    where_clause = ""
+    if conditions:
+        where_clause = " AND " + " AND ".join(conditions)
+
+    # Determine sort order
+    if sort == "-relevance" or sort == "relevance":
+        order_clause = "ORDER BY relevance_score DESC"
+    elif sort == "-filing_date":
+        order_clause = "ORDER BY ds.filing_date DESC"
+    elif sort == "filing_date":
+        order_clause = "ORDER BY ds.filing_date ASC"
+    else:
+        order_clause = "ORDER BY relevance_score DESC"
+
+    # Full query with pagination
+    full_query = text(f"""
+        SELECT
+            ds.id,
+            c.ticker,
+            c.name as company_name,
+            ds.doc_type,
+            ds.filing_date,
+            ds.section_type,
+            ds.section_title,
+            ds.content,
+            ds.content_length,
+            ds.sec_filing_url,
+            ts_rank_cd(ds.search_vector, plainto_tsquery('english', :query)) as relevance_score,
+            ts_headline('english', ds.content, plainto_tsquery('english', :query),
+                'MaxWords=50, MinWords=20, MaxFragments=1, StartSel=<b>, StopSel=</b>') as snippet
+        FROM document_sections ds
+        JOIN companies c ON ds.company_id = c.id
+        WHERE ds.search_vector @@ plainto_tsquery('english', :query)
+        {where_clause}
+        {order_clause}
+        LIMIT :limit OFFSET :offset
+    """)
+
+    params["limit"] = limit
+    params["offset"] = offset
+
+    # Count query
+    count_query = text(f"""
+        SELECT COUNT(*)
+        FROM document_sections ds
+        JOIN companies c ON ds.company_id = c.id
+        WHERE ds.search_vector @@ plainto_tsquery('english', :query)
+        {where_clause}
+    """)
+
+    # Execute queries
+    result = await db.execute(full_query, params)
+    rows = result.fetchall()
+
+    # Get count (remove limit/offset params for count query)
+    count_params = {k: v for k, v in params.items() if k not in ("limit", "offset")}
+    total_result = await db.execute(count_query, count_params)
+    total = total_result.scalar()
+
+    # Build response
+    data = []
+    for row in rows:
+        item = {
+            "id": str(row.id),
+            "ticker": row.ticker,
+            "company_name": row.company_name,
+            "doc_type": row.doc_type,
+            "filing_date": row.filing_date.isoformat() if row.filing_date else None,
+            "section_type": row.section_type,
+            "section_title": row.section_title,
+            "snippet": row.snippet,
+            "content": row.content if (selected_fields is None or "content" in selected_fields) else None,
+            "content_length": row.content_length,
+            "relevance_score": round(float(row.relevance_score), 4) if row.relevance_score else 0,
+            "sec_filing_url": row.sec_filing_url,
+        }
+
+        # Remove content from default response to keep it compact
+        if selected_fields is None:
+            item.pop("content", None)
+
+        data.append(filter_dict(item, selected_fields))
+
+    # Return CSV if requested
+    if format.lower() == "csv":
+        return to_csv_response(data, filename="documents.csv")
+
+    response_data = {
+        "data": data,
+        "meta": {
+            "query": q,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "filters": {
+                "ticker": ticker_list if ticker_list else None,
+                "doc_type": doc_types if doc_types else None,
+                "section_type": section_types if section_types else None,
+                "filed_after": filed_after.isoformat() if filed_after else None,
+                "filed_before": filed_before.isoformat() if filed_before else None,
+            }
         }
     }
     return etag_response(response_data, if_none_match)

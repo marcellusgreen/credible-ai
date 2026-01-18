@@ -173,6 +173,7 @@ async def run_iterative_extraction(
         print(f"\n  Saving to database...")
         from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
         from app.services.extraction import save_extraction_to_db
+        from app.services.section_extraction import extract_and_store_sections
 
         # Convert to ExtractionResult format
         from scripts.extract_tiered import convert_to_extraction_result
@@ -182,9 +183,21 @@ async def run_iterative_extraction(
         async_session = async_sessionmaker(engine, expire_on_commit=False)
 
         async with async_session() as session:
-            await save_extraction_to_db(session, extraction_result, cik)
+            company_id = await save_extraction_to_db(session, extraction_result, cik)
             await session.commit()
-            print(f"    [OK] Saved to database")
+            print(f"    [OK] Saved extraction to database")
+
+            # Extract and store document sections for full-text search
+            try:
+                sections_stored = await extract_and_store_sections(
+                    db=session,
+                    company_id=company_id,
+                    filings_content=filings,
+                )
+                if sections_stored > 0:
+                    print(f"    [OK] Stored {sections_stored} document sections for search")
+            except Exception as e:
+                print(f"    [WARN] Section extraction failed: {e}")
 
         await engine.dispose()
 
