@@ -149,55 +149,122 @@ def detect_filing_scale(content: str) -> int:
     """
     content_lower = content.lower()
 
-    # Find the scale indicator NEAR financial statement headers
-    # This avoids matching scales in supplementary charts/graphics
+    # Key data points that appear in actual financial statements (not TOC)
+    # We search backwards from these to find the scale indicator
+    data_markers = [
+        "total assets",
+        "total liabilities",
+        "total revenues",
+        "net revenues",
+        "total net revenues",
+        "net income",
+        "net sales",
+    ]
+
+    # Scale patterns with their multipliers
+    # IMPORTANT: Exclude patterns that relate to shares, not dollars
+    thousands_patterns = [
+        r'dollars\s+in\s+thousands',
+        r'\(\s*in\s+thousands\s*,?\s*except',  # "(in thousands, except per share)"
+        r'\(\s*\$?\s*in\s+thousands\s*\)',
+        r'amounts\s+in\s+thousands',
+    ]
+
+    # Patterns that indicate thousands but might be for shares (exclude these)
+    thousands_share_patterns = [
+        r'shares?\s+in\s+thousands',
+        r'in\s+thousands\s+of\s+shares',
+        r'thousands\s+of\s+shares',
+    ]
+
+    millions_patterns = [
+        r'dollars\s+in\s+millions',
+        r'\(\s*in\s+millions\s*,?\s*except',  # "(in millions, except per share)"
+        r'\(\s*\$?\s*in\s+millions\s*\)',
+        r'\bin\s+millions\b(?!\s+of\s+shares)',
+        r'\(\s*millions\s*\)',
+        r'amounts\s+in\s+millions',
+    ]
+
+    # Strategy: Find data markers and search backwards for scale indicator
+    # The scale indicator closest to actual data wins
+    best_scale = None
+    best_distance = float('inf')
+
+    for marker in data_markers:
+        marker_pos = content_lower.find(marker)
+        if marker_pos == -1:
+            continue
+
+        # Search in the 3000 chars BEFORE the data marker (scale usually in header above)
+        lookback_start = max(0, marker_pos - 3000)
+        lookback_region = content_lower[lookback_start:marker_pos]
+
+        # Check for thousands (search from end of region to find closest)
+        # But skip if it's related to shares
+        for pattern in thousands_patterns:
+            matches = list(re.finditer(pattern, lookback_region))
+            if matches:
+                # Last match is closest to data
+                last_match = matches[-1]
+                # Check if this is a share-related pattern (skip if so)
+                match_context = lookback_region[max(0, last_match.start()-20):last_match.end()+30]
+                is_share_related = any(re.search(sp, match_context) for sp in thousands_share_patterns)
+                if is_share_related:
+                    continue
+
+                distance = marker_pos - (lookback_start + last_match.end())
+                if distance < best_distance:
+                    best_distance = distance
+                    best_scale = 100_000  # thousands to cents
+
+        # Check for millions
+        for pattern in millions_patterns:
+            matches = list(re.finditer(pattern, lookback_region))
+            if matches:
+                last_match = matches[-1]
+                distance = marker_pos - (lookback_start + last_match.end())
+                if distance < best_distance:
+                    best_distance = distance
+                    best_scale = 100_000_000  # millions to cents
+
+    if best_scale is not None:
+        return best_scale
+
+    # Fallback: search financial statement headers
     financial_headers = [
         "consolidated balance sheet",
+        "condensed consolidated balance sheet",
         "consolidated statements of operations",
+        "condensed consolidated statements of operations",
         "consolidated statements of income",
         "consolidated statements of earnings",
-        "statements of operations",
-        "balance sheets",
     ]
 
-    # Search within 500 chars after each financial header for scale indicators
-    scale_patterns = [
-        # Millions (most common for large companies) - check first
-        (r'dollars\s+in\s+millions', 100_000_000),
-        (r'\(\s*in\s+millions\s*\)', 100_000_000),
-        (r'\(\s*\$?\s*in\s+millions\s*\)', 100_000_000),
-        (r'\bin\s+millions\b(?!\s+of\s+shares)', 100_000_000),
-        (r'\(\s*millions\s*\)', 100_000_000),
-        (r'amounts\s+in\s+millions', 100_000_000),
-
-        # Thousands (common for smaller companies)
-        (r'dollars\s+in\s+thousands', 100_000),
-        (r'\(\s*in\s+thousands\s*\)', 100_000),
-        (r'\(\s*\$?\s*in\s+thousands\s*\)', 100_000),
-        (r'\bin\s+thousands\b(?!\s+of\s+shares)', 100_000),
-        (r'\(\s*thousands\s*\)', 100_000),
-        (r'amounts\s+in\s+thousands', 100_000),
-
-        # Billions (rare - usually only in supplementary materials)
-        (r'\(\s*in\s+billions\s*\)', 100_000_000_000),
-        (r'dollars\s+in\s+billions', 100_000_000_000),
-    ]
-
-    # First, try to find scale near financial statement headers
     for header in financial_headers:
         header_pos = content_lower.find(header)
         if header_pos != -1:
-            # Search in the 1000 chars following the header
-            search_region = content_lower[header_pos:header_pos + 1000]
-            for pattern, multiplier in scale_patterns:
-                if re.search(pattern, search_region):
-                    return multiplier
+            # Search 2000 chars after header
+            search_region = content_lower[header_pos:header_pos + 2000]
 
-    # Fallback: search the entire document (but prefer millions over billions)
-    # since billions is often used in supplementary charts, not main financials
-    for pattern, multiplier in scale_patterns:
+            # Check thousands first (less common, so if found it's intentional)
+            for pattern in thousands_patterns:
+                if re.search(pattern, search_region):
+                    return 100_000
+
+            # Then millions
+            for pattern in millions_patterns:
+                if re.search(pattern, search_region):
+                    return 100_000_000
+
+    # Last resort fallback: search entire document, prefer millions
+    for pattern in millions_patterns:
         if re.search(pattern, content_lower):
-            return multiplier
+            return 100_000_000
+
+    for pattern in thousands_patterns:
+        if re.search(pattern, content_lower):
+            return 100_000
 
     # Default: assume values are in dollars, convert to cents
     return 100
