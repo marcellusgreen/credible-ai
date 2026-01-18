@@ -4,7 +4,7 @@ Last Updated: 2026-01-18
 
 ## Current Status
 
-**Database**: 178 companies | 3,085 entities | 1,805 debt instruments | 30 priced bonds | **5,456 document sections**
+**Database**: 177 companies | 3,085 entities | 1,805 debt instruments | 30 priced bonds | 5,456 document sections | 176 financials
 **Deployment**: Live at `https://credible-ai-production.up.railway.app`
 **Infrastructure**: Railway + Neon PostgreSQL + Upstash Redis (complete)
 
@@ -20,12 +20,13 @@ Last Updated: 2026-01-18
 ### Primitives API Status
 | Endpoint | Status | Notes |
 |----------|--------|-------|
-| `GET /v1/companies` | ✅ Done | Field selection, filtering, sorting |
+| `GET /v1/companies` | ✅ Done | Field selection, filtering, sorting, `?include_metadata=true` |
 | `GET /v1/bonds` | ✅ Done | Pricing joins, guarantor counts |
 | `GET /v1/bonds/resolve` | ✅ Done | CUSIP/ISIN/fuzzy matching |
 | `POST /v1/entities/traverse` | ✅ Done | Graph traversal for guarantors, structure |
 | `GET /v1/pricing` | ✅ Done | FINRA TRACE data |
 | `GET /v1/documents/search` | ✅ Done | Full-text search across SEC filings |
+| `POST /v1/batch` | ✅ Done | Batch operations (up to 10 parallel) |
 
 ---
 
@@ -164,75 +165,44 @@ The 6th primitive `GET /v1/documents/search` enables full-text search across SEC
 Three enhancements to make DebtStack more attractive for AI agent consumption.
 
 ### Enhancement 1: Confidence Scores + Metadata
-**Status**: 📋 PLANNED
+**Status**: ✅ COMPLETE (2026-01-18)
 **Effort**: Large (3-5 days)
 **Priority**: HIGH (implement first)
 
-Add metadata to every field in API responses:
-- `confidence_score` (0-1 float) - How confident we are in the extracted value
-- `extraction_method` (enum) - "direct_parse", "llm_inference", "calculated"
-- `last_updated` (ISO timestamp) - When this field was last updated
-- `source_filing` (URL) - Direct SEC link to specific section
+Adds extraction metadata to API responses via `?include_metadata=true` parameter.
+
+**What was implemented:**
+- New `extraction_metadata` table storing per-company quality metrics
+- `?include_metadata=true` parameter on `/v1/companies` endpoint
+- Returns `_metadata` object with: qa_score, extraction_method, timestamps, warnings
+- Backfilled metadata for all 177 existing companies
 
 **Example Response:**
 ```json
 {
-  "total_debt": {
-    "value": 5000000000,
-    "confidence": 0.95,
-    "last_updated": "2024-01-15T10:30:00Z",
-    "source_filing": "https://sec.gov/Archives/edgar/data/.../10-k.htm#debt",
-    "extraction_method": "direct_parse"
+  "ticker": "AAPL",
+  "name": "Apple Inc.",
+  "_metadata": {
+    "qa_score": 0.95,
+    "extraction_method": "gemini",
+    "data_version": 1,
+    "structure_extracted_at": "2026-01-15T10:30:00Z",
+    "debt_extracted_at": "2026-01-15T10:30:00Z",
+    "financials_extracted_at": "2026-01-18T13:45:00Z",
+    "field_confidence": {"debt_instruments": 0.92},
+    "warnings": ["3 estimated issue dates"]
   }
 }
 ```
 
-**Implementation Steps:**
+**Files created:**
+- `alembic/versions/010_add_extraction_metadata.py` - Migration
+- `scripts/backfill_extraction_metadata.py` - Backfill script
 
-| Step | Description | Files |
-|------|-------------|-------|
-| 1.1 | Create migration for `extraction_metadata` table | `alembic/versions/010_add_extraction_metadata.py` |
-| 1.2 | Add `FieldMetadata` Pydantic model | `app/models/metadata.py` (new) |
-| 1.3 | Update extraction pipeline to track confidence | `app/services/iterative_extraction.py` |
-| 1.4 | Store QA scores and extraction method per-field | `app/services/qa_agent.py` |
-| 1.5 | Add `?include_metadata=true` parameter to primitives | `app/api/primitives.py` |
-| 1.6 | Create response wrapper that adds metadata | `app/api/primitives.py` |
-| 1.7 | Link entities/debt to source DocumentSection | `app/models/schema.py` |
-
-**Database Changes:**
-```sql
--- New table for extraction metadata
-CREATE TABLE extraction_metadata (
-    id UUID PRIMARY KEY,
-    company_id UUID NOT NULL REFERENCES companies(id),
-    entity_type VARCHAR(50),  -- 'company', 'entity', 'debt', 'financial'
-    entity_id UUID,
-    field_name VARCHAR(100),
-    confidence_score NUMERIC(3,2),
-    extraction_method VARCHAR(50),
-    source_section_id UUID REFERENCES document_sections(id),
-    extracted_at TIMESTAMP,
-    extractor_model VARCHAR(50),
-    qa_check_passed BOOLEAN
-);
-
--- Add source linking to existing tables
-ALTER TABLE entities ADD COLUMN source_section_id UUID REFERENCES document_sections(id);
-ALTER TABLE debt_instruments ADD COLUMN source_section_id UUID REFERENCES document_sections(id);
-```
-
-**Confidence Score Mapping:**
-| Source | Confidence |
-|--------|------------|
-| Direct parse from table | 0.95-1.0 |
-| LLM extraction (passed QA) | 0.80-0.95 |
-| LLM extraction (failed QA, fixed) | 0.60-0.80 |
-| Calculated from other fields | 0.85-0.95 |
-| Estimated/inferred | 0.40-0.60 |
-| Manual entry | 1.0 |
-
-**Conflicts**: None identified
-**Dependencies**: Requires `issue_date_estimated` pattern (already implemented)
+**Files modified:**
+- `app/models/schema.py` - Added `ExtractionMetadata` model
+- `app/models/__init__.py` - Export new model
+- `app/api/primitives.py` - Added `include_metadata` parameter
 
 ---
 
@@ -308,30 +278,36 @@ CREATE INDEX idx_snapshots_company_date ON company_snapshots(company_id, snapsho
 ---
 
 ### Enhancement 3: Batch Operations
-**Status**: 📋 PLANNED
+**Status**: ✅ COMPLETE (2026-01-18)
 **Effort**: Medium (1-2 days)
 **Priority**: MEDIUM (implement second)
 
-New endpoint: `POST /v1/batch`
+New endpoint `POST /v1/batch` for executing multiple primitives in a single request.
 
-Accepts array of operations in single request:
+**What was implemented:**
+- `POST /v1/batch` endpoint accepting up to 10 operations
+- Parallel execution via `asyncio.gather`
+- Independent failures (one operation's error doesn't affect others)
+- Per-operation status and duration tracking
+
+**Example Request:**
 ```json
 {
   "operations": [
-    {"primitive": "search.bonds", "params": {"ticker": "TSLA"}},
-    {"primitive": "traverse.entities", "params": {"ticker": "TSLA"}},
-    {"primitive": "search.pricing", "params": {"cusip": "88160RAG3"}}
+    {"primitive": "search.companies", "params": {"ticker": "AAPL,MSFT", "fields": "ticker,net_leverage_ratio"}},
+    {"primitive": "search.bonds", "params": {"ticker": "TSLA", "has_pricing": true}},
+    {"primitive": "resolve.bond", "params": {"q": "RIG 8% 2027"}}
   ]
 }
 ```
 
-Returns array of results with per-operation status:
+**Example Response:**
 ```json
 {
   "results": [
-    {"status": "success", "data": {...}, "operation_id": 0},
-    {"status": "success", "data": {...}, "operation_id": 1},
-    {"status": "error", "error": {"code": "NOT_FOUND", "message": "..."}, "operation_id": 2}
+    {"operation_id": 0, "status": "success", "data": {...}},
+    {"operation_id": 1, "status": "success", "data": {...}},
+    {"operation_id": 2, "status": "error", "error": {"code": "NOT_FOUND", "message": "..."}}
   ],
   "meta": {
     "total_operations": 3,
@@ -341,17 +317,6 @@ Returns array of results with per-operation status:
   }
 }
 ```
-
-**Implementation Steps:**
-
-| Step | Description | Files |
-|------|-------------|-------|
-| 3.1 | Define batch request/response schemas | `app/api/primitives.py` |
-| 3.2 | Create primitive dispatcher | `app/services/batch_service.py` (new) |
-| 3.3 | Implement parallel execution with asyncio.gather | `app/services/batch_service.py` |
-| 3.4 | Add `/v1/batch` endpoint | `app/api/primitives.py` |
-| 3.5 | Add batch-specific rate limiting (count ops, not requests) | `app/core/cache.py` |
-| 3.6 | Document batch endpoint | `docs/PRIMITIVES_API_SPEC.md` |
 
 **Supported Primitives:**
 | Primitive Name | Maps To |
@@ -365,22 +330,20 @@ Returns array of results with per-operation status:
 
 **Limits:**
 - Max 10 operations per batch request
-- Operations executed in parallel where possible
-- Total batch timeout: 30 seconds
-- Rate limit: Each operation counts against rate limit
+- Operations executed in parallel via asyncio.gather
 
-**Conflicts**: Rate limiting needs adjustment to count operations not requests
-**Dependencies**: None
+**Files modified:**
+- `app/api/primitives.py` - Added batch endpoint and handlers
 
 ---
 
 ## Implementation Order (Recommended)
 
-| Order | Enhancement | Rationale |
-|-------|-------------|-----------|
-| 1st | **Confidence Scores + Metadata** | Foundation for data quality transparency. Already have `issue_date_estimated` pattern. Most valuable for agent trust. |
-| 2nd | **Batch Operations** | Quick win, high agent utility. No schema changes, pure API layer. |
-| 3rd | **Diff/Changelog** | Requires historical data accumulation. Start snapshotting now, implement query later. |
+| Order | Enhancement | Status |
+|-------|-------------|--------|
+| 1st | **Confidence Scores + Metadata** | ✅ COMPLETE |
+| 2nd | **Batch Operations** | ✅ COMPLETE |
+| 3rd | **Diff/Changelog** | 📋 PLANNED (requires historical data accumulation) |
 
 ---
 
@@ -455,6 +418,49 @@ When starting a new session, read this file first, then:
 ---
 
 ## Session Log
+
+### 2026-01-18 (Session 12) - Agent-Friendly Enhancements Implementation
+**Part 1: Enhancement A - Confidence Scores + Metadata**
+- ✅ Created migration `alembic/versions/010_add_extraction_metadata.py`
+- ✅ Added `ExtractionMetadata` model to `schema.py`
+- ✅ Stores: qa_score, extraction_method, timestamps, field_confidence, warnings
+- ✅ Added `?include_metadata=true` parameter to `/v1/companies` endpoint
+- ✅ Created `scripts/backfill_extraction_metadata.py` for existing data
+- ✅ Backfilled metadata for all 177 companies
+
+**Part 2: Enhancement B - Batch Operations**
+- ✅ Added `POST /v1/batch` endpoint to `primitives.py`
+- ✅ Supports 6 primitives: search.companies, search.bonds, resolve.bond, traverse.entities, search.pricing, search.documents
+- ✅ Parallel execution via `asyncio.gather`
+- ✅ Max 10 operations per request
+- ✅ Independent failures (one error doesn't affect others)
+- ✅ Returns per-operation status and total duration_ms
+
+**Part 3: Batch Financial Extraction**
+- ✅ Fixed scale detection to search backwards from financial data markers
+- ✅ Extracted financials for 176/177 companies (only ATUS missing - no 10-Q filings)
+- ✅ Recomputed metrics for all companies with updated leverage ratios
+
+**Database Stats After Session:**
+| Table | Rows |
+|-------|------|
+| companies | 177 |
+| entities | 3,085 |
+| debt_instruments | 1,805 |
+| company_financials | 176 |
+| extraction_metadata | 177 |
+| document_sections | 5,456 |
+| bond_pricing | 30 |
+
+**Files created:**
+- `alembic/versions/010_add_extraction_metadata.py`
+- `scripts/backfill_extraction_metadata.py`
+
+**Files modified:**
+- `app/models/schema.py` - Added ExtractionMetadata model
+- `app/models/__init__.py` - Export new model
+- `app/api/primitives.py` - Added include_metadata param + batch endpoint
+- `app/services/financial_extraction.py` - Fixed scale detection
 
 ### 2026-01-18 (Session 11) - Financial Scale Fix & Agent Enhancements Plan
 **Part 1: Fixed Financial Extraction Scale Detection**
