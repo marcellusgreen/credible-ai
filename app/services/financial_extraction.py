@@ -71,9 +71,10 @@ Extract and return this JSON structure:
   "gross_profit": null,               // Revenue minus cost of revenue
   "operating_income": null,           // Operating income/loss (EBIT)
   "interest_expense": null,           // Interest expense (positive number)
+  "income_tax_expense": null,         // Income tax expense/benefit (positive = expense)
   "net_income": null,                 // Net income/loss attributable to company
-  "depreciation_amortization": null,  // D&A (often in cash flow statement)
-  "ebitda": null,                     // If disclosed, or operating_income + D&A
+  "depreciation_amortization": null,  // D&A (from cash flow statement - see tips below)
+  "ebitda": null,                     // ONLY if explicitly disclosed - otherwise leave null
 
   // BALANCE SHEET (as of period end - use EXACT numbers from filing)
   "cash_and_equivalents": null,       // Cash and cash equivalents
@@ -96,9 +97,19 @@ Extract and return this JSON structure:
 EXTRACTION TIPS:
 - Revenue: Look for "Net sales", "Revenues", "Total net revenues"
 - Interest expense: Usually below operating income, may be "Interest expense, net"
-- D&A: Often in cash flow statement under "Depreciation and amortization"
 - Total debt: May need to sum "Current portion of long-term debt" + "Long-term debt"
-- EBITDA: Some companies disclose "Adjusted EBITDA" in MD&A section
+
+CRITICAL - DEPRECIATION & AMORTIZATION (D&A):
+D&A is essential for computing EBITDA. It is typically found in the CASH FLOW STATEMENT:
+- Look in "Cash flows from operating activities" section
+- Usually the first or second adjustment line after "Net income"
+- Common labels: "Depreciation and amortization", "Depreciation", "Amortization of intangibles"
+- May be split into multiple lines - SUM all depreciation and amortization items
+- If D&A is shown separately, add them together: depreciation_amortization = depreciation + amortization
+
+EBITDA CALCULATION:
+- If EBITDA is explicitly disclosed (rare), use that value
+- Otherwise, DO NOT calculate EBITDA - leave it null, we will compute it as: operating_income + depreciation_amortization
 
 IMPORTANT:
 - Extract the EXACT numbers as shown in the filing tables
@@ -113,6 +124,7 @@ FINANCIAL_SECTIONS_KEYWORDS = [
     "consolidated statements of operations",
     "consolidated balance sheets",
     "consolidated statements of cash flows",
+    "cash flows from operating activities",  # Where D&A is found
     "statements of income",
     "financial statements",
     "net revenues",
@@ -123,6 +135,7 @@ FINANCIAL_SECTIONS_KEYWORDS = [
     "net income",
     "total assets",
     "total liabilities",
+    "depreciation and amortization",  # D&A line item
     "stockholders' equity",
     "cash and cash equivalents",
     "depreciation and amortization",
@@ -287,6 +300,7 @@ class ExtractedFinancials(BaseModel):
     gross_profit: Optional[int] = None
     operating_income: Optional[int] = None
     interest_expense: Optional[int] = None
+    income_tax_expense: Optional[int] = None
     net_income: Optional[int] = None
     depreciation_amortization: Optional[int] = None
     ebitda: Optional[int] = None

@@ -156,9 +156,21 @@ async def recompute_metrics_for_company(
     financials = await get_latest_financials(db, company_id)
     if financials:
         # Use quarterly EBITDA annualized (x4) for ratios
-        # Or if we have TTM data in the future, use that
+        # Priority order for EBITDA:
+        # 1. Directly extracted EBITDA
+        # 2. Computed: Operating Income + Depreciation & Amortization
+        # 3. Fallback: Operating Income only (understates by D&A amount)
         quarterly_ebitda = financials.ebitda
         cash = financials.cash_and_equivalents or 0
+
+        # If no EBITDA, try to compute from components
+        if not quarterly_ebitda:
+            if financials.operating_income and financials.depreciation_amortization:
+                # Best: compute EBITDA = Operating Income + D&A
+                quarterly_ebitda = financials.operating_income + financials.depreciation_amortization
+            elif financials.operating_income:
+                # Fallback: use Operating Income alone (understates by D&A)
+                quarterly_ebitda = financials.operating_income
 
         if quarterly_ebitda and quarterly_ebitda > 0:
             # Annualize quarterly EBITDA
