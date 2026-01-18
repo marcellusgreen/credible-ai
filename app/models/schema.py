@@ -689,6 +689,64 @@ class ObligorGroupFinancials(Base):
     )
 
 
+class ExtractionMetadata(Base):
+    """Extraction quality and provenance tracking per company."""
+
+    __tablename__ = "extraction_metadata"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    company_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"),
+        nullable=False, unique=True
+    )
+
+    # Extraction quality metrics
+    qa_score: Mapped[Optional[Decimal]] = mapped_column(Numeric(4, 2))  # 0.00-1.00
+    extraction_method: Mapped[Optional[str]] = mapped_column(String(50))  # 'gemini', 'claude', 'hybrid'
+    extraction_attempts: Mapped[int] = mapped_column(Integer, default=1)
+
+    # Field-level confidence (JSONB)
+    field_confidence: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+    # Source filing info
+    source_10k_url: Mapped[Optional[str]] = mapped_column(String(500))
+    source_10k_date: Mapped[Optional[date]] = mapped_column(Date)
+    source_10q_url: Mapped[Optional[str]] = mapped_column(String(500))
+    source_10q_date: Mapped[Optional[date]] = mapped_column(Date)
+
+    # Timestamps
+    structure_extracted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    debt_extracted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    financials_extracted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    pricing_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    # Data freshness indicators
+    data_version: Mapped[int] = mapped_column(Integer, default=1)
+    stale_after_days: Mapped[int] = mapped_column(Integer, default=90)
+
+    # Uncertainties and warnings
+    uncertainties: Mapped[list] = mapped_column(JSONB, default=list)
+    warnings: Mapped[list] = mapped_column(JSONB, default=list)
+
+    # Metadata
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    # Relationship
+    company: Mapped["Company"] = relationship(backref="extraction_metadata")
+
+    __table_args__ = (
+        Index("idx_extraction_metadata_company", "company_id"),
+        Index("idx_extraction_metadata_qa_score", "qa_score"),
+    )
+
+
 class CompanyMetrics(Base):
     """Flat table optimized for screening and filtering."""
 

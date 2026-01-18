@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models import (
     Company, CompanyMetrics, Entity, DebtInstrument,
-    Guarantee, BondPricing, DocumentSection,
+    Guarantee, BondPricing, DocumentSection, ExtractionMetadata,
 )
 
 router = APIRouter()
@@ -240,6 +240,8 @@ async def search_companies(
     offset: int = Query(0, ge=0, description="Pagination offset"),
     # Export format
     format: str = Query("json", description="Response format: json or csv"),
+    # Metadata inclusion
+    include_metadata: bool = Query(False, description="Include extraction metadata (qa_score, timestamps, warnings)"),
     # ETag support
     if_none_match: Optional[str] = Header(None, description="ETag for conditional request"),
     db: AsyncSession = Depends(get_db),
@@ -250,15 +252,16 @@ async def search_companies(
     Supports filtering by sector, leverage, ratings, risk flags, and more.
     Use `fields` parameter to request only the data you need.
     Use `format=csv` for CSV export (useful for bulk data).
+    Use `include_metadata=true` for extraction quality info.
 
     **Example:** Find MAG7 company with highest leverage:
     ```
     GET /v1/companies?ticker=AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA&fields=ticker,name,net_leverage_ratio&sort=-net_leverage_ratio&limit=1
     ```
 
-    **Example:** Export all companies to CSV:
+    **Example:** Get company with metadata:
     ```
-    GET /v1/companies?format=csv&limit=100
+    GET /v1/companies?ticker=AAPL&include_metadata=true
     ```
     """
     # Parse and validate fields
@@ -343,6 +346,17 @@ async def search_companies(
     result = await db.execute(query)
     rows = result.all()
 
+    # Fetch metadata if requested
+    metadata_map = {}
+    if include_metadata:
+        company_ids = [c.id for _, c in rows]
+        if company_ids:
+            meta_result = await db.execute(
+                select(ExtractionMetadata).where(ExtractionMetadata.company_id.in_(company_ids))
+            )
+            for meta in meta_result.scalars():
+                metadata_map[meta.company_id] = meta
+
     # Build response with field selection
     data = []
     for m, c in rows:
@@ -379,6 +393,24 @@ async def search_companies(
             "moodys_rating": m.moodys_rating,
             "rating_bucket": m.rating_bucket,
         }
+
+        # Add metadata if requested
+        if include_metadata and c.id in metadata_map:
+            meta = metadata_map[c.id]
+            company_data["_metadata"] = {
+                "qa_score": float(meta.qa_score) if meta.qa_score else None,
+                "extraction_method": meta.extraction_method,
+                "data_version": meta.data_version,
+                "structure_extracted_at": meta.structure_extracted_at.isoformat() if meta.structure_extracted_at else None,
+                "debt_extracted_at": meta.debt_extracted_at.isoformat() if meta.debt_extracted_at else None,
+                "financials_extracted_at": meta.financials_extracted_at.isoformat() if meta.financials_extracted_at else None,
+                "pricing_updated_at": meta.pricing_updated_at.isoformat() if meta.pricing_updated_at else None,
+                "source_10k_date": meta.source_10k_date.isoformat() if meta.source_10k_date else None,
+                "source_10q_url": meta.source_10q_url,
+                "field_confidence": meta.field_confidence,
+                "warnings": meta.warnings if meta.warnings else [],
+            }
+
         data.append(filter_dict(company_data, selected_fields))
 
     # Return CSV if requested
@@ -1675,3 +1707,636 @@ async def search_documents(
         }
     }
     return etag_response(response_data, if_none_match)
+
+
+# =============================================================================
+# PRIMITIVE 7: batch
+# =============================================================================
+
+
+class BatchOperation(BaseModel):
+    """A single operation in a batch request."""
+    primitive: str = Field(..., description="Primitive name: search.companies, search.bonds, resolve.bond, traverse.entities, search.pricing, search.documents")
+    params: dict = Field(default_factory=dict, description="Parameters for the primitive")
+
+
+class BatchRequest(BaseModel):
+    """Batch request containing multiple operations."""
+    operations: List[BatchOperation] = Field(..., min_length=1, max_length=10, description="List of operations (1-10)")
+
+
+class BatchOperationResult(BaseModel):
+    """Result of a single batch operation."""
+    operation_id: int
+    status: str  # "success" or "error"
+    data: Optional[dict] = None
+    error: Optional[dict] = None
+
+
+@router.post("/batch", tags=["Primitives"])
+async def batch_operations(
+    request: BatchRequest = Body(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Execute multiple primitive operations in a single request.
+
+    Accepts up to 10 operations and executes them in parallel.
+    Each operation is independent - failures in one don't affect others.
+
+    **Supported Primitives:**
+    - `search.companies` - Search companies (maps to GET /v1/companies)
+    - `search.bonds` - Search bonds (maps to GET /v1/bonds)
+    - `resolve.bond` - Resolve bond identifier (maps to GET /v1/bonds/resolve)
+    - `traverse.entities` - Graph traversal (maps to POST /v1/entities/traverse)
+    - `search.pricing` - Search pricing (maps to GET /v1/pricing)
+    - `search.documents` - Search documents (maps to GET /v1/documents/search)
+
+    **Example Request:**
+    ```json
+    {
+      "operations": [
+        {"primitive": "search.companies", "params": {"ticker": "AAPL,MSFT", "fields": "ticker,net_leverage_ratio"}},
+        {"primitive": "search.bonds", "params": {"ticker": "TSLA", "has_pricing": true}},
+        {"primitive": "resolve.bond", "params": {"q": "RIG 8% 2027"}}
+      ]
+    }
+    ```
+
+    **Example Response:**
+    ```json
+    {
+      "results": [
+        {"operation_id": 0, "status": "success", "data": {...}},
+        {"operation_id": 1, "status": "success", "data": {...}},
+        {"operation_id": 2, "status": "error", "error": {"code": "NOT_FOUND", "message": "..."}}
+      ],
+      "meta": {
+        "total_operations": 3,
+        "successful": 2,
+        "failed": 1,
+        "duration_ms": 234
+      }
+    }
+    ```
+    """
+    import asyncio
+    import time
+
+    start_time = time.time()
+
+    # Map primitive names to handler functions
+    primitive_handlers = {
+        "search.companies": _batch_search_companies,
+        "search.bonds": _batch_search_bonds,
+        "resolve.bond": _batch_resolve_bond,
+        "traverse.entities": _batch_traverse_entities,
+        "search.pricing": _batch_search_pricing,
+        "search.documents": _batch_search_documents,
+    }
+
+    async def execute_operation(op_id: int, op: BatchOperation) -> BatchOperationResult:
+        """Execute a single operation and return result."""
+        handler = primitive_handlers.get(op.primitive)
+        if not handler:
+            return BatchOperationResult(
+                operation_id=op_id,
+                status="error",
+                error={
+                    "code": "INVALID_PRIMITIVE",
+                    "message": f"Unknown primitive: {op.primitive}",
+                    "valid_primitives": list(primitive_handlers.keys())
+                }
+            )
+
+        try:
+            result = await handler(op.params, db)
+            return BatchOperationResult(
+                operation_id=op_id,
+                status="success",
+                data=result
+            )
+        except HTTPException as e:
+            return BatchOperationResult(
+                operation_id=op_id,
+                status="error",
+                error=e.detail if isinstance(e.detail, dict) else {"code": "ERROR", "message": str(e.detail)}
+            )
+        except Exception as e:
+            return BatchOperationResult(
+                operation_id=op_id,
+                status="error",
+                error={"code": "INTERNAL_ERROR", "message": str(e)}
+            )
+
+    # Execute all operations in parallel
+    tasks = [execute_operation(i, op) for i, op in enumerate(request.operations)]
+    results = await asyncio.gather(*tasks)
+
+    duration_ms = int((time.time() - start_time) * 1000)
+    successful = sum(1 for r in results if r.status == "success")
+    failed = len(results) - successful
+
+    return {
+        "results": [r.model_dump() for r in results],
+        "meta": {
+            "total_operations": len(request.operations),
+            "successful": successful,
+            "failed": failed,
+            "duration_ms": duration_ms,
+        }
+    }
+
+
+# =============================================================================
+# BATCH OPERATION HANDLERS
+# =============================================================================
+
+
+async def _batch_search_companies(params: dict, db: AsyncSession) -> dict:
+    """Execute search.companies primitive."""
+    # Build query similar to search_companies endpoint
+    ticker = params.get("ticker")
+    sector = params.get("sector")
+    industry = params.get("industry")
+    rating_bucket = params.get("rating_bucket")
+    min_leverage = params.get("min_leverage")
+    max_leverage = params.get("max_leverage")
+    min_net_leverage = params.get("min_net_leverage")
+    max_net_leverage = params.get("max_net_leverage")
+    min_debt = params.get("min_debt")
+    max_debt = params.get("max_debt")
+    has_structural_sub = params.get("has_structural_sub")
+    has_floating_rate = params.get("has_floating_rate")
+    has_near_term_maturity = params.get("has_near_term_maturity")
+    fields_param = params.get("fields")
+    sort = params.get("sort", "ticker")
+    limit = min(params.get("limit", 50), 100)
+    offset = params.get("offset", 0)
+    include_metadata = params.get("include_metadata", False)
+
+    selected_fields = parse_fields(fields_param, COMPANY_FIELDS) if fields_param else None
+
+    query = select(CompanyMetrics, Company).join(
+        Company, CompanyMetrics.company_id == Company.id
+    )
+
+    filters = []
+
+    ticker_list = parse_comma_list(ticker) if ticker else []
+    if ticker_list:
+        filters.append(CompanyMetrics.ticker.in_(ticker_list))
+    if sector:
+        filters.append(CompanyMetrics.sector.ilike(f"%{sector}%"))
+    if industry:
+        filters.append(CompanyMetrics.industry.ilike(f"%{industry}%"))
+    if rating_bucket:
+        filters.append(CompanyMetrics.rating_bucket == rating_bucket)
+    if min_leverage is not None:
+        filters.append(CompanyMetrics.leverage_ratio >= min_leverage)
+    if max_leverage is not None:
+        filters.append(CompanyMetrics.leverage_ratio <= max_leverage)
+    if min_net_leverage is not None:
+        filters.append(CompanyMetrics.net_leverage_ratio >= min_net_leverage)
+    if max_net_leverage is not None:
+        filters.append(CompanyMetrics.net_leverage_ratio <= max_net_leverage)
+    if min_debt is not None:
+        filters.append(CompanyMetrics.total_debt >= min_debt)
+    if max_debt is not None:
+        filters.append(CompanyMetrics.total_debt <= max_debt)
+    if has_structural_sub is not None:
+        filters.append(CompanyMetrics.has_structural_sub == has_structural_sub)
+    if has_floating_rate is not None:
+        filters.append(CompanyMetrics.has_floating_rate == has_floating_rate)
+    if has_near_term_maturity is not None:
+        filters.append(CompanyMetrics.has_near_term_maturity == has_near_term_maturity)
+
+    if filters:
+        query = query.where(and_(*filters))
+
+    # Count
+    count_query = select(func.count()).select_from(CompanyMetrics)
+    if filters:
+        count_query = count_query.join(Company, CompanyMetrics.company_id == Company.id).where(and_(*filters))
+    total = await db.scalar(count_query)
+
+    # Sort
+    sort_column_map = {
+        "ticker": CompanyMetrics.ticker,
+        "name": Company.name,
+        "total_debt": CompanyMetrics.total_debt,
+        "leverage_ratio": CompanyMetrics.leverage_ratio,
+        "net_leverage_ratio": CompanyMetrics.net_leverage_ratio,
+    }
+    query = apply_sort(query, sort, sort_column_map, CompanyMetrics.ticker)
+    query = query.offset(offset).limit(limit)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    # Fetch metadata if requested
+    metadata_map = {}
+    if include_metadata:
+        company_ids = [c.id for _, c in rows]
+        if company_ids:
+            meta_result = await db.execute(
+                select(ExtractionMetadata).where(ExtractionMetadata.company_id.in_(company_ids))
+            )
+            for meta in meta_result.scalars():
+                metadata_map[meta.company_id] = meta
+
+    data = []
+    for m, c in rows:
+        company_data = {
+            "ticker": m.ticker,
+            "name": c.name,
+            "sector": m.sector,
+            "total_debt": m.total_debt,
+            "leverage_ratio": float(m.leverage_ratio) if m.leverage_ratio else None,
+            "net_leverage_ratio": float(m.net_leverage_ratio) if m.net_leverage_ratio else None,
+            "has_structural_sub": m.has_structural_sub,
+            "has_floating_rate": m.has_floating_rate,
+            "has_near_term_maturity": m.has_near_term_maturity,
+        }
+
+        if include_metadata and c.id in metadata_map:
+            meta = metadata_map[c.id]
+            company_data["_metadata"] = {
+                "qa_score": float(meta.qa_score) if meta.qa_score else None,
+                "extraction_method": meta.extraction_method,
+                "warnings": meta.warnings if meta.warnings else [],
+            }
+
+        data.append(filter_dict(company_data, selected_fields) if selected_fields else company_data)
+
+    return {"data": data, "meta": {"total": total, "limit": limit, "offset": offset}}
+
+
+async def _batch_search_bonds(params: dict, db: AsyncSession) -> dict:
+    """Execute search.bonds primitive."""
+    ticker = params.get("ticker")
+    cusip = params.get("cusip")
+    seniority = params.get("seniority")
+    instrument_type = params.get("instrument_type")
+    rate_type = params.get("rate_type")
+    min_coupon = params.get("min_coupon")
+    max_coupon = params.get("max_coupon")
+    min_ytm = params.get("min_ytm")
+    max_ytm = params.get("max_ytm")
+    has_pricing = params.get("has_pricing")
+    is_active = params.get("is_active", True)
+    limit = min(params.get("limit", 50), 100)
+    offset = params.get("offset", 0)
+
+    needs_pricing = any([min_ytm, max_ytm, has_pricing])
+
+    if needs_pricing:
+        query = select(DebtInstrument, Company, Entity, BondPricing).join(
+            Company, DebtInstrument.company_id == Company.id
+        ).join(
+            Entity, DebtInstrument.issuer_id == Entity.id
+        ).outerjoin(
+            BondPricing, DebtInstrument.id == BondPricing.debt_instrument_id
+        )
+    else:
+        query = select(DebtInstrument, Company, Entity).join(
+            Company, DebtInstrument.company_id == Company.id
+        ).join(
+            Entity, DebtInstrument.issuer_id == Entity.id
+        )
+
+    filters = []
+    if is_active is not None:
+        filters.append(DebtInstrument.is_active == is_active)
+
+    ticker_list = parse_comma_list(ticker) if ticker else []
+    if ticker_list:
+        filters.append(Company.ticker.in_(ticker_list))
+
+    cusip_list = parse_comma_list(cusip) if cusip else []
+    if cusip_list:
+        filters.append(DebtInstrument.cusip.in_(cusip_list))
+
+    if seniority:
+        filters.append(DebtInstrument.seniority == seniority)
+    if instrument_type:
+        filters.append(DebtInstrument.instrument_type == instrument_type)
+    if rate_type:
+        filters.append(DebtInstrument.rate_type == rate_type)
+    if min_coupon is not None:
+        filters.append(DebtInstrument.interest_rate >= int(min_coupon * 100))
+    if max_coupon is not None:
+        filters.append(DebtInstrument.interest_rate <= int(max_coupon * 100))
+
+    if needs_pricing:
+        if min_ytm is not None:
+            filters.append(BondPricing.ytm_bps >= int(min_ytm * 100))
+        if max_ytm is not None:
+            filters.append(BondPricing.ytm_bps <= int(max_ytm * 100))
+        if has_pricing is True:
+            filters.append(BondPricing.last_price.isnot(None))
+
+    if filters:
+        query = query.where(and_(*filters))
+
+    query = query.order_by(DebtInstrument.maturity_date).offset(offset).limit(limit)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    data = []
+    for row in rows:
+        if needs_pricing:
+            d, c, issuer, pricing = row
+        else:
+            d, c, issuer = row
+            pricing = None
+
+        bond_data = {
+            "id": str(d.id),
+            "name": d.name,
+            "cusip": d.cusip,
+            "company_ticker": c.ticker,
+            "issuer_name": issuer.name,
+            "seniority": d.seniority,
+            "coupon_rate": d.interest_rate / 100 if d.interest_rate else None,
+            "maturity_date": d.maturity_date.isoformat() if d.maturity_date else None,
+            "outstanding": d.outstanding,
+        }
+
+        if pricing:
+            bond_data["pricing"] = {
+                "last_price": float(pricing.last_price) if pricing.last_price else None,
+                "ytm": pricing.ytm_bps / 100 if pricing.ytm_bps else None,
+                "spread_bps": pricing.spread_to_treasury_bps,
+            }
+
+        data.append(bond_data)
+
+    return {"data": data, "meta": {"limit": limit, "offset": offset}}
+
+
+async def _batch_resolve_bond(params: dict, db: AsyncSession) -> dict:
+    """Execute resolve.bond primitive."""
+    q = params.get("q")
+    cusip = params.get("cusip")
+    isin = params.get("isin")
+    ticker = params.get("ticker")
+    coupon = params.get("coupon")
+    maturity_year = params.get("maturity_year")
+    limit = min(params.get("limit", 5), 20)
+
+    if not any([q, cusip, isin, ticker]):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "MISSING_PARAMETER", "message": "At least one of q, cusip, isin, or ticker is required"}
+        )
+
+    query = select(DebtInstrument, Company, Entity).join(
+        Company, DebtInstrument.company_id == Company.id
+    ).join(
+        Entity, DebtInstrument.issuer_id == Entity.id
+    ).where(DebtInstrument.is_active == True)
+
+    filters = []
+    exact_match = False
+
+    if cusip:
+        filters.append(DebtInstrument.cusip == cusip.upper())
+        exact_match = True
+    elif isin:
+        filters.append(DebtInstrument.isin == isin.upper())
+        exact_match = True
+    else:
+        if ticker:
+            filters.append(Company.ticker == ticker.upper())
+        if coupon is not None:
+            coupon_bps = int(coupon * 100)
+            filters.append(DebtInstrument.interest_rate.between(coupon_bps - 50, coupon_bps + 50))
+        if maturity_year is not None:
+            year_start = date(maturity_year, 1, 1)
+            year_end = date(maturity_year, 12, 31)
+            filters.append(DebtInstrument.maturity_date.between(year_start, year_end))
+        if q:
+            q_upper = q.upper()
+            words = q_upper.split()
+            if words and len(words[0]) <= 5:
+                filters.append(or_(Company.ticker == words[0], Company.ticker.ilike(f"%{words[0]}%")))
+            pct_match = re.search(r'(\d+\.?\d*)\s*%', q)
+            if pct_match:
+                coupon_val = float(pct_match.group(1))
+                coupon_bps = int(coupon_val * 100)
+                filters.append(DebtInstrument.interest_rate.between(coupon_bps - 25, coupon_bps + 25))
+            year_match = re.search(r'(\d{4})', q)
+            if year_match:
+                year = int(year_match.group(1))
+                if 2020 <= year <= 2060:
+                    year_start = date(year, 1, 1)
+                    year_end = date(year, 12, 31)
+                    filters.append(DebtInstrument.maturity_date.between(year_start, year_end))
+
+    if filters:
+        query = query.where(and_(*filters))
+
+    query = query.limit(limit)
+    result = await db.execute(query)
+    rows = result.all()
+
+    matches = []
+    for d, c, issuer in rows:
+        confidence = 1.0 if exact_match else 0.8
+        matches.append({
+            "confidence": confidence,
+            "bond": {
+                "id": str(d.id),
+                "name": d.name,
+                "cusip": d.cusip,
+                "company_ticker": c.ticker,
+                "coupon_rate": d.interest_rate / 100 if d.interest_rate else None,
+                "maturity_date": d.maturity_date.isoformat() if d.maturity_date else None,
+                "seniority": d.seniority,
+            }
+        })
+
+    return {"data": {"query": q or cusip or isin, "matches": matches, "exact_match": exact_match}}
+
+
+async def _batch_traverse_entities(params: dict, db: AsyncSession) -> dict:
+    """Execute traverse.entities primitive (simplified version)."""
+    start = params.get("start", {})
+    relationships = params.get("relationships", ["subsidiaries"])
+    depth = min(params.get("depth", 3), 10)
+
+    start_type = start.get("type")
+    start_id = start.get("id")
+
+    if start_type != "company":
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "UNSUPPORTED", "message": "Batch traverse only supports company start type"}
+        )
+
+    result = await db.execute(
+        select(Company).where(Company.ticker == start_id.upper())
+    )
+    company = result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "NOT_FOUND", "message": f"Company '{start_id}' not found"}
+        )
+
+    # Get entities for the company
+    entity_result = await db.execute(
+        select(Entity).where(Entity.company_id == company.id)
+    )
+    entities = entity_result.scalars().all()
+
+    entity_list = []
+    for e in entities:
+        entity_list.append({
+            "id": str(e.id),
+            "name": e.name,
+            "entity_type": e.entity_type,
+            "is_guarantor": e.is_guarantor,
+            "is_borrower": e.is_borrower,
+            "parent_id": str(e.parent_id) if e.parent_id else None,
+        })
+
+    return {
+        "data": {
+            "start": {"type": "company", "id": start_id.upper(), "name": company.name},
+            "traversal": {
+                "relationship": "subsidiaries",
+                "entities": entity_list,
+            },
+            "summary": {"entity_count": len(entity_list)}
+        }
+    }
+
+
+async def _batch_search_pricing(params: dict, db: AsyncSession) -> dict:
+    """Execute search.pricing primitive."""
+    ticker = params.get("ticker")
+    cusip = params.get("cusip")
+    min_ytm = params.get("min_ytm")
+    max_ytm = params.get("max_ytm")
+    limit = min(params.get("limit", 50), 100)
+    offset = params.get("offset", 0)
+
+    query = select(BondPricing, DebtInstrument, Company).join(
+        DebtInstrument, BondPricing.debt_instrument_id == DebtInstrument.id
+    ).join(
+        Company, DebtInstrument.company_id == Company.id
+    ).where(BondPricing.last_price.isnot(None))
+
+    filters = []
+
+    ticker_list = parse_comma_list(ticker) if ticker else []
+    if ticker_list:
+        filters.append(Company.ticker.in_(ticker_list))
+
+    cusip_list = parse_comma_list(cusip) if cusip else []
+    if cusip_list:
+        filters.append(BondPricing.cusip.in_(cusip_list))
+
+    if min_ytm is not None:
+        filters.append(BondPricing.ytm_bps >= int(min_ytm * 100))
+    if max_ytm is not None:
+        filters.append(BondPricing.ytm_bps <= int(max_ytm * 100))
+
+    if filters:
+        query = query.where(and_(*filters))
+
+    query = query.order_by(desc(BondPricing.ytm_bps)).offset(offset).limit(limit)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    data = []
+    for pricing, debt, company in rows:
+        data.append({
+            "cusip": pricing.cusip or debt.cusip,
+            "bond_name": debt.name,
+            "company_ticker": company.ticker,
+            "last_price": float(pricing.last_price) if pricing.last_price else None,
+            "ytm": pricing.ytm_bps / 100 if pricing.ytm_bps else None,
+            "spread_bps": pricing.spread_to_treasury_bps,
+            "maturity_date": debt.maturity_date.isoformat() if debt.maturity_date else None,
+        })
+
+    return {"data": data, "meta": {"limit": limit, "offset": offset}}
+
+
+async def _batch_search_documents(params: dict, db: AsyncSession) -> dict:
+    """Execute search.documents primitive."""
+    q = params.get("q")
+    if not q:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "MISSING_PARAMETER", "message": "q (search query) is required"}
+        )
+
+    ticker = params.get("ticker")
+    doc_type = params.get("doc_type")
+    section_type = params.get("section_type")
+    limit = min(params.get("limit", 50), 100)
+    offset = params.get("offset", 0)
+
+    from sqlalchemy import text
+
+    # Build dynamic WHERE conditions
+    conditions = []
+    query_params = {"query": q, "limit": limit, "offset": offset}
+
+    ticker_list = parse_comma_list(ticker) if ticker else []
+    if ticker_list:
+        conditions.append("c.ticker = ANY(:tickers)")
+        query_params["tickers"] = ticker_list
+
+    if doc_type:
+        doc_types = parse_comma_list(doc_type)
+        conditions.append("ds.doc_type = ANY(:doc_types)")
+        query_params["doc_types"] = doc_types
+
+    if section_type:
+        section_types = parse_comma_list(section_type, uppercase=False)
+        conditions.append("ds.section_type = ANY(:section_types)")
+        query_params["section_types"] = section_types
+
+    where_clause = ""
+    if conditions:
+        where_clause = " AND " + " AND ".join(conditions)
+
+    full_query = text(f"""
+        SELECT
+            ds.id,
+            c.ticker,
+            ds.doc_type,
+            ds.section_type,
+            ts_rank_cd(ds.search_vector, plainto_tsquery('english', :query)) as relevance_score,
+            ts_headline('english', ds.content, plainto_tsquery('english', :query),
+                'MaxWords=30, MinWords=10, MaxFragments=1, StartSel=<b>, StopSel=</b>') as snippet
+        FROM document_sections ds
+        JOIN companies c ON ds.company_id = c.id
+        WHERE ds.search_vector @@ plainto_tsquery('english', :query)
+        {where_clause}
+        ORDER BY relevance_score DESC
+        LIMIT :limit OFFSET :offset
+    """)
+
+    result = await db.execute(full_query, query_params)
+    rows = result.fetchall()
+
+    data = []
+    for row in rows:
+        data.append({
+            "id": str(row.id),
+            "ticker": row.ticker,
+            "doc_type": row.doc_type,
+            "section_type": row.section_type,
+            "relevance_score": round(float(row.relevance_score), 4) if row.relevance_score else 0,
+            "snippet": row.snippet,
+        })
+
+    return {"data": data, "meta": {"query": q, "limit": limit, "offset": offset}}
