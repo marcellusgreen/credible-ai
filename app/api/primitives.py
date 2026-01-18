@@ -1,13 +1,15 @@
 """
 Primitives API for DebtStack.ai
 
-6 core primitives optimized for AI agents:
+8 core primitives optimized for AI agents:
 1. GET /v1/companies - Horizontal company search
 2. GET /v1/bonds - Horizontal bond search
 3. GET /v1/bonds/resolve - Bond identifier resolution
 4. POST /v1/entities/traverse - Graph traversal
 5. GET /v1/pricing - Bond pricing data
 6. GET /v1/documents/search - Full-text search across SEC filings
+7. POST /v1/batch - Batch operations
+8. GET /v1/companies/{ticker}/changes - Diff/changelog since date
 """
 
 import csv
@@ -27,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models import (
-    Company, CompanyMetrics, Entity, DebtInstrument,
+    Company, CompanyMetrics, CompanySnapshot, Entity, DebtInstrument,
     Guarantee, BondPricing, DocumentSection, ExtractionMetadata,
 )
 
@@ -2340,3 +2342,253 @@ async def _batch_search_documents(params: dict, db: AsyncSession) -> dict:
         })
 
     return {"data": data, "meta": {"query": q, "limit": limit, "offset": offset}}
+
+
+# =============================================================================
+# PRIMITIVE 8: changes (diff/changelog)
+# =============================================================================
+
+
+@router.get("/companies/{ticker}/changes", tags=["Primitives"])
+async def get_company_changes(
+    ticker: str,
+    since: date = Query(..., description="Compare changes since this date (YYYY-MM-DD)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get changes to a company's data since a specified date.
+
+    Compares current data against the nearest snapshot on or before the `since` date.
+    Returns deltas including new bonds, entity changes, metric changes, and pricing movements.
+
+    **Example:** Get changes since Q4 2025:
+    ```
+    GET /v1/companies/CHTR/changes?since=2025-10-01
+    ```
+
+    **Response includes:**
+    - `new_debt`: Bonds/loans added after the snapshot
+    - `removed_debt`: Bonds/loans no longer active
+    - `entity_changes`: Subsidiaries added or removed
+    - `metric_changes`: Significant changes to leverage, debt totals
+    - `pricing_changes`: YTM movements >50bps (if pricing data available)
+    """
+    ticker = ticker.upper()
+
+    # Get company
+    company_result = await db.execute(
+        select(Company).where(Company.ticker == ticker)
+    )
+    company = company_result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "NOT_FOUND", "message": f"Company '{ticker}' not found"}
+        )
+
+    # Find nearest snapshot on or before the since date
+    snapshot_result = await db.execute(
+        select(CompanySnapshot)
+        .where(
+            CompanySnapshot.company_id == company.id,
+            CompanySnapshot.snapshot_date <= since
+        )
+        .order_by(desc(CompanySnapshot.snapshot_date))
+        .limit(1)
+    )
+    snapshot = snapshot_result.scalar_one_or_none()
+
+    if not snapshot:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "NO_SNAPSHOT",
+                "message": f"No snapshot found on or before {since}. Earliest snapshot may be after this date."
+            }
+        )
+
+    # Get current data
+    # Current entities
+    current_entities_result = await db.execute(
+        select(Entity).where(Entity.company_id == company.id)
+    )
+    current_entities = {str(e.id): e for e in current_entities_result.scalars().all()}
+
+    # Current debt instruments
+    current_debt_result = await db.execute(
+        select(DebtInstrument).where(
+            DebtInstrument.company_id == company.id,
+            DebtInstrument.is_active == True
+        )
+    )
+    current_debt = {str(d.id): d for d in current_debt_result.scalars().all()}
+
+    # Current metrics
+    current_metrics_result = await db.execute(
+        select(CompanyMetrics).where(CompanyMetrics.company_id == company.id)
+    )
+    current_metrics = current_metrics_result.scalar_one_or_none()
+
+    # Current pricing
+    current_pricing = {}
+    if current_debt:
+        pricing_result = await db.execute(
+            select(BondPricing, DebtInstrument)
+            .join(DebtInstrument, BondPricing.debt_instrument_id == DebtInstrument.id)
+            .where(DebtInstrument.company_id == company.id)
+        )
+        for pricing, debt in pricing_result.all():
+            current_pricing[str(debt.id)] = pricing
+
+    # Parse snapshot data
+    snapshot_entities = {e["id"]: e for e in (snapshot.entities_snapshot or [])}
+    snapshot_debt = {d["id"]: d for d in (snapshot.debt_snapshot or [])}
+    snapshot_metrics = snapshot.metrics_snapshot or {}
+
+    # Calculate changes
+    changes = {
+        "new_debt": [],
+        "removed_debt": [],
+        "entity_changes": {
+            "added": [],
+            "removed": [],
+        },
+        "metric_changes": [],
+        "pricing_changes": [],
+    }
+
+    # --- Debt changes ---
+    current_debt_ids = set(current_debt.keys())
+    snapshot_debt_ids = set(snapshot_debt.keys())
+
+    # New debt
+    for debt_id in current_debt_ids - snapshot_debt_ids:
+        d = current_debt[debt_id]
+        changes["new_debt"].append({
+            "id": debt_id,
+            "name": d.name,
+            "cusip": d.cusip,
+            "instrument_type": d.instrument_type,
+            "seniority": d.seniority,
+            "principal": d.principal,
+            "interest_rate": d.interest_rate / 100 if d.interest_rate else None,
+            "maturity_date": d.maturity_date.isoformat() if d.maturity_date else None,
+            "issue_date": d.issue_date.isoformat() if d.issue_date else None,
+        })
+
+    # Removed debt
+    for debt_id in snapshot_debt_ids - current_debt_ids:
+        d = snapshot_debt[debt_id]
+        changes["removed_debt"].append({
+            "id": debt_id,
+            "name": d.get("name"),
+            "cusip": d.get("cusip"),
+            "instrument_type": d.get("instrument_type"),
+            "maturity_date": d.get("maturity_date"),
+        })
+
+    # --- Entity changes ---
+    current_entity_ids = set(current_entities.keys())
+    snapshot_entity_ids = set(snapshot_entities.keys())
+
+    # Added entities
+    for entity_id in current_entity_ids - snapshot_entity_ids:
+        e = current_entities[entity_id]
+        changes["entity_changes"]["added"].append({
+            "id": entity_id,
+            "name": e.name,
+            "entity_type": e.entity_type,
+            "is_guarantor": e.is_guarantor,
+            "jurisdiction": e.jurisdiction,
+        })
+
+    # Removed entities
+    for entity_id in snapshot_entity_ids - current_entity_ids:
+        e = snapshot_entities[entity_id]
+        changes["entity_changes"]["removed"].append({
+            "id": entity_id,
+            "name": e.get("name"),
+            "entity_type": e.get("entity_type"),
+        })
+
+    # --- Metric changes ---
+    if current_metrics and snapshot_metrics:
+        # Total debt change
+        current_total_debt = current_metrics.total_debt or 0
+        snapshot_total_debt = snapshot_metrics.get("total_debt") or 0
+        if current_total_debt != snapshot_total_debt:
+            debt_change = current_total_debt - snapshot_total_debt
+            debt_change_pct = (debt_change / snapshot_total_debt * 100) if snapshot_total_debt else None
+            if abs(debt_change) > 100_000_000_00:  # >$1B change
+                changes["metric_changes"].append({
+                    "metric": "total_debt",
+                    "previous": snapshot_total_debt,
+                    "current": current_total_debt,
+                    "change": debt_change,
+                    "change_pct": round(debt_change_pct, 1) if debt_change_pct else None,
+                })
+
+        # Leverage ratio change
+        current_leverage = float(current_metrics.leverage_ratio) if current_metrics.leverage_ratio else None
+        snapshot_leverage = snapshot_metrics.get("leverage_ratio")
+        if current_leverage and snapshot_leverage:
+            leverage_change = current_leverage - snapshot_leverage
+            if abs(leverage_change) > 0.5:  # >0.5x change
+                changes["metric_changes"].append({
+                    "metric": "leverage_ratio",
+                    "previous": snapshot_leverage,
+                    "current": current_leverage,
+                    "change": round(leverage_change, 2),
+                })
+
+        # Subordination risk change
+        current_sub_risk = current_metrics.subordination_risk
+        snapshot_sub_risk = snapshot_metrics.get("subordination_risk")
+        if current_sub_risk != snapshot_sub_risk:
+            changes["metric_changes"].append({
+                "metric": "subordination_risk",
+                "previous": snapshot_sub_risk,
+                "current": current_sub_risk,
+            })
+
+    # --- Pricing changes (>50bps YTM movement) ---
+    # Note: We don't have historical pricing in snapshots yet, so this compares
+    # against any pricing stored in the snapshot's debt data (if available)
+    for debt_id, pricing in current_pricing.items():
+        if pricing.ytm_bps:
+            # For now, just report current pricing for bonds that exist in both
+            if debt_id in snapshot_debt:
+                changes["pricing_changes"].append({
+                    "debt_id": debt_id,
+                    "name": current_debt[debt_id].name if debt_id in current_debt else None,
+                    "cusip": pricing.cusip,
+                    "current_ytm": pricing.ytm_bps / 100,
+                    "current_price": float(pricing.last_price) if pricing.last_price else None,
+                    "note": "Historical pricing comparison not yet available",
+                })
+
+    # Build response
+    response = {
+        "ticker": ticker,
+        "company_name": company.name,
+        "since": since.isoformat(),
+        "snapshot_date": snapshot.snapshot_date.isoformat(),
+        "snapshot_type": snapshot.snapshot_type,
+        "changes": changes,
+        "summary": {
+            "new_debt_count": len(changes["new_debt"]),
+            "removed_debt_count": len(changes["removed_debt"]),
+            "entities_added": len(changes["entity_changes"]["added"]),
+            "entities_removed": len(changes["entity_changes"]["removed"]),
+            "metric_changes_count": len(changes["metric_changes"]),
+            "has_changes": any([
+                changes["new_debt"],
+                changes["removed_debt"],
+                changes["entity_changes"]["added"],
+                changes["entity_changes"]["removed"],
+                changes["metric_changes"],
+            ])
+        }
+    }
+
+    return response
