@@ -689,6 +689,53 @@ class ObligorGroupFinancials(Base):
     )
 
 
+class CompanySnapshot(Base):
+    """Point-in-time snapshot of company data for historical tracking."""
+
+    __tablename__ = "company_snapshots"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    company_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    # Snapshot metadata
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    snapshot_type: Mapped[str] = mapped_column(String(20), nullable=False)  # 'quarterly', 'monthly', 'manual'
+
+    # Denormalized JSON snapshots
+    entities_snapshot: Mapped[Optional[dict]] = mapped_column(JSONB)
+    debt_snapshot: Mapped[Optional[dict]] = mapped_column(JSONB)
+    metrics_snapshot: Mapped[Optional[dict]] = mapped_column(JSONB)
+    financials_snapshot: Mapped[Optional[dict]] = mapped_column(JSONB)
+
+    # Summary counts
+    entity_count: Mapped[Optional[int]] = mapped_column(Integer)
+    debt_instrument_count: Mapped[Optional[int]] = mapped_column(Integer)
+    total_debt: Mapped[Optional[int]] = mapped_column(BigInteger)
+    guarantor_count: Mapped[Optional[int]] = mapped_column(Integer)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    # Relationship
+    company: Mapped["Company"] = relationship(backref="snapshots")
+
+    __table_args__ = (
+        UniqueConstraint("company_id", "snapshot_date", name="uq_company_snapshots_company_date"),
+        Index("idx_company_snapshots_company", "company_id"),
+        Index("idx_company_snapshots_date", "snapshot_date"),
+        Index("idx_company_snapshots_company_date", "company_id", "snapshot_date"),
+        Index("idx_company_snapshots_ticker", "ticker"),
+    )
+
+
 class ExtractionMetadata(Base):
     """Extraction quality and provenance tracking per company."""
 
