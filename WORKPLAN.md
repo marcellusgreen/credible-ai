@@ -27,6 +27,7 @@ Last Updated: 2026-01-18
 | `GET /v1/pricing` | ✅ Done | FINRA TRACE data |
 | `GET /v1/documents/search` | ✅ Done | Full-text search across SEC filings |
 | `POST /v1/batch` | ✅ Done | Batch operations (up to 10 parallel) |
+| `GET /v1/companies/{ticker}/changes` | ✅ Done | Diff/changelog against historical snapshots |
 
 ---
 
@@ -207,73 +208,48 @@ Adds extraction metadata to API responses via `?include_metadata=true` parameter
 ---
 
 ### Enhancement 2: Diff/Changelog Endpoints
-**Status**: 📋 PLANNED
+**Status**: ✅ COMPLETE (2026-01-18)
 **Effort**: Medium-Large (2-3 days)
 **Priority**: LOW (implement last)
 
 New endpoint: `GET /v1/companies/{ticker}/changes?since={iso_date}`
 
-Returns deltas since specified date:
-- `new_bonds`: Bonds issued after the date
-- `covenant_amendments`: Changes to existing covenants
-- `entity_restructurings`: Subsidiary additions/removals
-- `pricing_changes`: Significant yield/price movements (>50bps)
+**What was implemented:**
+- New `company_snapshots` table storing quarterly point-in-time snapshots
+- `GET /v1/companies/{ticker}/changes?since=YYYY-MM-DD` endpoint
+- Diff logic comparing current data against historical snapshot
+- Returns: new_debt, removed_debt, entity_changes, metric_changes, pricing_changes
 
 **Example Response:**
 ```json
 {
-  "ticker": "RIG",
-  "since": "2024-01-01",
-  "changes": {
-    "new_bonds": [
-      {"name": "8.75% Senior Notes due 2030", "issue_date": "2024-03-15", "principal": 500000000}
-    ],
-    "covenant_amendments": [
-      {"description": "Leverage covenant waived through 2024", "filing_date": "2024-02-10"}
-    ],
-    "entity_restructurings": [
-      {"type": "addition", "entity_name": "Transocean Holdings LLC", "date": "2024-01-20"}
-    ],
-    "pricing_changes": [
-      {"cusip": "893830AK8", "old_ytm": 850, "new_ytm": 920, "change_bps": 70}
-    ]
-  },
-  "snapshot_date": "2024-06-15"
+  "data": {
+    "ticker": "RIG",
+    "company_name": "Transocean Ltd.",
+    "snapshot_date": "2026-01-18",
+    "current_date": "2026-01-18",
+    "changes": {
+      "new_debt": [],
+      "removed_debt": [],
+      "entity_changes": {"added": 0, "removed": 0},
+      "metric_changes": {"total_debt": {"previous": 750000000000, "current": 750000000000}},
+      "pricing_changes": []
+    },
+    "summary": {"debt_added": 0, "debt_removed": 0, "net_debt_change": 0}
+  }
 }
 ```
 
-**Implementation Steps:**
+**Files created:**
+- `alembic/versions/011_add_company_snapshots.py` - Migration
+- `scripts/create_snapshot.py` - Create snapshots (quarterly/monthly/manual)
 
-| Step | Description | Files |
-|------|-------------|-------|
-| 2.1 | Create `company_snapshots` table for quarterly snapshots | `alembic/versions/012_add_company_snapshots.py` |
-| 2.2 | Create snapshot service | `app/services/snapshot_service.py` (new) |
-| 2.3 | Add `/v1/companies/{ticker}/changes` endpoint | `app/api/primitives.py` |
-| 2.4 | Implement diff logic for each change type | `app/services/diff_service.py` (new) |
-| 2.5 | Create quarterly snapshot cron job | `scripts/create_quarterly_snapshots.py` |
+**Files modified:**
+- `app/models/schema.py` - Added `CompanySnapshot` model
+- `app/models/__init__.py` - Export new model
+- `app/api/primitives.py` - Added `/v1/companies/{ticker}/changes` endpoint
 
-**Database Changes:**
-```sql
-CREATE TABLE company_snapshots (
-    id UUID PRIMARY KEY,
-    company_id UUID NOT NULL REFERENCES companies(id),
-    snapshot_date DATE NOT NULL,
-    snapshot_type VARCHAR(20),  -- 'quarterly', 'monthly', 'manual'
-
-    -- Snapshot data (denormalized JSON for fast comparison)
-    entities_snapshot JSONB,        -- All entities at point in time
-    debt_snapshot JSONB,            -- All debt instruments
-    metrics_snapshot JSONB,         -- CompanyMetrics at point in time
-
-    created_at TIMESTAMP,
-    UNIQUE(company_id, snapshot_date)
-);
-
-CREATE INDEX idx_snapshots_company_date ON company_snapshots(company_id, snapshot_date);
-```
-
-**Conflicts**: None identified
-**Dependencies**: Enhancement 1 (confidence scores) helpful for tracking data provenance
+**Initial snapshot created:** 2026-01-18 for all 177 companies
 
 ---
 
@@ -343,7 +319,9 @@ New endpoint `POST /v1/batch` for executing multiple primitives in a single requ
 |-------|-------------|--------|
 | 1st | **Confidence Scores + Metadata** | ✅ COMPLETE |
 | 2nd | **Batch Operations** | ✅ COMPLETE |
-| 3rd | **Diff/Changelog** | 📋 PLANNED (requires historical data accumulation) |
+| 3rd | **Diff/Changelog** | ✅ COMPLETE |
+
+**All 3 Agent-Friendly Enhancements are now complete!**
 
 ---
 
@@ -418,6 +396,26 @@ When starting a new session, read this file first, then:
 ---
 
 ## Session Log
+
+### 2026-01-18 (Session 13) - Documentation & Diff/Changelog Completion
+**Part 1: Updated PRIMITIVES_API_SPEC.md**
+- ✅ Added `include_metadata` parameter to Primitive 1 (search.companies)
+- ✅ Added Primitive 7: batch (`POST /v1/batch`) with full documentation
+- ✅ Added Primitive 8: changes (`GET /v1/companies/{ticker}/changes`) with full documentation
+- ✅ Updated Summary section to reflect 8 primitives
+- ✅ Removed old "Batch Operations (V2)" placeholder
+
+**Part 2: Updated WORKPLAN.md**
+- ✅ Added `/v1/companies/{ticker}/changes` to Primitives API Status table
+- ✅ Updated Enhancement 2 (Diff/Changelog) status to COMPLETE
+- ✅ Updated Implementation Order table to show all 3 enhancements complete
+
+**All Agent-Friendly Enhancements Complete:**
+| Enhancement | Status |
+|-------------|--------|
+| 1. Confidence Scores + Metadata | ✅ |
+| 2. Diff/Changelog Endpoints | ✅ |
+| 3. Batch Operations | ✅ |
 
 ### 2026-01-18 (Session 12) - Agent-Friendly Enhancements Implementation
 **Part 1: Enhancement A - Confidence Scores + Metadata**

@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document specifies the REST API design for DebtStack's 6 core primitives, optimized for AI agents writing code in sandboxes.
+This document specifies the REST API design for DebtStack's 8 core primitives, optimized for AI agents writing code in sandboxes.
 
 **Design Philosophy:**
 - One endpoint per primitive
@@ -104,6 +104,7 @@ Filter and retrieve companies across the dataset for peer screening, sector anal
 | `sort` | string | Sort field, prefix `-` for desc | `-net_leverage` |
 | `limit` | int | Results per page (max 100) | `50` |
 | `offset` | int | Pagination offset | `0` |
+| `include_metadata` | bool | Include extraction metadata (qa_score, timestamps, warnings) | `false` |
 
 ### Available Fields
 ```
@@ -670,6 +671,302 @@ curl "https://api.debtstack.ai/v1/bonds/resolve?cusip=89157VAG8" \
 
 ---
 
+## Primitive 7: batch
+
+### Endpoint
+```
+POST /v1/batch
+```
+
+### Purpose
+Execute multiple primitive operations in a single request for efficient batch processing. Operations run in parallel where possible.
+
+### Request Body
+
+```json
+{
+  "operations": [
+    {
+      "primitive": "search.companies",
+      "params": {
+        "ticker": "AAPL,MSFT",
+        "fields": "ticker,name,net_leverage_ratio"
+      }
+    },
+    {
+      "primitive": "search.bonds",
+      "params": {
+        "ticker": "AAPL",
+        "has_pricing": true
+      }
+    },
+    {
+      "primitive": "resolve.bond",
+      "params": {
+        "q": "AAPL 3.85% 2046"
+      }
+    }
+  ]
+}
+```
+
+### Supported Primitives
+| Primitive | Description |
+|-----------|-------------|
+| `search.companies` | Maps to GET /v1/companies |
+| `search.bonds` | Maps to GET /v1/bonds |
+| `resolve.bond` | Maps to GET /v1/bonds/resolve |
+| `traverse.entities` | Maps to POST /v1/entities/traverse |
+| `search.pricing` | Maps to GET /v1/pricing |
+| `search.documents` | Maps to GET /v1/documents/search |
+
+### Limits
+- Maximum 10 operations per batch request
+- Each operation counts against rate limits individually
+- Operations execute in parallel for performance
+
+### Example Request
+```bash
+# Get company metrics AND bonds in one call
+curl -X POST "https://api.debtstack.ai/v1/batch" \
+  -H "Authorization: Bearer ds_live_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "operations": [
+      {
+        "primitive": "search.companies",
+        "params": {
+          "ticker": "RIG",
+          "fields": "ticker,name,net_leverage_ratio,total_debt"
+        }
+      },
+      {
+        "primitive": "search.bonds",
+        "params": {
+          "ticker": "RIG",
+          "has_pricing": true,
+          "fields": "name,cusip,maturity_date,pricing"
+        }
+      }
+    ]
+  }'
+```
+
+### Example Response
+```json
+{
+  "results": [
+    {
+      "primitive": "search.companies",
+      "status": "success",
+      "data": [
+        {
+          "ticker": "RIG",
+          "name": "Transocean Ltd.",
+          "net_leverage_ratio": 4.2,
+          "total_debt": 750000000000
+        }
+      ],
+      "meta": {"total": 1}
+    },
+    {
+      "primitive": "search.bonds",
+      "status": "success",
+      "data": [
+        {
+          "name": "8.00% Senior Notes due 2027",
+          "cusip": "893830AK8",
+          "maturity_date": "2027-02-01",
+          "pricing": {
+            "last_price": 94.25,
+            "ytm": 9.42,
+            "spread": 512
+          }
+        }
+      ],
+      "meta": {"total": 6}
+    }
+  ],
+  "meta": {
+    "total_operations": 2,
+    "successful": 2,
+    "failed": 0
+  }
+}
+```
+
+### Error Handling
+If one operation fails, other operations still execute. Check individual `status` fields:
+
+```json
+{
+  "results": [
+    {
+      "primitive": "search.companies",
+      "status": "success",
+      "data": [...]
+    },
+    {
+      "primitive": "resolve.bond",
+      "status": "error",
+      "error": {
+        "code": "INVALID_QUERY",
+        "message": "No matching bonds found for query 'XYZ 5% 2025'"
+      }
+    }
+  ]
+}
+```
+
+---
+
+## Primitive 8: changes
+
+### Endpoint
+```
+GET /v1/companies/{ticker}/changes
+```
+
+### Purpose
+Compare current company data against a historical snapshot to identify what changed. Useful for monitoring debt structure changes, new issuances, maturities, and metric shifts.
+
+### Query Parameters
+
+| Parameter | Type | Description | Example |
+|-----------|------|-------------|---------|
+| `since` | date | **Required.** Compare changes since this date (YYYY-MM-DD) | `2025-01-01` |
+
+### How It Works
+1. The system stores periodic snapshots of company data (quarterly by default)
+2. This endpoint compares the current live data against the snapshot from the specified date
+3. Returns a diff showing what changed between then and now
+
+### Example Request
+```bash
+# What changed for RIG since Q4 2025?
+curl "https://api.debtstack.ai/v1/companies/RIG/changes?since=2025-10-01" \
+  -H "Authorization: Bearer ds_live_xxx"
+```
+
+### Example Response
+```json
+{
+  "data": {
+    "ticker": "RIG",
+    "company_name": "Transocean Ltd.",
+    "snapshot_date": "2025-10-01",
+    "current_date": "2026-01-18",
+    "changes": {
+      "new_debt": [
+        {
+          "name": "9.00% Senior Secured Notes due 2029",
+          "cusip": "893830AM4",
+          "principal": 50000000000,
+          "seniority": "senior_secured",
+          "issue_date": "2025-11-15"
+        }
+      ],
+      "removed_debt": [
+        {
+          "name": "6.50% Senior Notes due 2025",
+          "cusip": "893830AE2",
+          "principal": 30000000000,
+          "reason": "matured"
+        }
+      ],
+      "entity_changes": {
+        "added": 2,
+        "removed": 0,
+        "added_entities": [
+          {"name": "Transocean Offshore Services Ltd.", "entity_type": "subsidiary"}
+        ]
+      },
+      "metric_changes": {
+        "total_debt": {
+          "previous": 720000000000,
+          "current": 750000000000,
+          "change": 30000000000,
+          "change_pct": 4.2
+        },
+        "net_leverage_ratio": {
+          "previous": 3.9,
+          "current": 4.2,
+          "change": 0.3
+        },
+        "guarantor_count": {
+          "previous": 45,
+          "current": 47,
+          "change": 2
+        }
+      },
+      "pricing_changes": [
+        {
+          "cusip": "893830AK8",
+          "name": "8.00% Senior Notes due 2027",
+          "previous_price": 96.50,
+          "current_price": 94.25,
+          "price_change": -2.25,
+          "previous_ytm": 8.75,
+          "current_ytm": 9.42,
+          "ytm_change": 0.67
+        }
+      ]
+    },
+    "summary": {
+      "debt_added": 50000000000,
+      "debt_removed": 30000000000,
+      "net_debt_change": 20000000000,
+      "new_issuances": 1,
+      "maturities": 1,
+      "entity_changes": 2
+    }
+  },
+  "meta": {
+    "snapshot_type": "quarterly",
+    "days_between": 109
+  }
+}
+```
+
+### Use Cases
+
+**Monitor New Issuances:**
+```python
+response = requests.get(
+    f"{BASE_URL}/companies/CHTR/changes",
+    params={"since": "2025-07-01"},
+    headers={"Authorization": f"Bearer {API_KEY}"}
+)
+
+changes = response.json()["data"]["changes"]
+for new_bond in changes.get("new_debt", []):
+    print(f"New issuance: {new_bond['name']} - ${new_bond['principal']/100_000_000_000:.1f}B")
+```
+
+**Track Leverage Changes:**
+```python
+metrics = response.json()["data"]["changes"].get("metric_changes", {})
+if "net_leverage_ratio" in metrics:
+    prev = metrics["net_leverage_ratio"]["previous"]
+    curr = metrics["net_leverage_ratio"]["current"]
+    print(f"Net leverage: {prev}x → {curr}x ({'+' if curr > prev else ''}{curr-prev:.1f}x)")
+```
+
+**Identify Maturing Debt:**
+```python
+removed = response.json()["data"]["changes"].get("removed_debt", [])
+matured = [d for d in removed if d.get("reason") == "matured"]
+print(f"{len(matured)} bonds matured since {since_date}")
+```
+
+### Notes
+- Snapshots are created quarterly by default (can also be monthly or manual)
+- If no snapshot exists for the requested date, returns the closest available snapshot
+- Changes are computed by diffing current live data against the historical snapshot
+- Pricing changes only shown for bonds that have pricing data in both periods
+
+---
+
 ## Agent Code Examples
 
 ### Question 1: "Which of the MAG7 has the highest net leverage?"
@@ -1004,37 +1301,6 @@ CREATE INDEX idx_entities_company_type ON entities(company_id, entity_type);
 
 ---
 
-## Batch Operations (V2)
-
-For high-volume use cases, support batch queries:
-
-```
-POST /v1/batch
-```
-
-```json
-{
-  "requests": [
-    {"method": "GET", "path": "/v1/companies?ticker=AAPL"},
-    {"method": "GET", "path": "/v1/companies?ticker=MSFT"},
-    {"method": "GET", "path": "/v1/bonds?ticker=AAPL"}
-  ]
-}
-```
-
-Response:
-```json
-{
-  "responses": [
-    {"status": 200, "data": {...}},
-    {"status": 200, "data": {...}},
-    {"status": 200, "data": {...}}
-  ]
-}
-```
-
----
-
 ## SDK Preview (V2)
 
 ```python
@@ -1074,12 +1340,22 @@ print(bond.cusip)  # "893830AK8"
 
 This API design provides:
 
-1. **6 atomic primitives** that can answer any credit analysis question
+1. **8 atomic primitives** that can answer any credit analysis question:
+   - `search.companies` - Company screening with field selection
+   - `search.bonds` - Bond search with yield/spread filters
+   - `search.documents` - Full-text search across SEC filings
+   - `traverse.entities` - Graph traversal for guarantor chains
+   - `search.pricing` - Bond pricing from FINRA TRACE
+   - `resolve.bond` - CUSIP/identifier resolution
+   - `batch` - Execute multiple operations in one call
+   - `changes` - Track debt structure changes over time
 2. **Simple REST semantics** - GET for reads, POST for complex operations
 3. **Field selection** - Agents request only what they need
 4. **Powerful filtering** - Rich query parameters for precise searches
 5. **Consistent responses** - Predictable JSON structure
 6. **Clear errors** - Actionable error messages with suggestions
 7. **Composability** - Chain multiple calls to answer complex questions
+8. **Batch operations** - Efficient multi-query requests
+9. **Change tracking** - Historical diff/changelog for monitoring
 
 The design follows proven patterns from Stripe, Plaid, and other infrastructure APIs that developers already know and trust.
