@@ -397,6 +397,34 @@ When starting a new session, read this file first, then:
 
 ## Session Log
 
+### 2026-01-18 (Session 14) - Deployment & Financial Extraction Improvements
+**Part 1: Deployed to Railway**
+- ✅ Committed and pushed documentation updates
+- ✅ All 8 primitives API endpoints now live in production
+
+**Part 2: Financial Extraction Improvements**
+- ✅ Enhanced `recompute_metrics.py` to compute EBITDA from components:
+  - Priority: Direct EBITDA > Computed (OpInc + D&A) > Operating Income alone
+- ✅ Enhanced `financial_extraction.py` with improved D&A extraction:
+  - Added detailed prompt guidance for finding D&A in cash flow statement
+  - Added `income_tax_expense` field to extraction schema
+  - Added cash flow section keywords to capture D&A
+  - Instruct LLM to NOT compute EBITDA (we compute it ourselves)
+
+**Metrics Coverage:**
+| Metric | Coverage |
+|--------|----------|
+| Leverage ratio | 101/177 (57%) |
+| Net leverage | 143/177 (81%) |
+| Interest coverage | 132/177 (75%) |
+| Leveraged loans (>4x) | 21 companies |
+
+**Known Issues:**
+- Some companies have debt instrument scale errors (debt instruments >> financial statement debt)
+- Affected: INTU, APH, BX, BIIB, ABBV, ADI, SNPS, NCLH (instruments 4-20x higher than financials)
+- Gemini extraction not reliably capturing cash flow statement data (D&A often missing)
+- Would need Claude (API credits depleted) or manual correction
+
 ### 2026-01-18 (Session 13) - Documentation & Diff/Changelog Completion
 **Part 1: Updated PRIMITIVES_API_SPEC.md**
 - ✅ Added `include_metadata` parameter to Primitive 1 (search.companies)
