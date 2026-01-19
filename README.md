@@ -36,7 +36,7 @@ Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
 
 ## Features
 
-- **Primitives API**: 5 core endpoints optimized for AI agents with field selection
+- **Primitives API**: 8 core endpoints optimized for AI agents with field selection
 - **30+ REST API endpoints** for comprehensive credit data access
 - **Iterative QA Extraction**: 5 automated verification checks with targeted fixes until 85%+ quality threshold
 - **Individual Debt Instruments**: Each bond, note, and credit facility extracted separately (not just totals)
@@ -115,7 +115,7 @@ curl http://localhost:8000/v1/companies/CHTR/financials
 
 ### Primitives API (Optimized for AI Agents)
 
-These 5 endpoints are designed for agents writing code - simple REST, field selection, powerful filtering.
+These 8 endpoints are designed for agents writing code - simple REST, field selection, powerful filtering.
 
 | Endpoint | Description |
 |----------|-------------|
@@ -124,6 +124,9 @@ These 5 endpoints are designed for agents writing code - simple REST, field sele
 | `GET /v1/bonds/resolve` | Resolve bond identifiers (CUSIP lookup, fuzzy search) |
 | `POST /v1/entities/traverse` | Graph traversal for guarantor chains, org structure |
 | `GET /v1/pricing` | Bond pricing data with YTM/spread filters |
+| `GET /v1/documents/search` | Full-text search across SEC filings |
+| `POST /v1/batch` | Execute multiple primitives in parallel |
+| `GET /v1/companies/{ticker}/changes` | Diff/changelog against historical snapshots |
 
 **Example - Field Selection:**
 ```bash
@@ -215,8 +218,14 @@ python scripts/extract_iterative.py --ticker AAPL --cik 0000320193 --save-db
 # Batch extraction
 python scripts/batch_index.py --phase 1
 
-# Extract financials
+# Extract financials (single quarter)
 python scripts/extract_financials.py --ticker CHTR --save-db
+
+# Extract TTM financials (4 quarters - recommended for accurate leverage)
+python scripts/extract_financials.py --ticker CHTR --ttm --save-db
+
+# Recompute metrics after extracting financials
+python scripts/recompute_metrics.py --ticker CHTR
 ```
 
 The extraction:
@@ -236,7 +245,7 @@ credible/
 ├── app/
 │   ├── api/
 │   │   ├── routes.py              # Legacy FastAPI endpoints
-│   │   └── primitives.py          # Primitives API (5 core endpoints)
+│   │   └── primitives.py          # Primitives API (8 core endpoints)
 │   ├── core/
 │   │   ├── config.py              # Configuration
 │   │   ├── database.py            # Database connection

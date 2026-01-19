@@ -18,7 +18,7 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 - Live at: `https://credible-ai-production.up.railway.app`
 
 **What's Working**:
-- **Primitives API**: 6 core endpoints optimized for AI agents (field selection, powerful filters)
+- **Primitives API**: 8 core endpoints optimized for AI agents (field selection, powerful filters)
 - **Legacy REST API**: 26 endpoints for detailed company data
 - Iterative extraction with QA feedback loop (5 checks, 85% threshold)
 - Gemini for extraction (~$0.008), Claude for escalation
@@ -47,13 +47,14 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 
 | File | Purpose |
 |------|---------|
-| `app/api/primitives.py` | **Primitives API** - 6 core endpoints for agents |
+| `app/api/primitives.py` | **Primitives API** - 8 core endpoints for agents |
 | `app/api/routes.py` | Legacy FastAPI endpoints (26 routes) |
 | `app/core/cache.py` | Redis cache client (Upstash) |
 | `app/services/iterative_extraction.py` | Main extraction with QA loop |
 | `app/services/qa_agent.py` | 5-check QA verification |
 | `app/services/tiered_extraction.py` | LLM clients and prompts |
 | `app/services/extraction.py` | SEC clients, filing processing |
+| `app/services/financial_extraction.py` | Financial statements with TTM support |
 | `app/models/schema.py` | SQLAlchemy models |
 | `app/core/config.py` | Environment configuration |
 | `app/core/database.py` | Database connection |
@@ -76,7 +77,7 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 
 ## API Endpoints
 
-### Primitives API (6 endpoints - optimized for agents)
+### Primitives API (8 endpoints - optimized for agents)
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
@@ -86,6 +87,8 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 | `/v1/entities/traverse` | POST | Graph traversal (guarantors, structure) |
 | `/v1/pricing` | GET | Bond pricing data |
 | `/v1/documents/search` | GET | Full-text search across SEC filings |
+| `/v1/batch` | POST | Execute multiple primitives in parallel |
+| `/v1/companies/{ticker}/changes` | GET | Diff against historical snapshots |
 
 **Field selection**: `?fields=ticker,name,net_leverage_ratio`
 **Sorting**: `?sort=-net_leverage_ratio` (prefix `-` for descending)
@@ -119,12 +122,26 @@ python scripts/extract_iterative.py --ticker AAPL --cik 0000320193 --save-db
 # Batch extraction
 python scripts/batch_index.py --phase 1
 
-# Extract financials
+# Extract financials (single quarter)
 python scripts/extract_financials.py --ticker CHTR --save-db
+
+# Extract TTM financials (4 quarters - recommended for leverage ratios)
+python scripts/extract_financials.py --ticker CHTR --ttm --save-db
 
 # Update pricing
 python scripts/update_pricing.py --ticker AAPL
+
+# Recompute metrics (after extracting financials)
+python scripts/recompute_metrics.py --ticker CHTR
 ```
+
+### TTM (Trailing Twelve Months) Extraction
+
+For accurate leverage ratios, use `--ttm` to extract 4 quarters of financial data:
+- Fetches most recent 3 10-Qs (Q1, Q2, Q3) + 1 10-K (full year as Q4 proxy)
+- Uses `periodOfReport` from SEC API to determine fiscal quarter
+- TTM EBITDA = Sum of 4 quarters (more accurate than annualizing single quarter)
+- If fewer than 4 quarters available, annualizes what's available
 
 ## Environment Variables
 
@@ -156,7 +173,7 @@ alembic upgrade head     # Apply all
 alembic revision -m "description"  # Create new
 ```
 
-Current migrations: 001 (initial) through 009 (document sections)
+Current migrations: 001 (initial) through 011 (company_snapshots)
 
 ## Common Issues
 

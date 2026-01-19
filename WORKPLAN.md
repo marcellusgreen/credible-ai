@@ -397,6 +397,46 @@ When starting a new session, read this file first, then:
 
 ## Session Log
 
+### 2026-01-18 (Session 15) - TTM Financial Extraction
+
+**Key Change**: Implemented TTM (Trailing Twelve Months) financial extraction for more accurate leverage ratios.
+
+**Problem Identified**: Single-quarter EBITDA annualized (multiplied by 4) was inaccurate for companies with seasonal revenue or volatile quarters.
+
+**Solution**: Extract all 4 quarters separately and sum them for TTM metrics.
+
+**Files modified:**
+- `app/services/financial_extraction.py`:
+  - Added `extract_ttm_financials()` function to fetch 3 10-Qs + 1 10-K
+  - Fixed `determine_fiscal_period()` to use `periodOfReport` (actual period end) instead of `filedAt` (SEC filing date)
+  - Added `filing_data` parameter to `extract_financials()` to accept pre-fetched filing metadata
+- `scripts/extract_financials.py`:
+  - Added `--ttm` flag for TTM extraction mode
+  - Added `extract_ttm()` function with TTM summary output
+- `scripts/recompute_metrics.py`:
+  - Added `get_ttm_financials()` function to fetch last 4 quarters from DB
+  - Updated leverage calculation to sum TTM EBITDA from available quarters
+  - Falls back to annualizing if fewer than 4 quarters available
+
+**Usage:**
+```bash
+# Extract TTM financials (recommended)
+python scripts/extract_financials.py --ticker CHTR --ttm --save-db
+
+# Recompute metrics using TTM data
+python scripts/recompute_metrics.py --ticker CHTR
+```
+
+**Testing:** Verified with CHTR - extracted Q3 2025, Q2 2025, Q1 2025, Q4 2024.
+
+**Known Limitation:** 10-K contains full year figures, not just Q4. For most accurate TTM, would need to compute Q4 = 10-K annual - 9-month YTD. Current implementation uses 10-K as Q4 proxy which slightly overstates TTM totals.
+
+**Documentation Updated:**
+- CLAUDE.md: Added TTM extraction section, updated endpoint count to 8, added new key files
+- README.md: Added TTM commands to extraction section, updated endpoint count to 8
+
+---
+
 ### 2026-01-18 (Session 14) - Deployment & Financial Extraction Improvements
 **Part 1: Deployed to Railway**
 - ✅ Committed and pushed documentation updates
