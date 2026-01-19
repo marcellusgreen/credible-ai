@@ -5,6 +5,7 @@ Usage:
     python scripts/extract_financials.py --ticker AAPL
     python scripts/extract_financials.py --ticker AAPL --filing-type 10-K
     python scripts/extract_financials.py --ticker AAPL --save-db
+    python scripts/extract_financials.py --ticker AAPL --ttm --save-db  # Extract 4 quarters
     python scripts/extract_financials.py --batch demo --save-db
 """
 
@@ -201,6 +202,95 @@ async def extract_batch(companies: list[dict], save_db: bool = False, delay: int
     return results
 
 
+async def extract_ttm(
+    ticker: str,
+    cik: str | None = None,
+    save_db: bool = False,
+    use_claude: bool = False,
+):
+    """Extract trailing twelve months (4 quarters) of financials."""
+    from app.services.financial_extraction import extract_ttm_financials, save_financials_to_db
+
+    print(f"\n{'='*60}")
+    print(f"Extracting TTM financials for {ticker}")
+    print(f"{'='*60}")
+
+    # Extract all quarters
+    results = await extract_ttm_financials(
+        ticker=ticker,
+        cik=cik,
+        use_claude=use_claude,
+    )
+
+    if not results:
+        print(f"FAILED: Could not extract any financials for {ticker}")
+        return
+
+    # Display summary
+    print(f"\n{'='*60}")
+    print(f"TTM SUMMARY FOR {ticker}")
+    print(f"{'='*60}")
+    print(f"Quarters extracted: {len(results)}")
+
+    for r in results:
+        ebitda_str = format_cents(r.ebitda) if r.ebitda else format_cents(r.operating_income) + " (OpInc)"
+        da_str = format_cents(r.depreciation_amortization) if r.depreciation_amortization else "N/A"
+        print(f"  Q{r.fiscal_quarter} {r.fiscal_year}: Rev={format_cents(r.revenue)}, EBITDA={ebitda_str}, D&A={da_str}")
+
+    # Calculate TTM totals
+    if len(results) >= 4:
+        ttm_revenue = sum(r.revenue or 0 for r in results[:4])
+        ttm_ebitda = sum(r.ebitda or r.operating_income or 0 for r in results[:4])
+        ttm_interest = sum(r.interest_expense or 0 for r in results[:4])
+
+        print(f"\n--- TTM Totals (last 4 quarters) ---")
+        print(f"  TTM Revenue:          {format_cents(ttm_revenue)}")
+        print(f"  TTM EBITDA:           {format_cents(ttm_ebitda)}")
+        print(f"  TTM Interest Expense: {format_cents(ttm_interest)}")
+
+        if ttm_ebitda > 0 and ttm_interest > 0:
+            coverage = ttm_ebitda / ttm_interest
+            print(f"  Interest Coverage:    {coverage:.1f}x")
+
+    # Save to database
+    if save_db:
+        print(f"\n--- Saving to database ---")
+        session, engine = await get_session()
+        try:
+            for result in results:
+                await save_financials_to_db(session, ticker, result)
+                print(f"  Saved Q{result.fiscal_quarter} {result.fiscal_year}")
+        finally:
+            await session.close()
+            await engine.dispose()
+
+    # Save to JSON
+    output = {
+        "ticker": ticker,
+        "extracted_at": datetime.now().isoformat(),
+        "quarters": [
+            {
+                "fiscal_year": r.fiscal_year,
+                "fiscal_quarter": r.fiscal_quarter,
+                "revenue": r.revenue,
+                "ebitda": r.ebitda,
+                "operating_income": r.operating_income,
+                "depreciation_amortization": r.depreciation_amortization,
+                "interest_expense": r.interest_expense,
+                "net_income": r.net_income,
+            }
+            for r in results
+        ],
+    }
+
+    output_dir = "results"
+    os.makedirs(output_dir, exist_ok=True)
+    output_file = f"{output_dir}/{ticker}_ttm_financials.json"
+    with open(output_file, "w") as f:
+        json.dump(output, f, indent=2)
+    print(f"\n  Saved to {output_file}")
+
+
 async def main():
     parser = argparse.ArgumentParser(
         description="Extract quarterly financial data from SEC filings"
@@ -236,12 +326,24 @@ async def main():
         default=5,
         help="Delay between requests in batch mode (seconds)",
     )
+    parser.add_argument(
+        "--ttm",
+        action="store_true",
+        help="Extract trailing twelve months (4 quarters) of data",
+    )
 
     args = parser.parse_args()
 
     if args.batch:
         if args.batch == "demo":
             await extract_batch(DEMO_COMPANIES, save_db=args.save_db, delay=args.delay)
+    elif args.ttm and args.ticker:
+        await extract_ttm(
+            ticker=args.ticker.upper(),
+            cik=args.cik,
+            save_db=args.save_db,
+            use_claude=args.use_claude,
+        )
     elif args.ticker:
         await extract_single(
             ticker=args.ticker.upper(),

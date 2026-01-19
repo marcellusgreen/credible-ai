@@ -385,10 +385,22 @@ def extract_financial_sections(filing_content: str, max_chars: int = 150000) -> 
     return combined[:max_chars]
 
 
-def determine_fiscal_period(filing_date: str, filing_type: str) -> tuple[int, int]:
-    """Determine fiscal year and quarter from filing date."""
+def determine_fiscal_period(period_end_date: str, filing_type: str) -> tuple[int, int]:
+    """
+    Determine fiscal year and quarter from the period end date.
+
+    Args:
+        period_end_date: The period end date (not filing date) in YYYY-MM-DD format
+        filing_type: "10-K" or "10-Q"
+
+    Note: Companies file 10-Qs about 40 days after quarter end:
+    - Q1 (Jan-Mar) filed in Apr/May
+    - Q2 (Apr-Jun) filed in Jul/Aug
+    - Q3 (Jul-Sep) filed in Oct/Nov
+    - Q4 (Oct-Dec) covered in 10-K filed in Jan/Feb/Mar
+    """
     try:
-        d = datetime.strptime(filing_date, "%Y-%m-%d")
+        d = datetime.strptime(period_end_date, "%Y-%m-%d")
     except ValueError:
         # Default to current year Q4
         today = date.today()
@@ -398,20 +410,22 @@ def determine_fiscal_period(filing_date: str, filing_type: str) -> tuple[int, in
     month = d.month
 
     if filing_type == "10-K":
-        # 10-K is annual report, covers full year ending in that month
-        # Most companies have fiscal year ending Dec, but some differ
+        # 10-K is annual report, Q4
         quarter = 4
     else:
-        # 10-Q quarters
+        # 10-Q - determine quarter from period end month
+        # Q1: Jan-Mar (period ends Mar)
+        # Q2: Apr-Jun (period ends Jun)
+        # Q3: Jul-Sep (period ends Sep)
         if month <= 3:
-            quarter = 4
-            year -= 1  # Q4 of previous year
-        elif month <= 6:
             quarter = 1
-        elif month <= 9:
+        elif month <= 6:
             quarter = 2
-        else:
+        elif month <= 9:
             quarter = 3
+        else:
+            # Oct-Dec would be Q4, but that's usually in 10-K
+            quarter = 4
 
     return year, quarter
 
@@ -421,40 +435,46 @@ async def extract_financials(
     cik: Optional[str] = None,
     filing_type: str = "10-Q",
     use_claude: bool = False,
+    filing_data: Optional[dict] = None,  # Optional: pass specific filing metadata
 ) -> Optional[ExtractedFinancials]:
     """
-    Extract financial data from the most recent 10-Q or 10-K filing.
+    Extract financial data from a 10-Q or 10-K filing.
 
     Args:
         ticker: Stock ticker symbol
         cik: SEC Central Index Key (optional)
         filing_type: "10-Q" or "10-K"
         use_claude: Use Claude instead of Gemini for extraction
+        filing_data: Optional filing metadata dict (if not provided, fetches latest)
 
     Returns:
         ExtractedFinancials object or None if extraction failed
     """
-    # Fetch the filing
     sec_api_key = os.getenv("SEC_API_KEY")
     if not sec_api_key:
         print("SEC_API_KEY not set")
         return None
 
     sec_client = SecApiClient(api_key=sec_api_key)
-    filings = sec_client.get_filings_by_ticker(
-        ticker,
-        form_types=[filing_type],
-        max_filings=1,
-        cik=cik,
-    )
 
-    if not filings:
-        print(f"No {filing_type} filings found for {ticker}")
-        return None
+    # Use provided filing or fetch the latest
+    if filing_data:
+        filing = filing_data
+    else:
+        filings = sec_client.get_filings_by_ticker(
+            ticker,
+            form_types=[filing_type],
+            max_filings=1,
+            cik=cik,
+        )
+        if not filings:
+            print(f"No {filing_type} filings found for {ticker}")
+            return None
+        filing = filings[0]
 
-    filing = filings[0]
     filing_url = filing.get("linkToFilingDetails", "")
-    filing_date = filing.get("filedAt", "")[:10]  # Extract date part
+    filing_date = filing.get("filedAt", "")[:10]  # When filed with SEC
+    period_end = filing.get("periodOfReport", filing_date)  # Period covered by filing
 
     # Download filing content
     content = sec_client.get_filing_content(filing_url)
@@ -479,8 +499,8 @@ async def extract_financials(
     # Extract financial sections
     content = extract_financial_sections(content)
 
-    # Determine fiscal period
-    fiscal_year, fiscal_quarter = determine_fiscal_period(filing_date, filing_type)
+    # Determine fiscal period from the period end date (not filing date)
+    fiscal_year, fiscal_quarter = determine_fiscal_period(period_end, filing_type)
 
     # Get company name (try to extract from filing or use ticker)
     company_name = ticker  # Fallback
@@ -490,7 +510,7 @@ async def extract_financials(
         company_name=company_name,
         ticker=ticker,
         filing_type=filing_type,
-        period_end=filing_date,
+        period_end=period_end,
         fiscal_year=fiscal_year,
         fiscal_quarter=fiscal_quarter,
         filing_content=content,
@@ -546,6 +566,89 @@ async def extract_financials(
         print(f"Response: {response_text[:500]}...")
 
     return None
+
+
+async def extract_ttm_financials(
+    ticker: str,
+    cik: Optional[str] = None,
+    use_claude: bool = False,
+) -> list[ExtractedFinancials]:
+    """
+    Extract trailing twelve months (4 quarters) of financial data.
+
+    Fetches the most recent 10-K and three 10-Qs to get full TTM coverage.
+    For Q4, extracts from 10-K by subtracting 9-month 10-Q from full year.
+
+    Args:
+        ticker: Stock ticker symbol
+        cik: SEC Central Index Key (optional)
+        use_claude: Use Claude instead of Gemini for extraction
+
+    Returns:
+        List of ExtractedFinancials for up to 4 quarters, most recent first
+    """
+    import time
+
+    sec_api_key = os.getenv("SEC_API_KEY")
+    if not sec_api_key:
+        print("SEC_API_KEY not set")
+        return []
+
+    sec_client = SecApiClient(api_key=sec_api_key)
+    results = []
+
+    # Fetch recent 10-Qs (up to 3 for Q1, Q2, Q3)
+    print(f"\n--- Fetching 10-Q filings for {ticker} ---")
+    filings_10q = sec_client.get_filings_by_ticker(
+        ticker,
+        form_types=["10-Q"],
+        max_filings=3,
+        cik=cik,
+    )
+
+    # Fetch most recent 10-K (for Q4)
+    print(f"--- Fetching 10-K filings for {ticker} ---")
+    filings_10k = sec_client.get_filings_by_ticker(
+        ticker,
+        form_types=["10-K"],
+        max_filings=1,
+        cik=cik,
+    )
+
+    all_filings = []
+    for f in filings_10q:
+        all_filings.append(("10-Q", f))
+    for f in filings_10k:
+        all_filings.append(("10-K", f))
+
+    print(f"Found {len(filings_10q)} 10-Qs and {len(filings_10k)} 10-Ks")
+
+    for filing_type, filing in all_filings:
+        filing_date = filing.get("filedAt", "")[:10]
+        period_end = filing.get("periodOfReport", filing_date)
+        print(f"\n--- Extracting {filing_type} filed {filing_date} (period: {period_end}) ---")
+
+        result = await extract_financials(
+            ticker=ticker,
+            cik=cik,
+            filing_type=filing_type,
+            use_claude=use_claude,
+            filing_data=filing,  # Pass the specific filing
+        )
+
+        if result:
+            results.append(result)
+            print(f"  Extracted: Q{result.fiscal_quarter} {result.fiscal_year}")
+        else:
+            print(f"  Failed to extract")
+
+        # Rate limiting between API calls
+        time.sleep(2)
+
+    # Sort by year/quarter descending (most recent first)
+    results.sort(key=lambda x: (x.fiscal_year, x.fiscal_quarter), reverse=True)
+
+    return results
 
 
 def apply_filing_scale(data: dict, scale_multiplier: int) -> dict:

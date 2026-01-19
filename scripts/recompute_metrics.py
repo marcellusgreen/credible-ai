@@ -49,6 +49,20 @@ async def get_latest_financials(db: AsyncSession, company_id) -> CompanyFinancia
     return result.scalar_one_or_none()
 
 
+async def get_ttm_financials(db: AsyncSession, company_id) -> list[CompanyFinancials]:
+    """Get trailing 4 quarters of financial data for TTM calculations."""
+    result = await db.execute(
+        select(CompanyFinancials)
+        .where(CompanyFinancials.company_id == company_id)
+        .order_by(
+            CompanyFinancials.fiscal_year.desc(),
+            CompanyFinancials.fiscal_quarter.desc(),
+        )
+        .limit(4)
+    )
+    return list(result.scalars().all())
+
+
 async def recompute_metrics_for_company(
     db: AsyncSession,
     company: Company,
@@ -153,54 +167,66 @@ async def recompute_metrics_for_company(
     secured_leverage = None
     net_debt = None
 
-    financials = await get_latest_financials(db, company_id)
-    if financials:
-        # Use quarterly EBITDA annualized (x4) for ratios
-        # Priority order for EBITDA:
-        # 1. Directly extracted EBITDA
-        # 2. Computed: Operating Income + Depreciation & Amortization
-        # 3. Fallback: Operating Income only (understates by D&A amount)
-        quarterly_ebitda = financials.ebitda
-        cash = financials.cash_and_equivalents or 0
+    # Get TTM financials (4 quarters) for more accurate ratios
+    ttm_financials = await get_ttm_financials(db, company_id)
+    latest_financials = await get_latest_financials(db, company_id)
 
-        # If no EBITDA, try to compute from components
-        if not quarterly_ebitda:
-            if financials.operating_income and financials.depreciation_amortization:
-                # Best: compute EBITDA = Operating Income + D&A
-                quarterly_ebitda = financials.operating_income + financials.depreciation_amortization
-            elif financials.operating_income:
-                # Fallback: use Operating Income alone (understates by D&A)
-                quarterly_ebitda = financials.operating_income
+    # Calculate TTM EBITDA from available quarters
+    ttm_ebitda = 0
+    ttm_interest = 0
+    quarters_with_ebitda = 0
 
-        if quarterly_ebitda and quarterly_ebitda > 0:
-            # Annualize quarterly EBITDA
-            annual_ebitda = quarterly_ebitda * 4
+    for fin in ttm_financials:
+        # Get EBITDA for this quarter (direct or computed)
+        q_ebitda = fin.ebitda
+        if not q_ebitda:
+            if fin.operating_income and fin.depreciation_amortization:
+                q_ebitda = fin.operating_income + fin.depreciation_amortization
+            elif fin.operating_income:
+                q_ebitda = fin.operating_income
 
-            # Leverage = Total Debt / EBITDA
-            if total_debt > 0:
-                lev = total_debt / annual_ebitda
-                # Sanity check: leverage > 100x indicates bad data (skip)
-                if lev <= 100:
-                    leverage_ratio = Decimal(str(round(lev, 2)))
+        if q_ebitda and q_ebitda > 0:
+            ttm_ebitda += q_ebitda
+            quarters_with_ebitda += 1
 
-            # Net Debt = Total Debt - Cash
-            net_debt = total_debt - cash
+        if fin.interest_expense:
+            ttm_interest += fin.interest_expense
 
-            # Net Leverage = Net Debt / EBITDA
-            if net_debt:
-                net_lev = net_debt / annual_ebitda
-                if abs(net_lev) <= 100:
-                    net_leverage_ratio = Decimal(str(round(net_lev, 2)))
+    # If we have fewer than 4 quarters, annualize what we have
+    if quarters_with_ebitda > 0 and quarters_with_ebitda < 4:
+        ttm_ebitda = int(ttm_ebitda * (4 / quarters_with_ebitda))
+        ttm_interest = int(ttm_interest * (4 / quarters_with_ebitda))
 
-            # Secured Leverage = Secured Debt / EBITDA
-            if secured_debt > 0:
-                sec_lev = secured_debt / annual_ebitda
-                if sec_lev <= 100:
-                    secured_leverage = Decimal(str(round(sec_lev, 2)))
+    # Get cash from latest quarter
+    cash = latest_financials.cash_and_equivalents if latest_financials else 0
+    cash = cash or 0
 
-        # Interest Coverage = EBITDA / Interest Expense
-        if quarterly_ebitda and financials.interest_expense and financials.interest_expense > 0:
-            cov = quarterly_ebitda / financials.interest_expense
+    if ttm_ebitda and ttm_ebitda > 0:
+        # Leverage = Total Debt / TTM EBITDA
+        if total_debt > 0:
+            lev = total_debt / ttm_ebitda
+            # Sanity check: leverage > 100x indicates bad data (skip)
+            if lev <= 100:
+                leverage_ratio = Decimal(str(round(lev, 2)))
+
+        # Net Debt = Total Debt - Cash
+        net_debt = total_debt - cash
+
+        # Net Leverage = Net Debt / TTM EBITDA
+        if net_debt:
+            net_lev = net_debt / ttm_ebitda
+            if abs(net_lev) <= 100:
+                net_leverage_ratio = Decimal(str(round(net_lev, 2)))
+
+        # Secured Leverage = Secured Debt / TTM EBITDA
+        if secured_debt > 0:
+            sec_lev = secured_debt / ttm_ebitda
+            if sec_lev <= 100:
+                secured_leverage = Decimal(str(round(sec_lev, 2)))
+
+        # Interest Coverage = TTM EBITDA / TTM Interest Expense
+        if ttm_interest and ttm_interest > 0:
+            cov = ttm_ebitda / ttm_interest
             # Coverage > 100x is unusual but possible (cap at 999.99 for DB)
             if cov <= 999.99:
                 interest_coverage = Decimal(str(round(cov, 2)))
