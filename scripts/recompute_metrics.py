@@ -201,12 +201,13 @@ async def recompute_metrics_for_company(
     cash = latest_financials.cash_and_equivalents if latest_financials else 0
     cash = cash or 0
 
-    if ttm_ebitda and ttm_ebitda > 0:
+    # Require at least 2 quarters of EBITDA data for reliable leverage calculation
+    if ttm_ebitda and ttm_ebitda > 0 and quarters_with_ebitda >= 2:
         # Leverage = Total Debt / TTM EBITDA
         if total_debt > 0:
             lev = total_debt / ttm_ebitda
-            # Sanity check: leverage > 100x indicates bad data (skip)
-            if lev <= 100:
+            # Sanity check: leverage > 20x is unusual (skip unless confirmed)
+            if lev <= 20:
                 leverage_ratio = Decimal(str(round(lev, 2)))
 
         # Net Debt = Total Debt - Cash
@@ -215,13 +216,13 @@ async def recompute_metrics_for_company(
         # Net Leverage = Net Debt / TTM EBITDA
         if net_debt:
             net_lev = net_debt / ttm_ebitda
-            if abs(net_lev) <= 100:
+            if abs(net_lev) <= 20:
                 net_leverage_ratio = Decimal(str(round(net_lev, 2)))
 
         # Secured Leverage = Secured Debt / TTM EBITDA
         if secured_debt > 0:
             sec_lev = secured_debt / ttm_ebitda
-            if sec_lev <= 100:
+            if sec_lev <= 20:
                 secured_leverage = Decimal(str(round(sec_lev, 2)))
 
         # Interest Coverage = TTM EBITDA / TTM Interest Expense
