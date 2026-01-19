@@ -1831,9 +1831,12 @@ async def batch_operations(
                 error={"code": "INTERNAL_ERROR", "message": str(e)}
             )
 
-    # Execute all operations in parallel
-    tasks = [execute_operation(i, op) for i, op in enumerate(request.operations)]
-    results = await asyncio.gather(*tasks)
+    # Execute operations sequentially to avoid concurrent connection issues
+    # (asyncpg doesn't support concurrent operations on a single connection)
+    results = []
+    for i, op in enumerate(request.operations):
+        result = await execute_operation(i, op)
+        results.append(result)
 
     duration_ms = int((time.time() - start_time) * 1000)
     successful = sum(1 for r in results if r.status == "success")
