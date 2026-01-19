@@ -102,10 +102,17 @@ EXTRACTION TIPS:
 CRITICAL - DEPRECIATION & AMORTIZATION (D&A):
 D&A is essential for computing EBITDA. It is typically found in the CASH FLOW STATEMENT:
 - Look in "Cash flows from operating activities" section
-- Usually the first or second adjustment line after "Net income"
-- Common labels: "Depreciation and amortization", "Depreciation", "Amortization of intangibles"
-- May be split into multiple lines - SUM all depreciation and amortization items
-- If D&A is shown separately, add them together: depreciation_amortization = depreciation + amortization
+- Usually in the first 5-10 lines after "Net income" as non-cash adjustments
+- Common labels include:
+  * "Depreciation and amortization"
+  * "Depreciation"
+  * "Amortization of intangibles"
+  * "Depreciation and impairment"
+  * "Depreciation, amortization and impairment"
+  * "Depreciation of property, plant and equipment"
+- IMPORTANT: May be split into MULTIPLE LINES - you must SUM ALL depreciation and amortization items
+  * Example: "Depreciation of equipment 3,675" + "Depreciation of property 6,412" = 10,087 total
+- Add together ALL lines containing "depreciation" or "amortization" (excluding amortization of debt costs)
 
 EBITDA CALCULATION:
 - If EBITDA is explicitly disclosed (rare), use that value
