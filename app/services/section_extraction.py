@@ -51,21 +51,47 @@ class ExtractedSection:
 # =============================================================================
 
 # Pattern for Exhibit 21 - Subsidiaries of Registrant
+# IMPORTANT: Must require actual subsidiary content (jurisdiction, state, country mentions)
+# to avoid matching exhibit index pages that just list "Exhibit 21" as a reference
 EXHIBIT_21_PATTERNS = [
-    r"(?i)(Exhibit\s*21[^\n]*Subsidiaries)\s*(.{500,}?)(?=Exhibit\s*\d|Signatures|\Z)",
-    r"(?i)(Subsidiaries\s+of\s+(?:the\s+)?Registrant)\s*(.{500,}?)(?=Exhibit\s*\d|Signatures|\Z)",
-    r"(?i)(List\s+of\s+Subsidiaries)\s*(.{500,}?)(?=Exhibit\s*\d|Signatures|\Z)",
+    # Match "Subsidiaries of [Company]" followed by actual subsidiary list content
+    # Require state/country/jurisdiction indicators to confirm it's actual subsidiary data
+    r"(?i)(Subsidiaries\s+of\s+(?:the\s+)?(?:Registrant|[A-Z][A-Za-z\s\.,]+(?:Inc|Corp|LLC|Ltd|Co|Company))\.?)\s*(.{500,}?)(?=Exhibit\s*2[2-9]|Exhibit\s*[3-9]|Signatures|\Z)",
+    # Match "List of Subsidiaries" with actual content
+    r"(?i)(List\s+of\s+(?:Significant\s+)?Subsidiaries)\s*(.{500,}?)(?=Exhibit\s*2[2-9]|Exhibit\s*[3-9]|Signatures|\Z)",
+    # Match exhibit header with subsidiary content - require jurisdiction words
+    r"(?i)(Exhibit\s*21[.\s\-:]*(?:List\s+of\s+)?Subsidiaries[^\n]*)\s*(.{500,}?)(?=Exhibit\s*2[2-9]|Exhibit\s*[3-9]|Signatures|\Z)",
 ]
 
 # Pattern for debt footnotes in Notes to Financial Statements
 # Note: [\.\-\u2014\u2013] matches period, hyphen, em-dash, en-dash
 # SEC API renders content without newlines, so we use lookahead to next Note
+# Some companies use "Note X" prefix, others just use "X." (number with period)
 DEBT_FOOTNOTE_PATTERNS = [
     # "Note X - Debt" or "Note X—Debt" (em-dash) - capture until next Note
     r"(?i)(Note\s*\d+[\.\-\u2014\u2013\s]+(?:Long[\-\u2014\u2013\s]*Term\s+)?Debt)\s*[.\s](.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
     r"(?i)(Note\s*\d+[\.\-\u2014\u2013\s]+Debt\s+and\s+(?:Credit\s+)?Facilities)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
     r"(?i)(Note\s*\d+[\.\-\u2014\u2013\s]+Borrowings)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
     r"(?i)(Note\s*\d+[\.\-\u2014\u2013\s]+Notes\s+Payable)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
+    # Additional patterns for variations
+    r"(?i)(Note\s*\d+[\.\-\u2014\u2013\s]+Financing\s+Arrangements?)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
+    r"(?i)(Note\s*\d+[\.\-\u2014\u2013\s]+(?:Short[\-\s]*Term\s+and\s+)?Long[\-\s]*Term\s+Debt)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
+    r"(?i)(Note\s*\d+[\.\-\u2014\u2013\s]+Credit\s+Facilities?\s+and\s+Debt)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
+    r"(?i)(Note\s*\d+[\.\-\u2014\u2013\s]+Indebtedness)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
+    # "Long-Term Obligations" (used by KDP, others)
+    r"(?i)(Note\s*\d+[\.\-\u2014\u2013\s]+Long[\-\s]*Term\s+Obligations?)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
+    # "Senior Notes" or "Debt Securities"
+    r"(?i)(Note\s*\d+[\.\-\u2014\u2013\s]+Senior\s+Notes)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
+    r"(?i)(Note\s*\d+[\.\-\u2014\u2013\s]+Debt\s+Securities)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
+    # Numbered sections without "Note" prefix: "3. Long-Term Obligations"
+    # Used by KDP and others - "X. Long-Term Obligations and Borrowing Arrangements"
+    r"(?i)(\d+\.\s*Long[\-\s]*Term\s+Obligations?\s*(?:and\s+Borrowing\s+Arrangements?)?)(.{1000,}?)(?=\d+\.\s*[A-Z]|\Z)",
+    r"(?i)(\d+\.\s*(?:Long[\-\s]*Term\s+)?Debt(?:\s+and\s+(?:Credit\s+)?Facilities)?)(.{1000,}?)(?=\d+\.\s*[A-Z]|\Z)",
+    r"(?i)(\d+\.\s*Borrowings?\s*(?:and\s+(?:Credit\s+)?(?:Facilities|Arrangements))?)(.{1000,}?)(?=\d+\.\s*[A-Z]|\Z)",
+    # Pattern without "Note X" prefix - just section headers
+    r"(?i)(Long[\-\s]*Term\s+Debt\s+and\s+(?:Credit\s+)?Facilities)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|Item\s+\d|\Z)",
+    # Look for debt schedule tables (common format)
+    r"(?i)(The\s+components\s+of\s+(?:long[\-\s]*term\s+)?debt)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
 ]
 
 # Pattern for MD&A Liquidity section
@@ -143,6 +169,57 @@ def extract_section(content: str, patterns: list[str], max_length: int = 100000)
     return None, None
 
 
+def is_valid_exhibit_21(content: str) -> bool:
+    """
+    Validate that exhibit_21 content is actually a subsidiary list,
+    not an exhibit index or consent page.
+
+    Returns True if content appears to be a real subsidiary list.
+    """
+    if not content or len(content) < 200:
+        return False
+
+    content_lower = content.lower()
+
+    # Red flags - these indicate it's NOT a subsidiary list
+    red_flags = [
+        "consent of",  # Auditor consent (Exhibit 23)
+        "power of attorney",  # Exhibit 24
+        "certification of",  # Exhibit 31/32
+        "hereby consent",
+        "independent registered public accounting firm",
+    ]
+
+    for flag in red_flags:
+        if flag in content_lower[:500]:  # Check first 500 chars
+            return False
+
+    # Green flags - these indicate it IS a subsidiary list
+    # Real Exhibit 21s contain jurisdiction/state information
+    green_flags = [
+        "delaware",
+        "nevada",
+        "california",
+        "new york",
+        "texas",
+        "florida",
+        "ireland",
+        "netherlands",
+        "luxembourg",
+        "cayman islands",
+        "united kingdom",
+        "jurisdiction",
+        "state of incorporation",
+        "place of incorporation",
+        "country of organization",
+    ]
+
+    green_count = sum(1 for flag in green_flags if flag in content_lower)
+
+    # Require at least 2 jurisdiction indicators
+    return green_count >= 2
+
+
 def extract_sections_from_filing(
     content: str,
     doc_type: str,
@@ -166,7 +243,8 @@ def extract_sections_from_filing(
     # Exhibit 21 - typically only in 10-K
     if doc_type == "10-K":
         title, section_content = extract_section(content, EXHIBIT_21_PATTERNS)
-        if section_content:
+        # Validate it's actually a subsidiary list, not an exhibit index or consent
+        if section_content and is_valid_exhibit_21(section_content):
             sections.append(ExtractedSection(
                 section_type="exhibit_21",
                 section_title=title or "Exhibit 21 - Subsidiaries",
