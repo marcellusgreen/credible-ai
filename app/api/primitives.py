@@ -1450,7 +1450,7 @@ DOCUMENT_FIELDS = {
 # Valid section types
 VALID_SECTION_TYPES = {
     "exhibit_21", "debt_footnote", "mda_liquidity",
-    "credit_agreement", "guarantor_list", "covenants",
+    "credit_agreement", "indenture", "guarantor_list", "covenants",
 }
 
 # Valid doc types
@@ -1464,7 +1464,7 @@ async def search_documents(
     # Filters
     ticker: Optional[str] = Query(None, description="Comma-separated tickers (e.g., AAPL,MSFT)"),
     doc_type: Optional[str] = Query(None, description="Document type: 10-K, 10-Q, 8-K"),
-    section_type: Optional[str] = Query(None, description="Section type: exhibit_21, debt_footnote, mda_liquidity, credit_agreement, guarantor_list, covenants"),
+    section_type: Optional[str] = Query(None, description="Section type: exhibit_21, debt_footnote, mda_liquidity, credit_agreement, indenture, guarantor_list, covenants"),
     filed_after: Optional[date] = Query(None, description="Min filing date (YYYY-MM-DD)"),
     filed_before: Optional[date] = Query(None, description="Max filing date (YYYY-MM-DD)"),
     # Field selection
@@ -1494,6 +1494,7 @@ async def search_documents(
     - `debt_footnote`: Long-term debt details from Notes
     - `mda_liquidity`: Liquidity and Capital Resources from MD&A
     - `credit_agreement`: Credit facility terms from 8-K
+    - `indenture`: Bond indentures with covenants, events of default, redemption provisions
     - `guarantor_list`: Guarantor subsidiaries from Notes
     - `covenants`: Financial covenants from Notes/Exhibits
 

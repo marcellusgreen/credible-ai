@@ -325,7 +325,177 @@ New endpoint `POST /v1/batch` for executing multiple primitives in a single requ
 
 ---
 
+## Active Work: Quality Control & Data Validation
+
+**Status**: 🟡 IN PROGRESS
+**Goal**: Ensure data quality before distribution launch
+
+### Current Quality Metrics
+
+| Metric | Current | Target | Gap |
+|--------|---------|--------|-----|
+| Companies with leverage ratios | 101/177 (57%) | 160/177 (90%) | 59 companies |
+| Companies with financials | 176/177 (99%) | 177/177 (100%) | 1 company |
+| Known extraction errors | 4 companies | 0 | GM, MSFT, DISH, RIG |
+| Bonds with pricing | 30 | 100+ | Need pricing expansion |
+| Bonds with CUSIPs | ~40% | 60%+ | Low priority |
+
+---
+
+### Priority 1: Fix Known Extraction Errors
+**Status**: ⬜ TODO
+**Effort**: 1-2 hours
+
+Re-extract financials for companies with known scale/data errors using Claude (higher quality than Gemini).
+
+| Ticker | Issue | Action |
+|--------|-------|--------|
+| GM | Scale error - revenue shows millions instead of billions | Re-extract with `--use-claude` |
+| MSFT | Corrupted EBITDA - two numbers concatenated | Re-extract with `--use-claude` |
+| DISH | Scale error - all values off by ~1000x | Re-extract with `--use-claude` |
+| RIG | Scale error - revenue/EBITDA way too low | Re-extract with `--use-claude` |
+
+**Commands:**
+```bash
+python scripts/extract_financials.py --ticker GM --use-claude --save-db
+python scripts/extract_financials.py --ticker MSFT --use-claude --save-db
+python scripts/extract_financials.py --ticker DISH --use-claude --save-db
+python scripts/extract_financials.py --ticker RIG --use-claude --save-db
+python scripts/recompute_metrics.py
+```
+
+---
+
+### Priority 2: Expand Leverage Ratio Coverage
+**Status**: ⬜ TODO
+**Effort**: 2-3 hours
+
+Goal: Get leverage ratios for 90%+ of companies (currently 57%).
+
+**Root cause**: Leverage = Total Debt / EBITDA. Missing leverage means either:
+1. No financials extracted (1 company - ATUS)
+2. EBITDA is NULL or invalid
+3. Leverage calculated but skipped due to sanity check (>100x)
+
+**Action items:**
+- [ ] Identify companies with financials but no leverage ratio
+- [ ] Check if EBITDA is NULL vs. invalid
+- [ ] Re-extract financials for companies with NULL EBITDA
+- [ ] Review sanity check thresholds in `recompute_metrics.py`
+
+**Diagnostic query:**
+```sql
+SELECT c.ticker, cf.ebitda, cf.total_debt, cm.leverage_ratio
+FROM companies c
+LEFT JOIN company_financials cf ON c.id = cf.company_id
+LEFT JOIN company_metrics cm ON c.ticker = cm.ticker
+WHERE cm.leverage_ratio IS NULL
+ORDER BY cf.total_debt DESC NULLS LAST;
+```
+
+---
+
+### Priority 3: Data Consistency Validation
+**Status**: ⬜ TODO
+**Effort**: 1 day
+
+Build automated QC checks to identify data inconsistencies.
+
+**Checks to implement:**
+| Check | Description | Threshold |
+|-------|-------------|-----------|
+| Debt instrument vs. financial mismatch | Sum of debt instruments vs. total_debt in financials | >2x difference = flag |
+| Entity count sanity | Companies with 0 entities | Should have at least 1 |
+| Debt without issuer | Debt instruments with NULL issuer_id | Should be 0 |
+| Orphan guarantees | Guarantees referencing non-existent entities | Should be 0 |
+| Maturity date sanity | Bonds with maturity < today but is_active=true | Flag for review |
+| Duplicate debt instruments | Same name + issuer + maturity | Flag for dedup |
+| Missing debt amounts | Debt instruments with NULL principal/outstanding | Flag for re-extraction |
+
+**Deliverable:** Create `scripts/qc_audit.py` that runs all checks and outputs report.
+
+---
+
+### Priority 4: API Edge Case Testing
+**Status**: ⬜ TODO
+**Effort**: 0.5 day
+
+Test API robustness before public launch.
+
+**Test cases:**
+| Test | Endpoint | Expected |
+|------|----------|----------|
+| Empty ticker list | `GET /v1/companies?ticker=` | Return all (no filter) |
+| Invalid ticker | `GET /v1/companies?ticker=XXXXX` | Empty result, not error |
+| Invalid field | `GET /v1/companies?fields=fake_field` | 400 with valid fields list |
+| Large result set | `GET /v1/bonds?limit=100` | Paginated response |
+| Malformed traverse | `POST /v1/entities/traverse` with bad JSON | 422 validation error |
+| Non-existent CUSIP | `GET /v1/bonds/resolve?cusip=000000000` | Empty matches |
+| SQL injection attempt | `GET /v1/companies?ticker='; DROP TABLE--` | Safe, no injection |
+| Rate limit | 101 requests in 1 minute | 429 on 101st |
+
+**Deliverable:** Create `scripts/test_api_edge_cases.py` or add to test suite.
+
+---
+
+### Priority 5: Pricing Data Expansion
+**Status**: ⬜ TODO (LOW)
+**Effort**: Depends on data source
+
+Currently only 30 bonds have pricing. Options:
+- [ ] Expand FINRA TRACE pulls to more bonds
+- [ ] Add pricing for high-yield issuers (more interesting for analysis)
+- [ ] Document which bonds have/don't have pricing
+
+**Note:** Pricing is valuable but not blocking. Document search and structure data are the core differentiators.
+
+---
+
+### QC Completion Criteria
+
+Before distribution launch:
+- [ ] All 4 known-bad extractions fixed (GM, MSFT, DISH, RIG)
+- [ ] Leverage ratio coverage ≥ 80%
+- [ ] QC audit script created and passing
+- [ ] API edge cases tested
+- [ ] No critical data inconsistencies
+
+---
+
 ## Backlog
+
+### Future Opportunity: Structured Covenant Extraction
+**Status**: 📋 BACKLOG
+**Effort**: Large (6-10 days)
+**Priority**: LOW - High differentiation, but defer until distribution complete
+
+**What it would provide:**
+- Parsed covenant thresholds (e.g., "max leverage 5.0x", "min interest coverage 2.0x")
+- Covenant type classification (maintenance vs. incurrence)
+- Compliance headroom calculation (current metric vs. threshold)
+- Bond-to-covenant linking via new `covenants` table
+
+**Why it's valuable:**
+- No public API provides structured covenant data (Bloomberg/CapIQ do, but expensive)
+- Critical for credit analysis (covenant breach = default risk signal)
+- Leverages existing document corpus (796 indentures, 1,720 credit agreements, 815 covenant sections)
+
+**Current state:** Document search already provides 80% of value—users can search "maintenance covenant" and get snippets. Structured extraction is the "premium" layer.
+
+**Defer until:**
+- Distribution playbook Phase 1 complete (SDK published, LangChain PR merged)
+- User requests for structured covenant data
+- Competitor emergence requiring differentiation
+
+**Implementation steps (when ready):**
+1. Design `covenants` table (debt_instrument_id, covenant_type, metric, threshold, current_value, headroom)
+2. Build extraction prompts for covenant parsing from indentures/credit agreements
+3. Add QA checks for threshold validation (numeric parsing, metric matching)
+4. Create `GET /v1/covenants` endpoint with filtering
+5. Backfill from existing document sections
+6. Add `has_maintenance_covenant` filter to `/v1/bonds`
+
+---
 
 ### Data Quality
 - [ ] Validate CUSIP mappings against FINRA (deferred - CUSIPs not needed for MVP)
