@@ -185,6 +185,17 @@ Current migrations: 001 (initial) through 011 (company_snapshots)
 | JSON parse errors | `parse_json_robust()` fixes common issues |
 | Company not found by ticker | Falls back to CIK search |
 
+### QA False Positives
+
+| Symptom | Root Cause | Solution |
+|---------|------------|----------|
+| 99% debt discrepancies | QA comparing cents to dollars | Prompt has worked examples with explicit conversion |
+| 68-89% debt discrepancies | QA using original issuance not current outstanding | Prompt distinguishes "2009 issuance of $3.8B" header vs "$520M" outstanding |
+| Entity verification fails with valid data | Exhibit 21 contains auditor consent, not subsidiaries | `is_valid_exhibit_21()` validates content before storing |
+| Missing debt footnote | Non-standard naming like "3. Long-Term Obligations" | `DEBT_FOOTNOTE_PATTERNS` includes numbered sections |
+
+See `docs/QA_TROUBLESHOOTING.md` for detailed debugging guides.
+
 ## Cost
 
 | Stage | Cost |
