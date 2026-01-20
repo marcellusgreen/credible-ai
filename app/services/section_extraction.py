@@ -208,15 +208,23 @@ def is_valid_exhibit_21(content: str) -> bool:
         "luxembourg",
         "cayman islands",
         "united kingdom",
+        "england",
+        "cayman",
         "jurisdiction",
         "state of incorporation",
         "place of incorporation",
         "country of organization",
+        "where incorporated",  # Common header in exhibit 21 tables
+        "jurisdiction of organization",
+        "jurisdiction of formation",
+        "subsidiaries of",  # Common title pattern
     ]
 
     green_count = sum(1 for flag in green_flags if flag in content_lower)
 
-    # Require at least 2 jurisdiction indicators
+    # Require at least 2 jurisdiction indicators (or 1 if content mentions "subsidiaries")
+    if "subsidiaries" in content_lower and green_count >= 1:
+        return True
     return green_count >= 2
 
 
