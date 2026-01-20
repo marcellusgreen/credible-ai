@@ -163,49 +163,67 @@ Return JSON:
 
 DEBT_VERIFICATION_PROMPT = """Verify that these extracted debt instruments match the SEC filings.
 
-EXTRACTED DEBT:
+EXTRACTED DEBT (amounts in CENTS):
 {debt_json}
 
 SOURCE FILINGS (Debt sections):
 {debt_content}
 
-For each debt instrument, verify:
-1. Does the instrument exist in the filings?
-2. Is the outstanding/principal amount correct?
-3. Is the interest rate correct?
-4. Is the maturity date correct?
-5. Is the seniority/security type correct?
+=== CRITICAL: UNIT CONVERSION - READ CAREFULLY ===
 
-CRITICAL - UNIT CONVERSION:
-All extracted amounts are stored in US CENTS (not dollars). You MUST convert filing amounts to cents for comparison.
+The extracted amounts are in US CENTS. You must convert filing dollar amounts to cents.
 
-Conversion examples:
-- Filing says "$2 billion" or "$2,000 million" → 200,000,000,000 cents (2 billion × 100)
-- Filing says "$750 million" → 75,000,000,000 cents (750 million × 100)
-- Filing says "$1.5 billion" → 150,000,000,000 cents (1.5 billion × 100)
-- Filing says "$500,000,000" → 50,000,000,000 cents (500 million × 100)
+CONVERSION FORMULA: cents = dollars × 100
 
-Step-by-step verification for each instrument:
-1. Find the amount in the filing (e.g., "$2.0 billion")
-2. Convert to dollars: $2,000,000,000
-3. Convert to cents: multiply by 100 = 200,000,000,000 cents
-4. Compare to extracted value
-5. If they match (within 5%), mark as correct
+WORKED EXAMPLES:
+1. Filing: "$550 million"
+   → dollars = 550,000,000
+   → cents = 550,000,000 × 100 = 55,000,000,000 cents ✓
 
-Interest rates are in BASIS POINTS. 5.00% = 500 bps.
+2. Filing: "$2 billion" or "$2,000 million"
+   → dollars = 2,000,000,000
+   → cents = 2,000,000,000 × 100 = 200,000,000,000 cents ✓
+
+3. Filing: "$750 million"
+   → dollars = 750,000,000
+   → cents = 750,000,000 × 100 = 75,000,000,000 cents ✓
+
+4. Filing: "$1.5 billion"
+   → dollars = 1,500,000,000
+   → cents = 1,500,000,000 × 100 = 150,000,000,000 cents ✓
+
+COMMON MISTAKE TO AVOID:
+- WRONG: "$550 million" → 550,000,000 cents (forgot to multiply by 100!)
+- RIGHT: "$550 million" → 55,000,000,000 cents (550M dollars × 100)
+
+SANITY CHECK: Extracted amounts should have ~11-12 digits for hundreds of millions of dollars.
+- $100 million = 10,000,000,000 cents (11 digits)
+- $1 billion = 100,000,000,000 cents (12 digits)
+
+=== VERIFICATION STEPS ===
+
+For each debt instrument:
+1. Find the amount in the filing
+2. Convert to dollars (handle "million", "billion", commas)
+3. Multiply dollars by 100 to get cents
+4. Compare to extracted_cents
+5. If within 5%, mark amount_correct=true
+
+Interest rates: extracted as BASIS POINTS. 5.00% = 500 bps.
+
+=== RESPONSE FORMAT ===
 
 Return JSON:
 {{
   "verified_debt": [
     {{
-      "name": "Instrument Name",
+      "name": "5.000% Senior Notes due 2026",
       "found_in_filing": true,
+      "filing_amount_text": "$550 million",
+      "filing_amount_dollars": 550000000,
+      "filing_amount_cents": 55000000000,
+      "extracted_cents": 55000000000,
       "amount_correct": true,
-      "filing_amount_text": "$2 billion",
-      "filing_amount_dollars": 2000000000,
-      "filing_amount_cents": 200000000000,
-      "extracted_cents": 200000000000,
-      "amounts_match": true,
       "rate_correct": true,
       "maturity_correct": true,
       "seniority_correct": true,
@@ -222,14 +240,16 @@ Return JSON:
   "amount_discrepancies": [
     {{
       "instrument": "Name",
-      "filing_amount_text": "$2 billion",
-      "filing_amount_cents": 200000000000,
-      "extracted_cents": 100000000000,
-      "difference_pct": 50
+      "filing_amount_text": "$550 million",
+      "filing_amount_cents": 55000000000,
+      "extracted_cents": 25000000000,
+      "difference_pct": 54.5
     }}
   ],
-  "summary": "Brief summary of debt verification"
-}}"""
+  "summary": "Brief summary"
+}}
+
+IMPORTANT: Only report a discrepancy if the amounts differ by more than 5% AFTER proper conversion to cents."""
 
 
 COMPLETENESS_CHECK_PROMPT = """Check if the extraction is complete by looking for entities and debt that may have been missed.
