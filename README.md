@@ -37,7 +37,6 @@ Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
 ## Features
 
 - **Primitives API**: 8 core endpoints optimized for AI agents with field selection
-- **30+ REST API endpoints** for comprehensive credit data access
 - **Iterative QA Extraction**: 5 automated verification checks with targeted fixes until 85%+ quality threshold
 - **Individual Debt Instruments**: Each bond, note, and credit facility extracted separately (not just totals)
 - **Complex Corporate Structures**: Multiple owners, joint ventures, VIEs, partial ownership
@@ -106,9 +105,6 @@ curl -X POST "http://localhost:8000/v1/entities/traverse" \
   -H "Content-Type: application/json" \
   -d '{"start":{"type":"bond","id":"893830AK8"},"relationships":["guarantees"]}'
 
-# Legacy endpoints also available
-curl http://localhost:8000/v1/companies/AAPL/structure
-curl http://localhost:8000/v1/companies/CHTR/financials
 ```
 
 ## API Endpoints
@@ -144,29 +140,6 @@ curl -X POST "/v1/entities/traverse" -d '{"start":{"type":"bond","id":"893830AK8
 ```
 
 See `docs/PRIMITIVES_API_SPEC.md` for full specification.
-
-### Company Data (Legacy)
-| Endpoint | Description |
-|----------|-------------|
-| `GET /v1/companies/{ticker}` | Company overview |
-| `GET /v1/companies/{ticker}/structure` | Entity hierarchy with debt |
-| `GET /v1/companies/{ticker}/hierarchy` | Nested tree view |
-| `GET /v1/companies/{ticker}/debt` | All debt instruments |
-| `GET /v1/companies/{ticker}/metrics` | Credit metrics |
-| `GET /v1/companies/{ticker}/financials` | Quarterly financial statements |
-| `GET /v1/companies/{ticker}/ratios` | Credit ratios (leverage, coverage) |
-| `GET /v1/companies/{ticker}/pricing` | Bond pricing (YTM, spreads) |
-| `GET /v1/companies/{ticker}/guarantees` | Guarantee relationships |
-| `GET /v1/companies/{ticker}/maturity-waterfall` | Debt maturity by year |
-
-### Search & Analytics (Legacy)
-| Endpoint | Description |
-|----------|-------------|
-| `GET /v1/search/companies` | Search with filters (sector, debt, risk flags) |
-| `GET /v1/search/debt` | Search debt across all companies |
-| `GET /v1/search/entities` | Search entities across all companies |
-| `GET /v1/compare/companies` | Side-by-side comparison (up to 10) |
-| `GET /v1/analytics/sectors` | Sector-level aggregations |
 
 ### System
 | Endpoint | Description |
