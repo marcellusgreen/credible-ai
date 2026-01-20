@@ -171,12 +171,27 @@ SOURCE FILINGS (Debt sections):
 
 For each debt instrument, verify:
 1. Does the instrument exist in the filings?
-2. Is the outstanding/principal amount correct? (Remember: extracted amounts are in CENTS)
-3. Is the interest rate correct? (Remember: extracted rates are in BASIS POINTS)
+2. Is the outstanding/principal amount correct?
+3. Is the interest rate correct?
 4. Is the maturity date correct?
 5. Is the seniority/security type correct?
 
-IMPORTANT: Amounts in extraction are in CENTS. $1 billion = 100,000,000,000 cents.
+CRITICAL - UNIT CONVERSION:
+All extracted amounts are stored in US CENTS (not dollars). You MUST convert filing amounts to cents for comparison.
+
+Conversion examples:
+- Filing says "$2 billion" or "$2,000 million" → 200,000,000,000 cents (2 billion × 100)
+- Filing says "$750 million" → 75,000,000,000 cents (750 million × 100)
+- Filing says "$1.5 billion" → 150,000,000,000 cents (1.5 billion × 100)
+- Filing says "$500,000,000" → 50,000,000,000 cents (500 million × 100)
+
+Step-by-step verification for each instrument:
+1. Find the amount in the filing (e.g., "$2.0 billion")
+2. Convert to dollars: $2,000,000,000
+3. Convert to cents: multiply by 100 = 200,000,000,000 cents
+4. Compare to extracted value
+5. If they match (within 5%), mark as correct
+
 Interest rates are in BASIS POINTS. 5.00% = 500 bps.
 
 Return JSON:
@@ -186,8 +201,11 @@ Return JSON:
       "name": "Instrument Name",
       "found_in_filing": true,
       "amount_correct": true,
-      "extracted_amount_cents": 100000000000,
-      "filing_amount_dollars": "1,000,000,000",
+      "filing_amount_text": "$2 billion",
+      "filing_amount_dollars": 2000000000,
+      "filing_amount_cents": 200000000000,
+      "extracted_cents": 200000000000,
+      "amounts_match": true,
       "rate_correct": true,
       "maturity_correct": true,
       "seniority_correct": true,
@@ -204,8 +222,9 @@ Return JSON:
   "amount_discrepancies": [
     {{
       "instrument": "Name",
+      "filing_amount_text": "$2 billion",
+      "filing_amount_cents": 200000000000,
       "extracted_cents": 100000000000,
-      "expected_cents": 150000000000,
       "difference_pct": 50
     }}
   ],
