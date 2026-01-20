@@ -200,14 +200,39 @@ SANITY CHECK: Extracted amounts should have ~11-12 digits for hundreds of millio
 - $100 million = 10,000,000,000 cents (11 digits)
 - $1 billion = 100,000,000,000 cents (12 digits)
 
+=== CRITICAL: OUTSTANDING vs ISSUANCE AMOUNTS ===
+
+Debt schedules typically show BOTH the original issuance amount AND the current outstanding amount.
+The extracted data contains CURRENT OUTSTANDING amounts, NOT original issuance amounts.
+
+EXAMPLE - Microsoft debt schedule format:
+"2009 issuance of $ 3.8 billion ... $ 520 $ 520"
+- $3.8 billion = ORIGINAL ISSUANCE (when the debt was first issued)
+- $520 = CURRENT OUTSTANDING (what's still owed today, after repayments)
+
+YOU MUST compare extracted amounts to CURRENT OUTSTANDING, not original issuance!
+
+COMMON TABLE FORMATS:
+1. "Outstanding Amount" or "Outstanding" column - USE THIS
+2. "Principal Amount" or "Face Value" = original issuance - DO NOT USE for comparison
+3. Table row: "[Description] ... [Original] ... [Outstanding]" - use the LAST amount column
+4. If table shows "2025" and "2024" columns, use the most recent year (2025)
+
+WORKED EXAMPLE:
+Filing shows: "2009 issuance of $ 3.8 billion  5.20%  5.24%  $ 520  $ 520"
+- Extracted: 52,000,000,000 cents ($520 million)
+- Compare to: $520 million (current outstanding) ✓
+- DO NOT compare to: $3.8 billion (original issuance) ✗
+
 === VERIFICATION STEPS ===
 
 For each debt instrument:
-1. Find the amount in the filing
-2. Convert to dollars (handle "million", "billion", commas)
-3. Multiply dollars by 100 to get cents
-4. Compare to extracted_cents
-5. If within 5%, mark amount_correct=true
+1. Find the debt in the filing
+2. Identify the CURRENT OUTSTANDING amount (not original issuance)
+3. Convert to dollars (handle "million", "billion", commas)
+4. Multiply dollars by 100 to get cents
+5. Compare to extracted_cents
+6. If within 5%, mark amount_correct=true
 
 Interest rates: extracted as BASIS POINTS. 5.00% = 500 bps.
 
@@ -249,7 +274,13 @@ Return JSON:
   "summary": "Brief summary"
 }}
 
-IMPORTANT: Only report a discrepancy if the amounts differ by more than 5% AFTER proper conversion to cents."""
+IMPORTANT: Only report a discrepancy if the amounts differ by more than 5% AFTER proper conversion to cents.
+IMPORTANT: Compare to CURRENT OUTSTANDING amounts, not original issuance amounts.
+
+TOLERANCE RULE: Do NOT report discrepancies for differences ≤5%. These are acceptable:
+- $357 million extracted vs $360 million in filing = 0.8% difference = ACCEPTABLE, DO NOT FLAG
+- $500 million extracted vs $475 million in filing = 5% difference = ACCEPTABLE, DO NOT FLAG
+- $500 million extracted vs $400 million in filing = 20% difference = FLAG AS DISCREPANCY"""
 
 
 COMPLETENESS_CHECK_PROMPT = """Check if the extraction is complete by looking for entities and debt that may have been missed.
