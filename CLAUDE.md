@@ -194,7 +194,7 @@ Current migrations: 001 (initial) through 011 (company_snapshots)
 | Entity verification fails with valid data | Exhibit 21 contains auditor consent, not subsidiaries | `is_valid_exhibit_21()` validates content before storing |
 | Missing debt footnote | Non-standard naming like "3. Long-Term Obligations" | `DEBT_FOOTNOTE_PATTERNS` includes numbered sections |
 
-See `docs/QA_TROUBLESHOOTING.md` for detailed debugging guides.
+See `docs/operations/QA_TROUBLESHOOTING.md` for detailed debugging guides.
 
 ## Cost
 

@@ -69,3 +69,12 @@ secrets/
 *.key
 api keys.txt
 *api*key*
+
+# Temp/working files
+~$*
+~WRL*
+*.tmp
+
+# Debug images (archive if needed locally)
+docs/archive/*.png
+docs/archive/*.docx
