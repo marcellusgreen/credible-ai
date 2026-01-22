@@ -68,10 +68,30 @@ class Settings(BaseSettings):
     allowed_origins: str = "*"
 
     # ==========================================================================
+    # Authentication & Billing
+    # ==========================================================================
+    # Stripe for payment processing
+    stripe_api_key: Optional[str] = None
+    stripe_webhook_secret: Optional[str] = None
+
+    # API Key settings
+    api_key_prefix: str = "ds_"  # All API keys start with "ds_"
+
+    # Auth bypass for development (set to True to disable auth in dev)
+    auth_bypass: bool = False
+
+    # ==========================================================================
     # Rate Limiting
     # ==========================================================================
     rate_limit_requests: int = 100
     rate_limit_window: int = 60  # seconds
+
+    # Per-tier rate limits (requests per minute)
+    rate_limit_free: int = 10
+    rate_limit_starter: int = 60
+    rate_limit_growth: int = 120
+    rate_limit_scale: int = 300
+    rate_limit_enterprise: int = 1000
 
     class Config:
         env_file = ".env"

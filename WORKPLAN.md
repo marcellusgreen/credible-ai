@@ -577,6 +577,130 @@ Before distribution launch:
 
 ---
 
+## Active Work: Launch Prerequisites
+
+**Status**: 🟡 IN PROGRESS
+**Goal**: Ship to production with auth, billing, and expanded pricing
+
+### Priority 1: Authentication & User Management
+**Status**: ✅ COMPLETE (2026-01-22)
+**Effort**: Completed in 1 session
+
+Implemented API key-based authentication (simpler than OAuth for API-first product).
+
+| Step | Description | Status |
+|------|-------------|--------|
+| 1. Database schema | Created `users`, `user_credits`, `usage_log` tables | ✅ Done |
+| 2. SQLAlchemy models | Added `User`, `UserCredits`, `UsageLog` models | ✅ Done |
+| 3. API key generation | `ds_` prefixed keys with SHA-256 hashing | ✅ Done |
+| 4. Auth middleware | API key validation via `X-API-Key` header | ✅ Done |
+| 5. Auth endpoints | `/v1/auth/signup`, `/me`, `/credits`, `/usage`, `/api-keys` | ✅ Done |
+| 6. Credit system | Tier-based limits, overage support, billing cycles | ✅ Done |
+| 7. Rate limiting | Per-user rate limits based on tier | ✅ Done |
+
+**Files created:**
+- `alembic/versions/013_add_auth_tables.py` - Migration
+- `app/core/auth.py` - Auth utilities (key gen, validation, credits)
+- `app/api/auth.py` - Auth endpoints
+
+**Files modified:**
+- `app/models/schema.py` - Added User, UserCredits, UsageLog models
+- `app/models/__init__.py` - Export new models
+- `app/core/config.py` - Added auth config variables
+- `app/core/cache.py` - Added user-based rate limiting
+- `app/main.py` - Updated middleware, added auth router
+- `.env.example` - Added auth/billing config
+
+**Auth Endpoints:**
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/auth/signup` | POST | Create account, returns API key |
+| `/v1/auth/me` | GET | Get current user info |
+| `/v1/auth/credits` | GET | Get credit balance |
+| `/v1/auth/usage` | GET | Get usage history |
+| `/v1/auth/api-keys` | POST | Regenerate API key |
+| `/v1/auth/pricing` | GET | Get pricing info (public) |
+
+**Tier Configuration:**
+| Tier | Credits/Month | Rate Limit | Overage |
+|------|---------------|------------|---------|
+| Free | 1,000 | 10/min | Hard cap |
+| Starter | 3,000 | 60/min | $0.02/credit |
+| Growth | 15,000 | 120/min | $0.015/credit |
+| Scale | 50,000 | 300/min | $0.01/credit |
+| Enterprise | Unlimited | 1000/min | Custom |
+
+---
+
+### Priority 2: Pricing & Billing (Stripe)
+**Status**: ⬜ TODO
+**Effort**: 1-2 days
+
+| Step | Description | Status |
+|------|-------------|--------|
+| 1. Stripe setup | Create products for Free/Starter/Growth/Scale | ⬜ TODO |
+| 2. Webhook handler | Handle subscription events | ⬜ TODO |
+| 3. Upgrade flow | API endpoint to initiate Stripe checkout | ⬜ TODO |
+| 4. Overage billing | Report overage to Stripe at cycle end | ⬜ TODO |
+
+**Note:** Auth/credit system is complete. Stripe integration adds payment processing.
+
+---
+
+### Priority 3: Finnhub Pricing Expansion
+**Status**: ⬜ TODO
+**Effort**: 1 day (once Finnhub access ready)
+
+| Step | Description | Status |
+|------|-------------|--------|
+| 1. Get Finnhub premium | Bond data access | ⬜ Pending |
+| 2. Audit ISIN coverage | Count bonds with ISINs | ⬜ TODO |
+| 3. Batch price update | Run `update_pricing.py` for all ISIN bonds | ⬜ TODO |
+| 4. Target | 200+ bonds with pricing | ⬜ TODO |
+
+---
+
+### Priority 4: Website Updates
+**Status**: ⬜ TODO
+**Effort**: 0.5 day
+
+| Change | Current | Launch |
+|--------|---------|--------|
+| Status badge | "Private Beta" | Remove or "Now Available" |
+| Primary CTA | "Get Early Access" → waitlist | "Start Free" → signup |
+| Pricing section | Not shown | Add Free/Pro/Enterprise |
+| Data stats | Not shown | "189 companies, 2,849 debt instruments..." |
+| Beta language | "Launching soon", "Join waitlist" | Remove |
+
+---
+
+### Priority 5: SDK Publication
+**Status**: ⬜ TODO
+**Effort**: 0.5 day
+
+| Step | Description | Status |
+|------|-------------|--------|
+| 1. Final review | Ensure SDK matches current API | ⬜ TODO |
+| 2. PyPI account | Create account if needed | ⬜ TODO |
+| 3. Publish | `python -m build && twine upload dist/*` | ⬜ TODO |
+| 4. Test install | `pip install debtstack-ai` | ⬜ TODO |
+
+---
+
+### Launch Checklist
+
+- [x] API key authentication system ✅ (2026-01-22)
+- [x] API key generation and validation ✅ (2026-01-22)
+- [x] Credit tracking and limits ✅ (2026-01-22)
+- [x] Per-tier rate limiting ✅ (2026-01-22)
+- [ ] Stripe billing connected
+- [ ] Finnhub pricing expanded (200+ bonds)
+- [ ] Website updated (CTA, pricing, remove beta)
+- [ ] SDK published to PyPI
+- [ ] Docs complete
+
+---
+
 ## Backlog
 
 ### Future Opportunity: Network Effects & Competitive Moat
@@ -802,6 +926,77 @@ Added 12 new companies (ORCL was also missing):
 - Investigated why Oracle has no secured debt
 - Confirmed: Oracle's term loans are intentionally unsecured (unusual but correct)
 - Strong investment-grade rating allows unsecured borrowing at favorable rates
+
+---
+
+### 2026-01-22 (Session 20) - Authentication & User Management
+
+**Objective:** Implement API key authentication, credit system, and user management.
+
+**Completed:**
+1. **Database Migration** (`alembic/versions/013_add_auth_tables.py`)
+   - `users` table: id, email, api_key_hash, api_key_prefix, tier, stripe_customer_id, is_active
+   - `user_credits` table: credits_remaining, credits_monthly_limit, overage_credits_used, billing_cycle_start
+   - `usage_log` table: endpoint, method, credits_used, response_status, response_time_ms, ip_address
+
+2. **SQLAlchemy Models** (`app/models/schema.py`)
+   - Added `User`, `UserCredits`, `UsageLog` models with relationships
+   - Exported from `app/models/__init__.py`
+
+3. **Auth Utilities** (`app/core/auth.py`)
+   - API key generation: `ds_` prefix + 32 hex chars
+   - SHA-256 hashing for storage
+   - Tier configuration: credits, rate limits, overage rates
+   - Endpoint credit costs: 1-3 credits per endpoint
+   - Credit check/deduct functions with billing cycle reset
+   - `require_auth` and `get_current_user` dependencies
+
+4. **Auth Endpoints** (`app/api/auth.py`)
+   | Endpoint | Method | Description |
+   |----------|--------|-------------|
+   | `/v1/auth/signup` | POST | Create account, returns API key |
+   | `/v1/auth/me` | GET | Get current user info |
+   | `/v1/auth/credits` | GET | Get credit balance |
+   | `/v1/auth/usage` | GET | Get usage history |
+   | `/v1/auth/api-keys` | POST | Regenerate API key |
+   | `/v1/auth/pricing` | GET | Get pricing info (public) |
+
+5. **Config Updates** (`app/core/config.py`, `.env.example`)
+   - Added Stripe config vars (api_key, webhook_secret)
+   - Added per-tier rate limits
+   - Added auth_bypass for development
+
+6. **Rate Limiting Updates** (`app/core/cache.py`, `app/main.py`)
+   - User-based rate limiting via API key hash
+   - Per-tier limits (10/min free → 1000/min enterprise)
+
+**Tier Configuration:**
+| Tier | Credits/Month | Rate Limit | Overage |
+|------|---------------|------------|---------|
+| Free | 1,000 | 10/min | Hard cap |
+| Starter | 3,000 | 60/min | $0.02/credit |
+| Growth | 15,000 | 120/min | $0.015/credit |
+| Scale | 50,000 | 300/min | $0.01/credit |
+| Enterprise | 1,000,000 | 1000/min | Custom |
+
+**Credit Costs:**
+| Endpoint | Credits |
+|----------|---------|
+| /v1/companies | 1 |
+| /v1/bonds | 1 |
+| /v1/bonds/resolve | 1 |
+| /v1/pricing | 1 |
+| /v1/companies/{ticker}/changes | 2 |
+| /v1/entities/traverse | 3 |
+| /v1/documents/search | 3 |
+
+**Next Steps:**
+- Run migration: `alembic upgrade head`
+- Test auth endpoints locally
+- Integrate Stripe for payment processing
+- Add credit deduction to protected endpoints (optional - can use dependency)
+
+---
 
 **Final Statistics:**
 - Companies: 178 → 189 (+11)

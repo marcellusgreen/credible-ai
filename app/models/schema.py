@@ -842,6 +842,139 @@ class ExtractionMetadata(Base):
     )
 
 
+# =============================================================================
+# AUTHENTICATION & BILLING TABLES
+# =============================================================================
+
+
+class User(Base):
+    """User accounts for API access."""
+
+    __tablename__ = "users"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    api_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)  # SHA-256 hash
+    api_key_prefix: Mapped[str] = mapped_column(String(8), nullable=False)  # First 8 chars for display
+
+    # Subscription tier: free, starter, growth, scale, enterprise
+    tier: Mapped[str] = mapped_column(String(20), default="free", nullable=False)
+
+    # Stripe billing
+    stripe_customer_id: Mapped[Optional[str]] = mapped_column(String(255))
+    stripe_subscription_id: Mapped[Optional[str]] = mapped_column(String(255))
+
+    # Status
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    # Relationships
+    credits: Mapped[Optional["UserCredits"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", uselist=False
+    )
+    usage_logs: Mapped[list["UsageLog"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("ix_users_email", "email"),
+        Index("ix_users_api_key_hash", "api_key_hash"),
+        Index("ix_users_stripe_customer_id", "stripe_customer_id"),
+    )
+
+
+class UserCredits(Base):
+    """Credit balance and billing cycle tracking."""
+
+    __tablename__ = "user_credits"
+
+    user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+    # Credit balance
+    credits_remaining: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), default=Decimal("1000"), nullable=False
+    )
+    credits_monthly_limit: Mapped[int] = mapped_column(Integer, default=1000, nullable=False)
+    overage_credits_used: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), default=Decimal("0"), nullable=False
+    )
+
+    # Billing cycle
+    billing_cycle_start: Mapped[date] = mapped_column(Date, nullable=False)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    # Relationship
+    user: Mapped["User"] = relationship(back_populates="credits")
+
+
+class UsageLog(Base):
+    """API usage log for billing and analytics."""
+
+    __tablename__ = "usage_log"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    # Request details
+    endpoint: Mapped[str] = mapped_column(String(100), nullable=False)
+    method: Mapped[str] = mapped_column(String(10), nullable=False)  # GET, POST
+    credits_used: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+
+    # Response
+    response_status: Mapped[Optional[int]] = mapped_column(Integer)
+    response_time_ms: Mapped[Optional[int]] = mapped_column(Integer)
+
+    # Client info
+    ip_address: Mapped[Optional[str]] = mapped_column(String(45))  # IPv6 support
+    user_agent: Mapped[Optional[str]] = mapped_column(String(500))
+
+    # Timestamp
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    # Relationship
+    user: Mapped["User"] = relationship(back_populates="usage_logs")
+
+    __table_args__ = (
+        Index("ix_usage_log_user_id", "user_id"),
+        Index("ix_usage_log_user_date", "user_id", "created_at"),
+        Index("ix_usage_log_created_at", "created_at"),
+        Index("ix_usage_log_endpoint", "endpoint"),
+    )
+
+
+# =============================================================================
+# ANALYTICS TABLES
+# =============================================================================
+
+
 class CompanyMetrics(Base):
     """Flat table optimized for screening and filtering."""
 

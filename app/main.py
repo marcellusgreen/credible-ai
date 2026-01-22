@@ -16,9 +16,11 @@ import structlog
 
 from app.api.routes import router as api_router
 from app.api.primitives import router as primitives_router
+from app.api.auth import router as auth_router
 from app.core.config import get_settings
 from app.core.cache import check_rate_limit, DEFAULT_RATE_LIMIT, DEFAULT_RATE_WINDOW
 from app.core.monitoring import record_request, record_rate_limit_hit
+from app.core.auth import hash_api_key
 
 settings = get_settings()
 
@@ -116,31 +118,52 @@ async def logging_middleware(request: Request, call_next):
     return response
 
 
-# Rate limiting middleware
+# Rate limiting middleware (supports both IP-based and user-based limits)
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
-    """Apply rate limiting based on client IP."""
+    """Apply rate limiting based on user tier (if authenticated) or client IP."""
     # Skip rate limiting for health checks and docs
     path = request.url.path
     if path in ["/", "/docs", "/redoc", "/openapi.json", "/v1/ping", "/v1/health"]:
         return await call_next(request)
 
-    # Get client identifier (IP address)
-    # Check X-Forwarded-For for requests behind proxy/load balancer
+    # Skip auth endpoints to allow signup/login
+    if path.startswith("/v1/auth"):
+        return await call_next(request)
+
+    # Get client IP for fallback rate limiting
     forwarded_for = request.headers.get("X-Forwarded-For")
     if forwarded_for:
         client_ip = forwarded_for.split(",")[0].strip()
     else:
         client_ip = request.client.host if request.client else "unknown"
 
+    # Check for API key - if present, use user-based rate limiting
+    api_key = request.headers.get("X-API-Key")
+    rate_limit_identifier = client_ip
+    rate_limit_value = DEFAULT_RATE_LIMIT
+
+    if api_key and api_key.startswith(settings.api_key_prefix):
+        # User-based rate limiting will be handled after auth
+        # For now, use API key hash as identifier
+        rate_limit_identifier = f"user:{hash_api_key(api_key)}"
+        # Default to starter tier limit for authenticated users
+        # Actual tier limit will be applied in auth middleware
+        rate_limit_value = settings.rate_limit_starter
+
     # Check rate limit
-    allowed, remaining, reset = await check_rate_limit(client_ip)
+    allowed, remaining, reset = await check_rate_limit(
+        rate_limit_identifier,
+        limit=rate_limit_value,
+        window=DEFAULT_RATE_WINDOW,
+    )
 
     if not allowed:
         logger.warning(
             "rate_limit_exceeded",
             client_ip=client_ip,
             path=path,
+            identifier=rate_limit_identifier[:20],  # Truncate for logging
         )
         # Record rate limit hit for monitoring (fire and forget)
         import asyncio
@@ -154,7 +177,7 @@ async def rate_limit_middleware(request: Request, call_next):
                 }
             },
             headers={
-                "X-RateLimit-Limit": str(DEFAULT_RATE_LIMIT),
+                "X-RateLimit-Limit": str(rate_limit_value),
                 "X-RateLimit-Remaining": "0",
                 "X-RateLimit-Reset": str(reset),
                 "Retry-After": str(reset),
@@ -164,12 +187,15 @@ async def rate_limit_middleware(request: Request, call_next):
     response = await call_next(request)
 
     # Add rate limit headers to successful responses
-    response.headers["X-RateLimit-Limit"] = str(DEFAULT_RATE_LIMIT)
+    response.headers["X-RateLimit-Limit"] = str(rate_limit_value)
     response.headers["X-RateLimit-Remaining"] = str(remaining)
     response.headers["X-RateLimit-Reset"] = str(reset)
 
     return response
 
+
+# Include Auth API
+app.include_router(auth_router, prefix="/v1")
 
 # Include Primitives API first (takes precedence for /companies, /bonds, /pricing)
 app.include_router(primitives_router, prefix="/v1")
@@ -187,12 +213,20 @@ async def root():
         "description": "The credit API for AI agents",
         "version": settings.api_version,
         "docs": "/docs",
+        "auth": {
+            "signup": "/v1/auth/signup",
+            "me": "/v1/auth/me",
+            "credits": "/v1/auth/credits",
+            "pricing": "/v1/auth/pricing",
+        },
         "primitives": {
             "companies": "/v1/companies",
             "bonds": "/v1/bonds",
             "pricing": "/v1/pricing",
             "resolve": "/v1/bonds/resolve",
             "traverse": "/v1/entities/traverse",
+            "documents": "/v1/documents/search",
+            "batch": "/v1/batch",
         },
         "system": {
             "health": "/v1/health",

@@ -140,3 +140,29 @@ async def check_rate_limit(
     except Exception:
         # Fail open on Redis errors
         return True, limit, window
+
+
+async def check_rate_limit_user(
+    user_id: str,
+    tier: str,
+    tier_limits: dict,
+) -> Tuple[bool, int, int]:
+    """
+    Check rate limit for an authenticated user based on their tier.
+
+    Args:
+        user_id: User UUID as string
+        tier: User's subscription tier (free, starter, growth, scale, enterprise)
+        tier_limits: Dict mapping tier names to rate limits (requests per minute)
+
+    Returns:
+        Tuple of (allowed, remaining, reset_seconds)
+    """
+    limit = tier_limits.get(tier, tier_limits.get("free", 10))
+    window = 60  # 1 minute window
+
+    return await check_rate_limit(
+        identifier=f"user:{user_id}",
+        limit=limit,
+        window=window,
+    )

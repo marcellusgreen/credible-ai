@@ -38,6 +38,7 @@ Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
 ## Features
 
 - **Primitives API**: 8 core endpoints optimized for AI agents with field selection
+- **Authentication**: API key auth with credit-based usage tracking
 - **Iterative QA Extraction**: 5 automated verification checks with targeted fixes until 85%+ quality threshold
 - **Individual Debt Instruments**: Each bond, note, and credit facility extracted separately (not just totals)
 - **Guarantee Relationships**: 4,881 guarantee records linking debt to guarantor subsidiaries
@@ -90,42 +91,56 @@ alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
-### 5. Query
+### 5. Get Your API Key
+
+Sign up at [debtstack.ai](https://debtstack.ai) to get your API key. Free tier includes 1,000 credits/month.
+
+### 6. Query
 
 ```bash
-# Primitives API - optimized for AI agents
+# Set your API key
+export DEBTSTACK_API_KEY="ds_your_api_key_here"
+
 # Search companies with field selection
-curl "http://localhost:8000/v1/companies?ticker=AAPL,MSFT,GOOGL&fields=ticker,name,net_leverage_ratio&sort=-net_leverage_ratio"
+curl -H "X-API-Key: $DEBTSTACK_API_KEY" \
+  "https://credible-ai-production.up.railway.app/v1/companies?ticker=AAPL,MSFT,GOOGL&fields=ticker,name,net_leverage_ratio"
 
 # Search bonds with pricing
-curl "http://localhost:8000/v1/bonds?seniority=senior_unsecured&min_ytm=8.0&has_pricing=true"
-
-# Resolve bond identifier
-curl "http://localhost:8000/v1/bonds/resolve?q=RIG%208%25%202027"
+curl -H "X-API-Key: $DEBTSTACK_API_KEY" \
+  "https://credible-ai-production.up.railway.app/v1/bonds?seniority=senior_unsecured&min_ytm=8.0"
 
 # Traverse entity relationships (find guarantors)
-curl -X POST "http://localhost:8000/v1/entities/traverse" \
+curl -H "X-API-Key: $DEBTSTACK_API_KEY" \
+  -X POST "https://credible-ai-production.up.railway.app/v1/entities/traverse" \
   -H "Content-Type: application/json" \
   -d '{"start":{"type":"bond","id":"893830AK8"},"relationships":["guarantees"]}'
-
 ```
 
 ## API Endpoints
+
+### Authentication
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /v1/auth/signup` | Create account and get API key |
+| `GET /v1/auth/me` | Get current user info and credits (requires API key) |
+
+All other endpoints require an API key passed via `X-API-Key` header.
 
 ### Primitives API (Optimized for AI Agents)
 
 These 8 endpoints are designed for agents writing code - simple REST, field selection, powerful filtering.
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /v1/companies` | Search companies with field selection and 15+ filters |
-| `GET /v1/bonds` | Search bonds across all companies with pricing |
-| `GET /v1/bonds/resolve` | Resolve bond identifiers (CUSIP lookup, fuzzy search) |
-| `POST /v1/entities/traverse` | Graph traversal for guarantor chains, org structure |
-| `GET /v1/pricing` | Bond pricing data with YTM/spread filters |
-| `GET /v1/documents/search` | Full-text search across SEC filings |
-| `POST /v1/batch` | Execute multiple primitives in parallel |
-| `GET /v1/companies/{ticker}/changes` | Diff/changelog against historical snapshots |
+| Endpoint | Credits | Description |
+|----------|---------|-------------|
+| `GET /v1/companies` | 1 | Search companies with field selection and 15+ filters |
+| `GET /v1/bonds` | 1 | Search bonds across all companies with pricing |
+| `GET /v1/bonds/resolve` | 1 | Resolve bond identifiers (CUSIP lookup, fuzzy search) |
+| `GET /v1/pricing` | 1 | Bond pricing data with YTM/spread filters |
+| `GET /v1/companies/{ticker}/changes` | 2 | Diff/changelog against historical snapshots |
+| `POST /v1/entities/traverse` | 3 | Graph traversal for guarantor chains, org structure |
+| `GET /v1/documents/search` | 3 | Full-text search across SEC filings |
+| `POST /v1/batch` | Sum | Execute multiple primitives in parallel |
 
 **Example - Field Selection:**
 ```bash

@@ -19,6 +19,7 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 **What's Working**:
 - **Primitives API**: 8 core endpoints optimized for AI agents (field selection, powerful filters)
+- **Auth & Credits**: API key auth, tier-based credits, usage tracking
 - **Legacy REST API**: 26 endpoints for detailed company data
 - Iterative extraction with QA feedback loop (5 checks, 85% threshold)
 - Gemini for extraction (~$0.008), Claude for escalation
@@ -48,14 +49,16 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 | File | Purpose |
 |------|---------|
 | `app/api/primitives.py` | **Primitives API** - 8 core endpoints for agents |
+| `app/api/auth.py` | **Auth API** - signup, user info |
 | `app/api/routes.py` | Legacy FastAPI endpoints (26 routes) |
+| `app/core/auth.py` | API key generation, validation, tier config |
 | `app/core/cache.py` | Redis cache client (Upstash) |
 | `app/services/iterative_extraction.py` | Main extraction with QA loop |
 | `app/services/qa_agent.py` | 5-check QA verification |
 | `app/services/tiered_extraction.py` | LLM clients and prompts |
 | `app/services/extraction.py` | SEC clients, filing processing |
 | `app/services/financial_extraction.py` | Financial statements with TTM support |
-| `app/models/schema.py` | SQLAlchemy models |
+| `app/models/schema.py` | SQLAlchemy models (includes User, UserCredits, UsageLog) |
 | `app/core/config.py` | Environment configuration |
 | `app/core/database.py` | Database connection |
 
@@ -72,24 +75,38 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 - `bond_pricing`: Pricing data (YTM, spreads in basis points)
 - `document_sections`: SEC filing sections for full-text search (TSVECTOR + GIN index)
 
+**Auth Tables**:
+- `users`: User accounts (email, api_key_hash, tier, stripe IDs)
+- `user_credits`: Credit balance and billing cycle
+- `usage_log`: API usage tracking
+
 **Cache Tables**:
 - `company_cache`: Pre-computed JSON responses
 - `company_metrics`: Computed credit metrics
 
 ## API Endpoints
 
-### Primitives API (8 endpoints - optimized for agents)
+### Auth Endpoints
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/v1/companies` | GET | Search companies with field selection |
-| `/v1/bonds` | GET | Search bonds with pricing filters |
-| `/v1/bonds/resolve` | GET | Resolve CUSIP/bond identifiers |
-| `/v1/entities/traverse` | POST | Graph traversal (guarantors, structure) |
-| `/v1/pricing` | GET | Bond pricing data |
-| `/v1/documents/search` | GET | Full-text search across SEC filings |
-| `/v1/batch` | POST | Execute multiple primitives in parallel |
-| `/v1/companies/{ticker}/changes` | GET | Diff against historical snapshots |
+| `/v1/auth/signup` | POST | Create account, returns API key |
+| `/v1/auth/me` | GET | Get user info and credits (requires API key) |
+
+### Primitives API (8 endpoints - optimized for agents)
+
+All require `X-API-Key` header.
+
+| Endpoint | Method | Credits | Purpose |
+|----------|--------|---------|---------|
+| `/v1/companies` | GET | 1 | Search companies with field selection |
+| `/v1/bonds` | GET | 1 | Search bonds with pricing filters |
+| `/v1/bonds/resolve` | GET | 1 | Resolve CUSIP/bond identifiers |
+| `/v1/pricing` | GET | 1 | Bond pricing data |
+| `/v1/companies/{ticker}/changes` | GET | 2 | Diff against historical snapshots |
+| `/v1/entities/traverse` | POST | 3 | Graph traversal (guarantors, structure) |
+| `/v1/documents/search` | GET | 3 | Full-text search across SEC filings |
+| `/v1/batch` | POST | Sum | Execute multiple primitives in parallel |
 
 **Field selection**: `?fields=ticker,name,net_leverage_ratio`
 **Sorting**: `?sort=-net_leverage_ratio` (prefix `-` for descending)
@@ -174,7 +191,7 @@ alembic upgrade head     # Apply all
 alembic revision -m "description"  # Create new
 ```
 
-Current migrations: 001 (initial) through 012 (collateral_table)
+Current migrations: 001 (initial) through 013 (auth_tables)
 
 ## Common Issues
 

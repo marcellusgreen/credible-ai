@@ -16,6 +16,9 @@ from .schema import (
     Guarantee,
     ObligorGroupFinancials,
     OwnershipLink,
+    UsageLog,
+    User,
+    UserCredits,
 )
 
 __all__ = [
@@ -34,4 +37,7 @@ __all__ = [
     "Guarantee",
     "ObligorGroupFinancials",
     "OwnershipLink",
+    "UsageLog",
+    "User",
+    "UserCredits",
 ]
