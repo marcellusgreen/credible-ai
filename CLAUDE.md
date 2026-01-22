@@ -12,7 +12,7 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 ## Current Status (January 2026)
 
-**Database**: 178 companies | 3,085 entities | 1,805 debt instruments | 30 priced bonds | 5,456 document sections
+**Database**: 189 companies | 5,979 entities | 2,849 debt instruments | 30 priced bonds | 5,750 document sections | 4,881 guarantees | 230 collateral records
 
 **Deployment**: Railway with Neon PostgreSQL + Upstash Redis
 - Live at: `https://credible-ai-production.up.railway.app`
@@ -67,6 +67,7 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 - `ownership_links`: Complex ownership (JVs, partial ownership)
 - `debt_instruments`: All debt with terms, linked via `issuer_id`
 - `guarantees`: Links debt to guarantor entities
+- `collateral`: Asset-backed collateral for secured debt (type, description, priority)
 - `company_financials`: Quarterly financial statements (amounts in cents)
 - `bond_pricing`: Pricing data (YTM, spreads in basis points)
 - `document_sections`: SEC filing sections for full-text search (TSVECTOR + GIN index)
@@ -173,7 +174,7 @@ alembic upgrade head     # Apply all
 alembic revision -m "description"  # Create new
 ```
 
-Current migrations: 001 (initial) through 011 (company_snapshots)
+Current migrations: 001 (initial) through 012 (collateral_table)
 
 ## Common Issues
 

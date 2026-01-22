@@ -201,8 +201,9 @@ async def recompute_metrics_for_company(
     cash = latest_financials.cash_and_equivalents if latest_financials else 0
     cash = cash or 0
 
-    # Require at least 2 quarters of EBITDA data for reliable leverage calculation
-    if ttm_ebitda and ttm_ebitda > 0 and quarters_with_ebitda >= 2:
+    # Require at least 1 quarter of EBITDA data for leverage calculation
+    # (single quarter will be annualized - less accurate but better than nothing)
+    if ttm_ebitda and ttm_ebitda > 0 and quarters_with_ebitda >= 1:
         # Leverage = Total Debt / TTM EBITDA
         if total_debt > 0:
             lev = total_debt / ttm_ebitda

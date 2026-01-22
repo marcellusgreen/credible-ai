@@ -19,26 +19,29 @@ Corporate structure and debt analysis is complex. Even with AI, achieving accura
 
 ## Current Database
 
-**178 companies | 3,085 entities | 1,805 debt instruments | 30 priced bonds**
+**189 companies | 5,979 entities | 2,849 debt instruments | 30 priced bonds | 4,881 guarantees | 230 collateral records**
 
 Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
 
 | Sector | Sample Companies |
 |--------|------------------|
-| Tech | AAPL, MSFT, NVDA, GOOGL, META, AMZN, TSLA |
+| Tech | AAPL, MSFT, NVDA, GOOGL, META, AMZN, TSLA, ORCL, AVGO |
 | Financials | JPM, GS, BAC, WFC, MS |
-| Healthcare | JNJ, UNH, LLY, ABBV, MRK |
-| Consumer | WMT, COST, HD, MCD, KO, PEP |
+| Healthcare | JNJ, UNH, LLY, ABBV, MRK, IDXX, DXCM |
+| Consumer | WMT, COST, HD, MCD, KO, PEP, ORLY |
 | Telecom/Cable | CHTR, ATUS, TMUS, LUMN |
 | Energy | XOM, CVX, OXY |
 | Offshore Drilling | RIG, VAL, DO, NE |
 | Airlines | AAL, UAL, DAL |
+| Semiconductors | NVDA, AMD, AVGO, GFS, CDNS |
 
 ## Features
 
 - **Primitives API**: 8 core endpoints optimized for AI agents with field selection
 - **Iterative QA Extraction**: 5 automated verification checks with targeted fixes until 85%+ quality threshold
 - **Individual Debt Instruments**: Each bond, note, and credit facility extracted separately (not just totals)
+- **Guarantee Relationships**: 4,881 guarantee records linking debt to guarantor subsidiaries
+- **Collateral Tracking**: 230 collateral records with asset types (equipment, vehicles, real estate, etc.)
 - **Complex Corporate Structures**: Multiple owners, joint ventures, VIEs, partial ownership
 - **Financial Statements**: Quarterly income statement, balance sheet, cash flow from 10-Q/10-K
 - **Credit Ratios**: Leverage, interest coverage, margins, liquidity metrics

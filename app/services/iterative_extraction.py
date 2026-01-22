@@ -623,10 +623,87 @@ class IterativeExtractionService:
                 print(f"    No improvement, stopping iterations")
                 break
 
-        # Step 4: Escalate to Claude if still below threshold
+        # Step 4: Escalate if still below threshold or no debt found
+        # Escalation order: Gemini 2.5 Pro -> Claude Sonnet
         final_model = "gemini-2.0-flash"
-        if current_qa.overall_score < self.quality_threshold and self.claude:
-            print(f"\n  [Escalation] Quality still below threshold, escalating to Claude...")
+        has_debt = len(current_extraction.get('debt_instruments', [])) > 0
+        needs_escalation = (
+            current_qa.overall_score < self.quality_threshold or
+            (not has_debt and self.quality_threshold >= 80)  # Most companies should have debt
+        )
+
+        if needs_escalation and self.gemini:
+            # First try Gemini 2.5 Pro (cheaper than Claude)
+            escalation_reason = "no debt instruments found" if not has_debt else f"quality below {self.quality_threshold}%"
+            print(f"\n  [Escalation] {escalation_reason}, trying Gemini 2.5 Pro...")
+            iter_start = datetime.now()
+
+            try:
+                # Build escalation context
+                issues_summary = []
+                for check in current_qa.checks:
+                    if check.status in (QACheckStatus.FAIL, QACheckStatus.WARN):
+                        issues_summary.append(f"- {check.name}: {check.message}")
+
+                escalated, tokens_in, tokens_out = await self.gemini.extract_pro(
+                    context=context[:100000],
+                    previous_extraction=current_extraction,
+                    issues=issues_summary,
+                )
+
+                escalation_cost = calculate_cost(ModelTier.TIER1_5_GEMINI_PRO, tokens_in, tokens_out)
+                self.total_cost += escalation_cost
+
+                # QA the escalated result
+                self.qa_agent.total_cost = 0
+                escalated_qa = await self.qa_agent.run_qa(escalated, filings)
+                self.total_cost += self.qa_agent.total_cost
+
+                escalated_debt_count = len(escalated.get('debt_instruments', []))
+                current_debt_count = len(current_extraction.get('debt_instruments', []))
+
+                print(f"    Gemini Pro extraction: {len(escalated.get('entities', []))} entities, "
+                      f"{escalated_debt_count} debt")
+                print(f"    QA Score: {escalated_qa.overall_score:.0f}%")
+
+                # Use escalated result if:
+                # 1. It has a higher QA score, OR
+                # 2. It found debt when current has none (and QA is acceptable >= 60%)
+                use_escalated = (
+                    escalated_qa.overall_score > current_qa.overall_score or
+                    (escalated_debt_count > 0 and current_debt_count == 0 and escalated_qa.overall_score >= 60)
+                )
+
+                if use_escalated:
+                    current_extraction = escalated
+                    current_qa = escalated_qa
+                    has_debt = escalated_debt_count > 0
+                    final_model = "gemini-1.5-pro"
+
+                    iterations.append(IterationResult(
+                        iteration=len(iterations),
+                        action=IterationAction.ESCALATE,
+                        extraction=current_extraction.copy(),
+                        qa_score=current_qa.overall_score,
+                        issues_fixed=["Escalated to Gemini 2.5 Pro"],
+                        cost=escalation_cost,
+                        duration_seconds=(datetime.now() - iter_start).total_seconds(),
+                    ))
+
+            except Exception as e:
+                print(f"    Gemini Pro escalation failed: {e}")
+
+        # Check if we still need Claude escalation
+        has_debt = len(current_extraction.get('debt_instruments', [])) > 0
+        still_needs_escalation = (
+            current_qa.overall_score < self.quality_threshold or
+            (not has_debt and self.quality_threshold >= 80)
+        )
+
+        if still_needs_escalation and self.claude:
+            # Try Claude as final escalation
+            escalation_reason = "no debt instruments found" if not has_debt else f"quality below {self.quality_threshold}%"
+            print(f"\n  [Escalation] {escalation_reason}, escalating to Claude...")
             iter_start = datetime.now()
 
             try:
@@ -650,12 +727,22 @@ class IterativeExtractionService:
                 escalated_qa = await self.qa_agent.run_qa(escalated, filings)
                 self.total_cost += self.qa_agent.total_cost
 
+                escalated_debt_count = len(escalated.get('debt_instruments', []))
+                current_debt_count = len(current_extraction.get('debt_instruments', []))
+
                 print(f"    Claude extraction: {len(escalated.get('entities', []))} entities, "
-                      f"{len(escalated.get('debt_instruments', []))} debt")
+                      f"{escalated_debt_count} debt")
                 print(f"    QA Score: {escalated_qa.overall_score:.0f}%")
 
-                # Use escalated result if better
-                if escalated_qa.overall_score > current_qa.overall_score:
+                # Use escalated result if:
+                # 1. It has a higher QA score, OR
+                # 2. It found debt when current has none (and QA is acceptable >= 60%)
+                use_escalated = (
+                    escalated_qa.overall_score > current_qa.overall_score or
+                    (escalated_debt_count > 0 and current_debt_count == 0 and escalated_qa.overall_score >= 60)
+                )
+
+                if use_escalated:
                     current_extraction = escalated
                     current_qa = escalated_qa
                     final_model = "claude-sonnet-4"

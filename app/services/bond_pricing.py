@@ -53,6 +53,159 @@ class BondPrice(BaseModel):
     error: Optional[str] = None
 
 
+class BondProfile(BaseModel):
+    """Bond profile data from Finnhub."""
+
+    isin: Optional[str] = None
+    cusip: Optional[str] = None
+    figi: Optional[str] = None
+
+    # Amounts (in dollars)
+    amount_outstanding: Optional[int] = None  # Current outstanding
+    original_offering: Optional[int] = None  # Original issuance amount
+
+    # Bond details
+    coupon: Optional[float] = None
+    coupon_type: Optional[str] = None
+    maturity_date: Optional[date] = None
+    issue_date: Optional[date] = None
+    dated_date: Optional[date] = None
+
+    # Classification
+    bond_type: Optional[str] = None
+    debt_type: Optional[str] = None
+    security_level: Optional[str] = None
+    asset_type: Optional[str] = None
+
+    # Other
+    callable: Optional[bool] = None
+    payment_frequency: Optional[str] = None
+    offering_price: Optional[float] = None
+
+    # Metadata
+    source: str = "finnhub"
+    error: Optional[str] = None
+
+
+async def fetch_finnhub_bond_profile(isin: str) -> BondProfile:
+    """
+    Fetch bond profile data from Finnhub API using ISIN.
+
+    Returns bond metadata including amount outstanding and original offering.
+    Finnhub API: https://finnhub.io/docs/api/bond-profile
+    """
+    if not FINNHUB_API_KEY:
+        return BondProfile(
+            isin=isin,
+            error="FINNHUB_API_KEY not configured",
+        )
+
+    url = f"{FINNHUB_BASE_URL}/bond/profile"
+    params = {
+        "isin": isin,
+        "token": FINNHUB_API_KEY,
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.get(url, params=params)
+
+            if resp.status_code == 401:
+                return BondProfile(
+                    isin=isin,
+                    error="Finnhub API key invalid or expired",
+                )
+
+            if resp.status_code == 403:
+                return BondProfile(
+                    isin=isin,
+                    error="Finnhub premium subscription required for bond data",
+                )
+
+            if resp.status_code == 429:
+                return BondProfile(
+                    isin=isin,
+                    error="Finnhub rate limit exceeded",
+                )
+
+            if resp.status_code != 200:
+                return BondProfile(
+                    isin=isin,
+                    error=f"Finnhub API error: HTTP {resp.status_code}",
+                )
+
+            data = resp.json()
+
+            if not data:
+                return BondProfile(
+                    isin=isin,
+                    error="No profile data available",
+                )
+
+            # Parse dates
+            maturity_date = None
+            if data.get("maturityDate"):
+                try:
+                    maturity_date = datetime.strptime(data["maturityDate"], "%Y-%m-%d").date()
+                except (ValueError, TypeError):
+                    pass
+
+            issue_date = None
+            if data.get("issueDate"):
+                try:
+                    issue_date = datetime.strptime(data["issueDate"], "%Y-%m-%d").date()
+                except (ValueError, TypeError):
+                    pass
+
+            dated_date = None
+            if data.get("datedDate"):
+                try:
+                    dated_date = datetime.strptime(data["datedDate"], "%Y-%m-%d").date()
+                except (ValueError, TypeError):
+                    pass
+
+            # Parse amounts (Finnhub returns as numbers)
+            amount_outstanding = None
+            if data.get("amountOutstanding"):
+                try:
+                    amount_outstanding = int(float(data["amountOutstanding"]))
+                except (ValueError, TypeError):
+                    pass
+
+            original_offering = None
+            if data.get("originalOffering"):
+                try:
+                    original_offering = int(float(data["originalOffering"]))
+                except (ValueError, TypeError):
+                    pass
+
+            return BondProfile(
+                isin=isin,
+                cusip=data.get("cusip"),
+                figi=data.get("figi"),
+                amount_outstanding=amount_outstanding,
+                original_offering=original_offering,
+                coupon=data.get("coupon"),
+                coupon_type=data.get("couponType"),
+                maturity_date=maturity_date,
+                issue_date=issue_date,
+                dated_date=dated_date,
+                bond_type=data.get("bondType"),
+                debt_type=data.get("debtType"),
+                security_level=data.get("securityLevel"),
+                asset_type=data.get("assetType"),
+                callable=data.get("callable"),
+                payment_frequency=data.get("paymentFrequency"),
+                offering_price=data.get("offeringPrice"),
+                source="finnhub",
+            )
+
+        except httpx.TimeoutException:
+            return BondProfile(isin=isin, error="Request timeout")
+        except Exception as e:
+            return BondProfile(isin=isin, error=f"API error: {str(e)}")
+
+
 async def fetch_finnhub_price(isin: str) -> BondPrice:
     """
     Fetch bond price from Finnhub API using ISIN.

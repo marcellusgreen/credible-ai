@@ -26,6 +26,7 @@ from app.models import Company, DocumentSection
 # Section type constants
 SECTION_TYPES = [
     "exhibit_21",
+    "exhibit_22",  # List of Guarantor Subsidiaries (SEC-mandated since 2021)
     "debt_footnote",
     "mda_liquidity",
     "credit_agreement",
@@ -62,6 +63,18 @@ EXHIBIT_21_PATTERNS = [
     # Match exhibit header with subsidiary content - require jurisdiction words
     r"(?i)(Exhibit\s*21[.\s\-:]*(?:List\s+of\s+)?Subsidiaries[^\n]*)\s*(.{500,}?)(?=Exhibit\s*2[2-9]|Exhibit\s*[3-9]|Signatures|\Z)",
 ]
+
+# Pattern for Exhibit 22 - List of Guarantor Subsidiaries (SEC Rule 13-01, effective 2021)
+# This is the authoritative list of subsidiary guarantors for registered debt
+EXHIBIT_22_PATTERNS = [
+    # Match "List of Guarantor Subsidiaries" or similar
+    r"(?i)(List\s+of\s+(?:Subsidiary\s+)?Guarantors?)\s*(.{300,}?)(?=Exhibit\s*2[3-9]|Exhibit\s*[3-9]|Signatures|\Z)",
+    r"(?i)(Guarantor\s+Subsidiaries)\s*(.{300,}?)(?=Exhibit\s*2[3-9]|Exhibit\s*[3-9]|Signatures|\Z)",
+    r"(?i)(Exhibit\s*22[.\s\-:]*(?:List\s+of\s+)?(?:Subsidiary\s+)?Guarantors?[^\n]*)\s*(.{300,}?)(?=Exhibit\s*2[3-9]|Exhibit\s*[3-9]|Signatures|\Z)",
+    # Match SEC Rule 13-01 disclosure
+    r"(?i)((?:SEC\s+)?Rule\s+13[\-\s]?01\s+(?:Subsidiary\s+)?Guarantors?)\s*(.{300,}?)(?=Exhibit\s*2[3-9]|Exhibit\s*[3-9]|Signatures|\Z)",
+]
+
 
 # Pattern for debt footnotes in Notes to Financial Statements
 # Note: [\.\-\u2014\u2013] matches period, hyphen, em-dash, en-dash
@@ -262,6 +275,19 @@ def extract_sections_from_filing(
                 sec_filing_url=sec_filing_url,
             ))
 
+    # Exhibit 22 - List of Guarantor Subsidiaries (SEC Rule 13-01, typically in 10-K)
+    if doc_type == "10-K":
+        title, section_content = extract_section(content, EXHIBIT_22_PATTERNS)
+        if section_content and len(section_content) > 200:
+            sections.append(ExtractedSection(
+                section_type="exhibit_22",
+                section_title=title or "Exhibit 22 - List of Guarantor Subsidiaries",
+                content=section_content,
+                doc_type=doc_type,
+                filing_date=filing_date,
+                sec_filing_url=sec_filing_url,
+            ))
+
     # Debt footnotes - in 10-K and 10-Q
     if doc_type in ("10-K", "10-Q"):
         title, section_content = extract_section(content, DEBT_FOOTNOTE_PATTERNS)
@@ -438,8 +464,8 @@ async def extract_and_store_sections(
         date_str = date_match.group(1)
 
         # Determine doc_type based on key prefix
-        if key.startswith("exhibit_21"):
-            # exhibit_21_2024-02-15 -> doc_type is 10-K (exhibits come from 10-K)
+        if key.startswith("exhibit_21") or key.startswith("exhibit_22"):
+            # exhibit_21_2024-02-15, exhibit_22_2024-02-15 -> doc_type is 10-K (exhibits come from 10-K)
             doc_type = "10-K"
         elif key.startswith("credit_agreement"):
             # credit_agreement_2024-02-15_EX-10_1 -> doc_type is 8-K

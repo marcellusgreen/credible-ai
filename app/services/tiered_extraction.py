@@ -37,6 +37,7 @@ from app.services.utils import parse_json_robust
 class ModelTier(Enum):
     TIER1_DEEPSEEK = "deepseek"
     TIER1_GEMINI = "gemini"
+    TIER1_5_GEMINI_PRO = "gemini-pro"  # Gemini 2.5 Pro for escalation
     TIER2_SONNET = "sonnet"
     TIER3_OPUS = "opus"
 
@@ -51,6 +52,7 @@ class Complexity(Enum):
 MODEL_COSTS = {
     ModelTier.TIER1_DEEPSEEK: {"input": 0.27, "output": 1.10},
     ModelTier.TIER1_GEMINI: {"input": 0.10, "output": 0.40},  # Gemini 2.0 Flash
+    ModelTier.TIER1_5_GEMINI_PRO: {"input": 1.25, "output": 10.00},  # Gemini 2.5 Pro
     ModelTier.TIER2_SONNET: {"input": 3.00, "output": 15.00},
     ModelTier.TIER3_OPUS: {"input": 15.00, "output": 75.00},
 }
@@ -599,6 +601,10 @@ def validate_extraction(extraction: dict, complexity: Complexity) -> ValidationR
     elif total_score < 0.75:
         action = 'escalate_tier2'
         reason = f'Low validation score: {total_score:.0%}'
+    elif not has_debt and complexity != Complexity.SIMPLE:
+        # Most public companies have debt - escalate if none found for non-simple companies
+        action = 'escalate_tier2'
+        reason = 'No debt instruments found for non-simple company'
     elif complexity == Complexity.COMPLEX and total_score < 0.9:
         action = 'escalate_tier2'
         reason = f'Complex company below 90% threshold: {total_score:.0%}'
@@ -704,6 +710,55 @@ class GeminiClient:
         response = await loop.run_in_executor(
             None,
             lambda: self.model.generate_content(prompt)
+        )
+
+        content = response.text
+        result = parse_json_robust(content)
+
+        # Get token counts from usage metadata
+        usage = response.usage_metadata
+        tokens_in = usage.prompt_token_count if usage else 0
+        tokens_out = usage.candidates_token_count if usage else 0
+
+        return result, tokens_in, tokens_out
+
+    async def extract_pro(
+        self,
+        context: str,
+        previous_extraction: Optional[dict] = None,
+        issues: Optional[list[str]] = None,
+    ) -> tuple[dict, int, int]:
+        """
+        Run extraction with Gemini 1.5 Pro (intermediate escalation tier).
+        More capable than Flash for complex debt structures.
+        Returns: (result_dict, tokens_in, tokens_out)
+        """
+        # Create Gemini 2.5 Pro model for this call
+        pro_model = self.genai.GenerativeModel(
+            model_name="gemini-2.5-pro",
+            generation_config={
+                "temperature": 0.1,
+                "response_mime_type": "application/json",
+                "max_output_tokens": 32000,
+            },
+            system_instruction=SYSTEM_PROMPT,
+        )
+
+        if previous_extraction and issues:
+            prompt = ESCALATION_PROMPT_TEMPLATE.format(
+                context=context,
+                previous_extraction=json.dumps(previous_extraction, indent=2),
+                issues=json.dumps(issues, indent=2),
+            )
+        else:
+            prompt = EXTRACTION_PROMPT_TEMPLATE.format(context=context)
+
+        # Gemini SDK is synchronous, run in executor
+        import asyncio
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: pro_model.generate_content(prompt)
         )
 
         content = response.text

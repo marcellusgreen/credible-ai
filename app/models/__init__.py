@@ -3,6 +3,7 @@
 from .schema import (
     Base,
     BondPricing,
+    Collateral,
     Company,
     CompanyCache,
     CompanyFinancials,
@@ -20,6 +21,7 @@ from .schema import (
 __all__ = [
     "Base",
     "BondPricing",
+    "Collateral",
     "Company",
     "CompanyCache",
     "CompanyFinancials",

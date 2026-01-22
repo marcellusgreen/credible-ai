@@ -650,6 +650,24 @@ async def search_bonds(
         )
         guarantor_counts = {row[0]: row[1] for row in gc_result}
 
+    # Get collateral for returned bonds
+    collateral_by_bond = {}
+    if bond_ids:
+        from app.models import Collateral
+        coll_result = await db.execute(
+            select(Collateral)
+            .where(Collateral.debt_instrument_id.in_(bond_ids))
+        )
+        for coll in coll_result.scalars().all():
+            if coll.debt_instrument_id not in collateral_by_bond:
+                collateral_by_bond[coll.debt_instrument_id] = []
+            collateral_by_bond[coll.debt_instrument_id].append({
+                "type": coll.collateral_type,
+                "description": coll.description,
+                "priority": coll.priority,
+                "estimated_value": coll.estimated_value,
+            })
+
     # Build response
     data = []
     for row in rows:
@@ -688,6 +706,9 @@ async def search_bonds(
             "is_active": d.is_active,
             "is_drawn": d.is_drawn,
             "guarantor_count": guarantor_counts.get(d.id, 0),
+            "guarantee_data_confidence": d.guarantee_data_confidence,
+            "collateral": collateral_by_bond.get(d.id, []),
+            "collateral_data_confidence": d.collateral_data_confidence,
         }
 
         # Add pricing if available

@@ -3,17 +3,22 @@
 Iterative extraction with QA feedback loop.
 
 This is the recommended extraction method for first-time company extractions.
-It iteratively improves quality until a threshold is met.
+It extracts:
+  1. Corporate structure (entities, ownership hierarchy)
+  2. Debt instruments (bonds, loans, credit facilities)
+  3. Document sections (for full-text search)
+  4. TTM financials (4 quarters of financial data for leverage ratios)
 
 Usage:
-    python scripts/extract_iterative.py --ticker AAPL --cik 0000320193
-    python scripts/extract_iterative.py --ticker AAPL --cik 0000320193 --threshold 90
-    python scripts/extract_iterative.py --ticker AAPL --cik 0000320193 --max-iterations 5
+    python scripts/extract_iterative.py --ticker AAPL --cik 0000320193 --save-db
+    python scripts/extract_iterative.py --ticker AAPL --cik 0000320193 --threshold 90 --save-db
+    python scripts/extract_iterative.py --ticker AAPL --cik 0000320193 --skip-financials --save-db
 
 Environment variables:
     GEMINI_API_KEY - Required for extraction and QA
     ANTHROPIC_API_KEY - Required for Claude escalation
     SEC_API_KEY - Optional, for faster filing retrieval
+    DATABASE_URL - Required for --save-db
 """
 
 import argparse
@@ -66,6 +71,7 @@ async def run_iterative_extraction(
     save_results: bool = True,
     save_to_db: bool = False,
     database_url: str = None,
+    skip_financials: bool = False,
 ) -> IterativeExtractionResult:
     """
     Run iterative extraction with feedback loop.
@@ -183,7 +189,7 @@ async def run_iterative_extraction(
         async_session = async_sessionmaker(engine, expire_on_commit=False)
 
         async with async_session() as session:
-            company_id = await save_extraction_to_db(session, extraction_result, cik)
+            company_id = await save_extraction_to_db(session, extraction_result, ticker, cik=cik)
             await session.commit()
             print(f"    [OK] Saved extraction to database")
 
@@ -200,6 +206,36 @@ async def run_iterative_extraction(
                 print(f"    [WARN] Section extraction failed: {e}")
 
         await engine.dispose()
+
+    # Extract TTM financials (4 quarters) unless skipped
+    # This runs after main extraction is complete and saved
+    if save_to_db and database_url and not skip_financials:
+        print(f"\n  Extracting TTM financials (4 quarters)...")
+        try:
+            from app.services.financial_extraction import extract_ttm_financials, save_financials_to_db
+
+            ttm_results = await extract_ttm_financials(
+                ticker=ticker,
+                cik=cik,
+                use_claude=False,  # Use Gemini by default for cost
+            )
+
+            if ttm_results:
+                # Save each quarter to database
+                engine = create_async_engine(database_url, echo=False)
+                async_session = async_sessionmaker(engine, expire_on_commit=False)
+
+                async with async_session() as session:
+                    for fin_result in ttm_results:
+                        await save_financials_to_db(session, ticker, fin_result)
+                    await session.commit()
+
+                await engine.dispose()
+                print(f"    [OK] Extracted and saved {len(ttm_results)} quarters of financials")
+            else:
+                print(f"    [WARN] No financials extracted")
+        except Exception as e:
+            print(f"    [WARN] Financial extraction failed: {e}")
 
     print(f"\n{'='*60}")
 
@@ -220,6 +256,8 @@ def main():
                        help="Don't save results to files")
     parser.add_argument("--save-db", action="store_true",
                        help="Save to database")
+    parser.add_argument("--skip-financials", action="store_true",
+                       help="Skip TTM financial extraction")
 
     args = parser.parse_args()
 
@@ -251,6 +289,7 @@ def main():
             save_results=not args.no_save,
             save_to_db=args.save_db,
             database_url=database_url,
+            skip_financials=args.skip_financials,
         )
     )
 

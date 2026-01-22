@@ -248,6 +248,14 @@ class DebtInstrument(Base):
     is_drawn: Mapped[bool] = mapped_column(Boolean, default=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # Data quality - indicates confidence in guarantee data completeness
+    # Values: 'verified' (from Exhibit 22), 'extracted' (from LLM), 'partial', 'unknown'
+    guarantee_data_confidence: Mapped[Optional[str]] = mapped_column(String(20), default="unknown")
+
+    # Data quality - indicates confidence in collateral data completeness
+    # Values: 'verified', 'extracted', 'partial', 'unknown'
+    collateral_data_confidence: Mapped[Optional[str]] = mapped_column(String(20), default="unknown")
+
     # Flexible attributes (covenants, call schedules, etc.)
     attributes: Mapped[dict] = mapped_column(JSONB, default=dict)
 
@@ -265,6 +273,9 @@ class DebtInstrument(Base):
         back_populates="issued_debt", foreign_keys=[issuer_id]
     )
     guarantees: Mapped[list["Guarantee"]] = relationship(
+        back_populates="debt_instrument", cascade="all, delete-orphan"
+    )
+    collateral: Mapped[list["Collateral"]] = relationship(
         back_populates="debt_instrument", cascade="all, delete-orphan"
     )
 
@@ -500,6 +511,43 @@ class Guarantee(Base):
         ),
         Index("idx_guarantees_debt", "debt_instrument_id"),
         Index("idx_guarantees_guarantor", "guarantor_id"),
+    )
+
+
+class Collateral(Base):
+    """Collateral securing a debt instrument (assets, equipment, real estate, etc.)."""
+
+    __tablename__ = "collateral"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    debt_instrument_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("debt_instruments.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    # Collateral type: real_estate, equipment, receivables, inventory, securities, vehicles, ip, cash, general_lien
+    collateral_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)  # Free text description
+    estimated_value: Mapped[Optional[int]] = mapped_column(BigInteger)  # Value in cents if disclosed
+    priority: Mapped[Optional[str]] = mapped_column(String(20))  # first_lien, second_lien, etc.
+
+    # Metadata
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    # Relationships
+    debt_instrument: Mapped["DebtInstrument"] = relationship(back_populates="collateral")
+
+    __table_args__ = (
+        Index("ix_collateral_debt_instrument_id", "debt_instrument_id"),
+        Index("ix_collateral_collateral_type", "collateral_type"),
     )
 
 

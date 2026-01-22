@@ -188,6 +188,12 @@ def detect_filing_scale(content: str) -> int:
         r'\(\s*in\s+thousands\s*,?\s*except',  # "(in thousands, except per share)"
         r'\(\s*\$?\s*in\s+thousands\s*\)',
         r'amounts\s+in\s+thousands',
+        r'in\s+thousands\s+of\s+u\.?s\.?\s+dollars',  # "In thousands of U.S. dollars"
+        r'\(in\s+thousands\s+of\s+u',  # Partial match for "(In thousands of U.S. dollars"
+        r'\(\s*\$\s*000\s*,?\s*except',  # "($000, except per share)" - common notation
+        r'\$\s*000\s*,?\s*except',  # "$000, except per share"
+        r'\(\s*\$\s*and\s+shares\s+in\s+000',  # "($ and shares in 000"
+        r'in\s+000\s*,?\s*except',  # "in 000, except per share"
     ]
 
     # Patterns that indicate thousands but might be for shares (exclude these)
@@ -204,9 +210,48 @@ def detect_filing_scale(content: str) -> int:
         r'\bin\s+millions\b(?!\s+of\s+shares)',
         r'\(\s*millions\s*\)',
         r'amounts\s+in\s+millions',
+        r'in\s+millions\s+of\s+u\.?s\.?\s+dollars',  # "In millions of U.S. dollars"
     ]
 
-    # Strategy: Find data markers and search backwards for scale indicator
+    # PRIORITY 1: Search near financial statement headers first (most reliable)
+    # These are explicit statements in the financial statement headers
+    # NOTE: We search ALL occurrences of headers, not just the first, because
+    # the first might be in a Table of Contents without scale info
+    financial_headers = [
+        "consolidated balance sheet",
+        "condensed consolidated balance sheet",
+        "consolidated statements of operations",
+        "condensed consolidated statements of operations",
+        "consolidated statements of income",
+        "condensed consolidated statements of earnings",
+        "consolidated financial statements",
+        "condensed consolidated financial statements",
+    ]
+
+    for header in financial_headers:
+        # Find ALL occurrences of this header
+        idx = 0
+        while idx < len(content_lower):
+            header_pos = content_lower.find(header, idx)
+            if header_pos == -1:
+                break
+
+            # Search 500 chars after header (scale is usually right after the title)
+            search_region = content_lower[header_pos:header_pos + 500]
+
+            # Check thousands first (specific to this header)
+            for pattern in thousands_patterns:
+                if re.search(pattern, search_region):
+                    return 100_000
+
+            # Then millions (specific to this header)
+            for pattern in millions_patterns:
+                if re.search(pattern, search_region):
+                    return 100_000_000
+
+            idx = header_pos + len(header)
+
+    # PRIORITY 2: Find data markers and search backwards for scale indicator
     # The scale indicator closest to actual data wins
     best_scale = None
     best_distance = float('inf')
@@ -251,32 +296,6 @@ def detect_filing_scale(content: str) -> int:
     if best_scale is not None:
         return best_scale
 
-    # Fallback: search financial statement headers
-    financial_headers = [
-        "consolidated balance sheet",
-        "condensed consolidated balance sheet",
-        "consolidated statements of operations",
-        "condensed consolidated statements of operations",
-        "consolidated statements of income",
-        "consolidated statements of earnings",
-    ]
-
-    for header in financial_headers:
-        header_pos = content_lower.find(header)
-        if header_pos != -1:
-            # Search 2000 chars after header
-            search_region = content_lower[header_pos:header_pos + 2000]
-
-            # Check thousands first (less common, so if found it's intentional)
-            for pattern in thousands_patterns:
-                if re.search(pattern, search_region):
-                    return 100_000
-
-            # Then millions
-            for pattern in millions_patterns:
-                if re.search(pattern, search_region):
-                    return 100_000_000
-
     # Last resort fallback: search entire document, prefer millions
     for pattern in millions_patterns:
         if re.search(pattern, content_lower):
@@ -286,7 +305,10 @@ def detect_filing_scale(content: str) -> int:
         if re.search(pattern, content_lower):
             return 100_000
 
-    # Default: assume values are in dollars, convert to cents
+    # Default: assume values are in dollars if no scale indicator found
+    # This should be rare - most SEC filings have explicit scale indicators
+    # If this happens, the extraction should be reviewed
+    print("  WARNING: No scale indicator found in filing - assuming dollars")
     return 100
 
 
@@ -550,6 +572,12 @@ async def extract_financials(
             data = data[0]
 
         if data:
+            # DEBUG: Show raw extracted values before scaling
+            if os.getenv("DEBUG_FINANCIALS"):
+                print(f"  DEBUG Raw extraction (before scaling):")
+                for k in ["revenue", "operating_income", "net_income", "total_debt"]:
+                    print(f"    {k}: {data.get(k)}")
+
             # Apply the detected scale from the filing
             data = apply_filing_scale(data, filing_scale)
 

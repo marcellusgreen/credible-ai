@@ -10,6 +10,7 @@ Usage:
     python scripts/batch_index.py --phase all         # All companies
     python scripts/batch_index.py --list              # Just list companies, don't extract
     python scripts/batch_index.py --ticker TSLA       # Single company
+    python scripts/batch_index.py --tickers AAPL,VZ,T --force  # Re-extract specific companies
 """
 
 import argparse
@@ -24,6 +25,11 @@ from datetime import datetime
 # These are the most likely to be searched
 PHASE_1 = [
     # Mega caps
+    ("AAPL", "0000320193"),    # Apple
+    ("MSFT", "0000789019"),    # Microsoft
+    ("GOOGL", "0001652044"),   # Alphabet
+    ("NVDA", "0001045810"),    # NVIDIA
+    ("META", "0001326801"),    # Meta
     ("TSLA", "0001318605"),    # Tesla
     ("AVGO", "0001730168"),    # Broadcom
     ("LLY", "0000059478"),     # Eli Lilly
@@ -180,6 +186,9 @@ PHASE_2 = [
     ("APP", "0001498098"),     # AppLovin
     ("GEV", "0001996350"),     # GE Vernova
     ("APH", "0000820313"),     # Amphenol
+    # Media/Airlines
+    ("FOX", "0001754301"),     # Fox Corporation
+    ("UAL", "0000100517"),     # United Airlines
 ]
 
 def get_existing_tickers():
@@ -242,17 +251,36 @@ def main():
                        help="Just list companies, don't extract")
     parser.add_argument("--ticker", type=str,
                        help="Extract a single ticker")
+    parser.add_argument("--tickers", type=str,
+                       help="Comma-separated list of tickers to extract (e.g., AAPL,VZ,T)")
     parser.add_argument("--skip-existing", action="store_true", default=True,
                        help="Skip companies that already have results (default: True)")
+    parser.add_argument("--force", action="store_true",
+                       help="Force re-extraction even if results exist (overrides --skip-existing)")
     args = parser.parse_args()
 
     # Get existing extractions
     existing = get_existing_tickers()
 
+    # Build CIK lookup from all phases
+    all_companies = PHASE_1 + PHASE_2
+    cik_lookup = {t: c for t, c in all_companies}
+
     # Determine which companies to extract
-    if args.ticker:
+    if args.tickers:
+        # Multiple tickers mode (comma-separated)
+        ticker_list = [t.strip().upper() for t in args.tickers.split(",")]
+        companies = []
+        for ticker in ticker_list:
+            if ticker in cik_lookup:
+                companies.append((ticker, cik_lookup[ticker]))
+            else:
+                print(f"Warning: {ticker} not found in index lists, skipping")
+        if not companies:
+            print("No valid tickers found")
+            sys.exit(1)
+    elif args.ticker:
         # Single ticker mode
-        all_companies = PHASE_1 + PHASE_2
         companies = [(t, c) for t, c in all_companies if t == args.ticker.upper()]
         if not companies:
             print(f"Ticker {args.ticker} not found in index lists")
@@ -268,13 +296,15 @@ def main():
         print("Available: 1, 2, all")
         sys.exit(1)
 
-    # Filter out existing if requested
-    if args.skip_existing and not args.ticker:
+    # Filter out existing if requested (unless --force is set)
+    if args.skip_existing and not args.ticker and not args.tickers and not args.force:
         original_count = len(companies)
         companies = [(t, c) for t, c in companies if t not in existing]
         skipped = original_count - len(companies)
         if skipped > 0:
             print(f"Skipping {skipped} companies that already have results")
+    elif args.force:
+        print(f"Force mode: will re-extract even if results exist")
 
     # List mode
     if args.list:

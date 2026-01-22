@@ -544,6 +544,47 @@ class QAAgent:
                 message="No debt instruments in extraction to verify",
             )
 
+        # Pre-check: Fail if ALL debt instruments have NULL outstanding amounts
+        # This catches cases where extraction found bond names but not amounts
+        instruments_with_amounts = sum(
+            1 for d in debt
+            if d.get("outstanding") is not None or d.get("principal") is not None
+        )
+        null_amount_count = len(debt) - instruments_with_amounts
+
+        if instruments_with_amounts == 0:
+            # This may be legitimate - some companies (like Apple) only report aggregate debt totals
+            # and don't break down individual bond amounts in their 10-K
+            return QACheck(
+                name="Debt Verification",
+                status=QACheckStatus.WARN,
+                message=f"All {len(debt)} debt instruments have NULL outstanding amounts - individual amounts may not be disclosed",
+                details={
+                    "verified_count": 0,
+                    "correct_amounts": 0,
+                    "discrepancies": [],
+                    "missing": [],
+                    "null_amounts": len(debt),
+                },
+                evidence="Extraction found debt instrument names but amounts are NULL. Some companies only report aggregate debt totals without individual bond breakdown.",
+            )
+
+        # Warn if more than half of debt instruments have NULL amounts
+        if null_amount_count > len(debt) / 2:
+            return QACheck(
+                name="Debt Verification",
+                status=QACheckStatus.WARN,
+                message=f"{null_amount_count}/{len(debt)} debt instruments have NULL outstanding amounts",
+                details={
+                    "verified_count": instruments_with_amounts,
+                    "correct_amounts": instruments_with_amounts,
+                    "discrepancies": [],
+                    "missing": [],
+                    "null_amounts": null_amount_count,
+                },
+                evidence=f"Extraction found {len(debt)} debt instruments but only {instruments_with_amounts} have amounts. May need manual review.",
+            )
+
         prompt = DEBT_VERIFICATION_PROMPT.format(
             debt_json=json.dumps(debt, indent=2),
             debt_content=debt_content[:60000],  # Limit size
