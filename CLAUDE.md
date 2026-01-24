@@ -12,7 +12,9 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 ## Current Status (January 2026)
 
-**Database**: 189 companies | 5,979 entities | 2,849 debt instruments | 30 priced bonds | 5,750 document sections | 4,881 guarantees | 230 collateral records
+**Database**: 189 companies | 5,979 entities | 2,651 debt instruments | 30 priced bonds | 6,500+ document sections | 4,881 guarantees | 230 collateral records
+
+**Document Coverage**: 100% (2,560 linked / 2,557 linkable instruments)
 
 **Deployment**: Railway with Neon PostgreSQL + Upstash Redis
 - Live at: `https://credible-ai-production.up.railway.app`
@@ -66,8 +68,8 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 
 **Core Tables**:
 - `companies`: Master company data (ticker, name, CIK, sector)
-- `entities`: Corporate entities with hierarchy (`parent_id`, VIE tracking)
-- `ownership_links`: Complex ownership (JVs, partial ownership)
+- `entities`: Corporate entities with hierarchy (`parent_id`, VIE tracking, direct/indirect ownership)
+- `ownership_links`: Complex ownership (JVs, partial ownership, direct/indirect relationships)
 - `debt_instruments`: All debt with terms, linked via `issuer_id`
 - `guarantees`: Links debt to guarantor entities
 - `collateral`: Asset-backed collateral for secured debt (type, description, priority)
@@ -151,7 +153,43 @@ python scripts/update_pricing.py --ticker AAPL
 
 # Recompute metrics (after extracting financials)
 python scripts/recompute_metrics.py --ticker CHTR
+
+# Extract ownership hierarchy from Exhibit 21 indentation
+python scripts/extract_exhibit21_hierarchy.py --ticker CHTR --save-db
+
+# Batch extract ownership hierarchy for all companies
+python scripts/extract_exhibit21_hierarchy.py --all --save-db
 ```
+
+### Document-to-Instrument Linking
+
+Scripts for linking debt instruments to their governing legal documents:
+
+```bash
+# Fix data quality issues first
+python scripts/fix_missing_interest_rates.py --save    # Extract rates from names
+python scripts/fix_missing_maturity_dates.py --save    # Extract years from names
+python scripts/fix_empty_instrument_names.py --ticker CHTR --save  # LLM extracts names
+
+# Smart pattern-based matching (for term loans, revolvers)
+python scripts/smart_document_matching.py --ticker CHTR --save
+python scripts/smart_document_matching.py --all --save --limit 50
+
+# Fallback linking (when specific documents not found)
+python scripts/link_to_base_indenture.py --save        # Links notes to base/supplemental indentures
+python scripts/link_to_credit_agreement.py --save      # Links loans/revolvers to credit agreements
+
+# Mark instruments that don't need documents
+python scripts/mark_no_doc_expected.py --execute       # Commercial paper, bank loans, etc.
+```
+
+### Ownership Hierarchy Extraction
+
+Corporate ownership hierarchy is extracted from SEC Exhibit 21 filings by parsing HTML indentation:
+- SEC convention: "Indentation reflects the principal parent of each subsidiary"
+- Level 0 = root company, Level 1 = direct subsidiary, Level 2 = grandchild, etc.
+- Stored in `entities.parent_id` and `ownership_links.ownership_type` (direct/indirect)
+- Script: `scripts/extract_exhibit21_hierarchy.py`
 
 ### TTM (Trailing Twelve Months) Extraction
 
@@ -213,6 +251,22 @@ Current migrations: 001 (initial) through 013 (auth_tables)
 | Missing debt footnote | Non-standard naming like "3. Long-Term Obligations" | `DEBT_FOOTNOTE_PATTERNS` includes numbered sections |
 
 See `docs/operations/QA_TROUBLESHOOTING.md` for detailed debugging guides.
+
+### Document Linking Issues
+
+| Symptom | Root Cause | Solution |
+|---------|------------|----------|
+| Low document coverage for notes | Only recent SEC filings extracted; historical indentures missing | Use `link_to_base_indenture.py` - most notes are issued under a single base indenture |
+| Term loans not matching | Credit agreements are 400K+ chars; LLM matching truncates | Use `smart_document_matching.py` - searches full content for patterns first |
+| NULL rates/maturities blocking matches | Instrument names contain this info but fields are NULL | Run `fix_missing_interest_rates.py` and `fix_missing_maturity_dates.py` first |
+| Instruments show as unlinked but are generic | Catch-all entries like "Other long-term debt" | Mark as `no_document_expected` in attributes JSONB |
+
+**Key Learnings from Document Coverage Work:**
+1. **Don't game metrics** - Term loans/revolvers need credit agreements; don't exclude them to inflate coverage
+2. **Base indentures govern all notes** - A company's 1990s base indenture covers notes issued in 2020s
+3. **Pattern matching beats LLM for large docs** - Search for "Term A-6" directly rather than asking LLM
+4. **Fix data quality first** - Many matches fail due to NULL rates/maturities that can be extracted from names
+5. **Lower confidence is better than no link** - 60% confidence base indenture link is more useful than nothing
 
 ## Cost
 
