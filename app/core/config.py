@@ -88,6 +88,7 @@ class Settings(BaseSettings):
 
     # Per-tier rate limits (requests per minute)
     rate_limit_free: int = 10
+    rate_limit_pro: int = 120
     rate_limit_starter: int = 60
     rate_limit_growth: int = 120
     rate_limit_scale: int = 300

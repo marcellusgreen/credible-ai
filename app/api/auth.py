@@ -4,13 +4,17 @@ Authentication endpoints for DebtStack API.
 Endpoints:
 - POST /v1/auth/signup - Create account and get API key
 - GET /v1/auth/me - Get current user info and credits
+- POST /v1/auth/upgrade - Create Stripe checkout session for Pro upgrade
+- POST /v1/auth/portal - Create Stripe customer portal session
+- POST /v1/auth/webhook - Handle Stripe webhook events
 """
 
 from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import stripe
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +27,15 @@ from app.core.auth import (
     create_user_credits,
     TIER_CREDITS,
     TIER_RATE_LIMITS,
+)
+from app.core.billing import (
+    create_checkout_session,
+    create_portal_session,
+    verify_webhook_signature,
+    handle_subscription_created,
+    handle_subscription_updated,
+    handle_subscription_deleted,
+    handle_invoice_paid,
 )
 from app.core.database import get_db
 from app.models import User, UserCredits
@@ -62,6 +75,22 @@ class UserInfoResponse(BaseModel):
     credits_remaining: float
     credits_monthly_limit: int
     billing_cycle_start: date
+
+
+class UpgradeRequest(BaseModel):
+    """Request body for upgrade."""
+    success_url: str = Field(default="https://debtstack.ai/dashboard?upgraded=true")
+    cancel_url: str = Field(default="https://debtstack.ai/pricing")
+
+
+class UpgradeResponse(BaseModel):
+    """Response for upgrade endpoint."""
+    checkout_url: str
+
+
+class PortalResponse(BaseModel):
+    """Response for portal endpoint."""
+    portal_url: str
 
 
 # =============================================================================
@@ -144,3 +173,116 @@ async def get_me(
         credits_monthly_limit=credits.credits_monthly_limit if credits else TIER_CREDITS["free"],
         billing_cycle_start=credits.billing_cycle_start if credits else date.today(),
     )
+
+
+# =============================================================================
+# Billing Endpoints
+# =============================================================================
+
+
+@router.post("/upgrade", response_model=UpgradeResponse)
+async def upgrade_to_pro(
+    request: UpgradeRequest,
+    user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Create a Stripe Checkout session to upgrade to Pro.
+
+    Returns a checkout URL - redirect the user there to complete payment.
+    """
+    if user.tier == "pro":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You are already on the Pro tier",
+        )
+
+    if user.tier == "enterprise":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Enterprise users should contact sales for billing changes",
+        )
+
+    try:
+        checkout_url = await create_checkout_session(
+            user=user,
+            success_url=request.success_url,
+            cancel_url=request.cancel_url,
+            db=db,
+        )
+        return UpgradeResponse(checkout_url=checkout_url)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create checkout session: {str(e)}",
+        )
+
+
+@router.post("/portal", response_model=PortalResponse)
+async def billing_portal(
+    user: User = Depends(require_auth),
+):
+    """
+    Create a Stripe Customer Portal session to manage subscription.
+
+    Returns a portal URL - redirect the user there to manage billing.
+    """
+    if not user.stripe_customer_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No billing account found. Upgrade to Pro first.",
+        )
+
+    try:
+        portal_url = await create_portal_session(user)
+        return PortalResponse(portal_url=portal_url)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create portal session: {str(e)}",
+        )
+
+
+@router.post("/webhook")
+async def stripe_webhook(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Handle Stripe webhook events.
+
+    This endpoint is called by Stripe when subscription events occur.
+    """
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+
+    if not sig_header:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing stripe-signature header",
+        )
+
+    try:
+        event = verify_webhook_signature(payload, sig_header)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+    # Handle the event
+    event_type = event["type"]
+    data = event["data"]["object"]
+
+    if event_type == "customer.subscription.created":
+        await handle_subscription_created(data, db)
+    elif event_type == "customer.subscription.updated":
+        await handle_subscription_updated(data, db)
+    elif event_type == "customer.subscription.deleted":
+        await handle_subscription_deleted(data, db)
+    elif event_type == "invoice.paid":
+        await handle_invoice_paid(data, db)
+    else:
+        print(f"Unhandled event type: {event_type}")
+
+    return {"status": "ok"}

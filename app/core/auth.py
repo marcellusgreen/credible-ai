@@ -60,18 +60,22 @@ def get_api_key_prefix(api_key: str) -> str:
 
 TIER_CREDITS = {
     "free": 1000,
+    "pro": -1,  # Unlimited
+    "enterprise": -1,  # Unlimited
+    # Legacy tiers (keep for backward compatibility)
     "starter": 3000,
     "growth": 15000,
     "scale": 50000,
-    "enterprise": 1000000,
 }
 
 TIER_RATE_LIMITS = {
     "free": settings.rate_limit_free,
+    "pro": settings.rate_limit_pro,
+    "enterprise": settings.rate_limit_enterprise,
+    # Legacy tiers
     "starter": settings.rate_limit_starter,
     "growth": settings.rate_limit_growth,
     "scale": settings.rate_limit_scale,
-    "enterprise": settings.rate_limit_enterprise,
 }
 
 
