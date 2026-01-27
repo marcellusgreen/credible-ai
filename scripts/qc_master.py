@@ -857,6 +857,58 @@ class QCMaster:
                 sample_ids=[f"{r[0]}: {r[1]}" for r in rows[:5]]
             )
 
+        # 5.6 Debt instruments missing document links (indenture/credit agreement)
+        # Notes and bonds should have indentures, credit facilities should have credit agreements
+        result = await self.db.execute(text('''
+            SELECT c.ticker, di.name, di.instrument_type
+            FROM debt_instruments di
+            JOIN entities e ON e.id = di.issuer_id
+            JOIN companies c ON c.id = e.company_id
+            LEFT JOIN debt_instrument_documents did ON did.debt_instrument_id = di.id
+            WHERE di.is_active = true
+            AND did.id IS NULL
+            AND di.instrument_type IN (
+                'senior_notes', 'senior_secured_notes', 'senior_unsecured_notes',
+                'convertible_notes', 'subordinated_notes', 'debentures',
+                'revolver', 'term_loan_a', 'term_loan_b', 'term_loan'
+            )
+        '''))
+        rows = result.fetchall()
+        if rows:
+            self.add_issue(
+                severity='warning',
+                category='completeness',
+                table='debt_instrument_documents',
+                check_name='missing_document_link',
+                description='Debt instruments without indenture/credit agreement link',
+                affected_count=len(rows),
+                sample_ids=[f"{r[0]}: {r[1]}" for r in rows[:5]]
+            )
+
+        # 5.7 Document coverage by principal (warning if <70% coverage)
+        result = await self.db.execute(text('''
+            SELECT
+                SUM(CASE WHEN did.id IS NOT NULL THEN di.principal ELSE 0 END) as covered,
+                SUM(di.principal) as total
+            FROM debt_instruments di
+            LEFT JOIN debt_instrument_documents did ON did.debt_instrument_id = di.id
+            WHERE di.is_active = true
+            AND di.principal IS NOT NULL
+        '''))
+        row = result.fetchone()
+        if row and row.total and row.total > 0:
+            coverage_pct = (row.covered or 0) / row.total * 100
+            if coverage_pct < 70:
+                self.add_issue(
+                    severity='warning',
+                    category='completeness',
+                    table='debt_instrument_documents',
+                    check_name='low_document_coverage',
+                    description=f'Document coverage by principal is {coverage_pct:.1f}% (target: >70%)',
+                    affected_count=1,
+                    sample_ids=[f"Covered: ${(row.covered or 0)/100/1e9:.1f}B of ${row.total/100/1e9:.1f}B"]
+                )
+
     # =========================================================================
     # RUN ALL CHECKS
     # =========================================================================
