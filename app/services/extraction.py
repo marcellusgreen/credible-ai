@@ -14,10 +14,13 @@ from uuid import UUID, uuid4
 import anthropic
 import httpx
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Company, CompanyCache, CompanyMetrics, DebtInstrument, Entity, Guarantee, OwnershipLink
+from app.models import (
+    Company, CompanyCache, CompanyFinancials, CompanyMetrics, Collateral,
+    DebtInstrument, DocumentSection, Entity, Guarantee, OwnershipLink
+)
 
 
 def clean_filing_html(content: str) -> str:
@@ -477,6 +480,55 @@ class SecApiClient:
             print(f"  [FAIL] SEC-API Exhibit 21 fetch failed: {e}")
             return ""
 
+    def get_historical_indentures(
+        self,
+        ticker: str,
+        cik: str = None,
+        max_filings: int = 100
+    ) -> list[dict]:
+        """
+        Specifically fetch historical filings containing EX-4 exhibits (indentures).
+
+        EX-4 exhibits contain base indentures, supplemental indentures, and note terms.
+        These are typically filed with 8-Ks when bonds are issued.
+        """
+        if not self.query_api:
+            return []
+
+        # Query for filings with EX-4 type exhibits
+        # SEC API doesn't support wildcards in field queries, so use OR for common types
+        # Most indentures are filed as EX-4.1 through EX-4.10
+        ex4_types = ' OR '.join([f'documentFormatFiles.type:"EX-4.{i}"' for i in range(1, 11)])
+        query = {
+            "query": {
+                "query_string": {
+                    "query": f'ticker:{ticker} AND ({ex4_types})'
+                }
+            },
+            "from": "0",
+            "size": str(max_filings),
+            "sort": [{"filedAt": {"order": "desc"}}]
+        }
+
+        try:
+            response = self.query_api.get_filings(query)
+            filings = response.get("filings", [])
+
+            # If no results by ticker and CIK provided, try by CIK
+            if not filings and cik:
+                cik_num = cik.lstrip("0")
+                query["query"]["query_string"]["query"] = f'cik:{cik_num} AND ({ex4_types})'
+                response = self.query_api.get_filings(query)
+                filings = response.get("filings", [])
+
+            if filings:
+                print(f"    Found {len(filings)} historical filings with EX-4 exhibits")
+
+            return filings
+        except Exception as e:
+            print(f"  [FAIL] SEC-API indenture query failed: {e}")
+            return []
+
     async def get_all_relevant_filings(
         self,
         ticker: str,
@@ -508,10 +560,14 @@ class SecApiClient:
             cik=cik
         )
 
-        # Combine: 10-K first, then others (deduplicate by accessionNo)
+        # Also fetch historical filings with EX-4 exhibits (indentures)
+        # These may be older than the 30 recent 8-Ks, but are critical for bond-to-document linking
+        indenture_filings = self.get_historical_indentures(ticker, cik=cik, max_filings=100)
+
+        # Combine: 10-K first, then others, then indenture filings (deduplicate by accessionNo)
         seen = set()
         filings = []
-        for f in ten_k_filings + other_filings:
+        for f in ten_k_filings + other_filings + indenture_filings:
             acc = f.get("accessionNo", f.get("filedAt"))
             if acc not in seen:
                 seen.add(acc)
@@ -1016,6 +1072,506 @@ def estimate_issue_date(
     estimated = maturity_date - relativedelta(years=tenor_years)
 
     return estimated
+
+
+# =============================================================================
+# IDEMPOTENT DATA CHECKS
+# =============================================================================
+
+
+async def check_existing_data(db: AsyncSession, ticker: str) -> dict:
+    """
+    Check what data already exists for a company.
+
+    Returns dict with:
+        - exists: bool - Whether the company exists
+        - company_id: UUID - The company ID if exists
+        - entity_count: int - Number of entities
+        - debt_count: int - Number of debt instruments
+        - has_financials: bool - Whether financials exist
+        - has_hierarchy: bool - Whether ownership links exist
+        - guarantee_count: int - Number of guarantees
+        - collateral_count: int - Number of collateral records
+        - document_section_count: int - Number of document sections
+    """
+    ticker = ticker.upper()
+
+    # Check if company exists
+    result = await db.execute(
+        select(Company).where(Company.ticker == ticker)
+    )
+    company = result.scalar_one_or_none()
+
+    if not company:
+        return {'exists': False}
+
+    company_id = company.id
+
+    # Count entities
+    result = await db.execute(
+        select(func.count()).select_from(Entity).where(Entity.company_id == company_id)
+    )
+    entity_count = result.scalar() or 0
+
+    # Count debt instruments
+    result = await db.execute(
+        select(func.count()).select_from(DebtInstrument).where(DebtInstrument.company_id == company_id)
+    )
+    debt_count = result.scalar() or 0
+
+    # Check financials
+    result = await db.execute(
+        select(func.count()).select_from(CompanyFinancials).where(CompanyFinancials.company_id == company_id)
+    )
+    financials_count = result.scalar() or 0
+
+    # Check ownership links (hierarchy)
+    result = await db.execute(
+        select(func.count()).select_from(OwnershipLink).where(
+            OwnershipLink.parent_entity_id.in_(
+                select(Entity.id).where(Entity.company_id == company_id)
+            )
+        )
+    )
+    ownership_link_count = result.scalar() or 0
+
+    # Count guarantees
+    result = await db.execute(
+        select(func.count()).select_from(Guarantee)
+        .join(DebtInstrument)
+        .where(DebtInstrument.company_id == company_id)
+    )
+    guarantee_count = result.scalar() or 0
+
+    # Count collateral
+    result = await db.execute(
+        select(func.count()).select_from(Collateral)
+        .join(DebtInstrument)
+        .where(DebtInstrument.company_id == company_id)
+    )
+    collateral_count = result.scalar() or 0
+
+    # Count document sections
+    result = await db.execute(
+        select(func.count()).select_from(DocumentSection).where(DocumentSection.company_id == company_id)
+    )
+    document_section_count = result.scalar() or 0
+
+    # Get extraction status from cache
+    result = await db.execute(
+        select(CompanyCache).where(CompanyCache.company_id == company_id)
+    )
+    cache = result.scalar_one_or_none()
+    extraction_status = cache.extraction_status if cache else None
+
+    return {
+        'exists': True,
+        'company_id': company_id,
+        'entity_count': entity_count,
+        'debt_count': debt_count,
+        'has_financials': financials_count > 0,
+        'financials_count': financials_count,
+        'has_hierarchy': ownership_link_count > 0,
+        'ownership_link_count': ownership_link_count,
+        'guarantee_count': guarantee_count,
+        'collateral_count': collateral_count,
+        'document_section_count': document_section_count,
+        'extraction_status': extraction_status or {},
+    }
+
+
+async def update_extraction_status(
+    db: AsyncSession,
+    company_id: UUID,
+    step: str,
+    status: str,
+    details: str = None,
+    metadata: dict = None,
+) -> None:
+    """
+    Update extraction status for a specific step.
+
+    Args:
+        db: Database session
+        company_id: Company UUID
+        step: Step name (core, document_sections, financials, hierarchy, guarantees, collateral)
+        status: Status (success, no_data, error)
+        details: Optional details about the result
+        metadata: Optional additional metadata (e.g., {"latest_quarter": "2025Q3"})
+    """
+    from datetime import datetime
+
+    # Get or create cache record
+    result = await db.execute(
+        select(CompanyCache).where(CompanyCache.company_id == company_id)
+    )
+    cache = result.scalar_one_or_none()
+
+    if not cache:
+        # Cache doesn't exist yet, will be created by save/merge functions
+        return
+
+    # Update extraction_status JSONB field
+    current_status = cache.extraction_status or {}
+    current_status[step] = {
+        'status': status,
+        'attempted_at': datetime.utcnow().isoformat(),
+    }
+    if details:
+        current_status[step]['details'] = details
+    if metadata:
+        current_status[step].update(metadata)
+
+    cache.extraction_status = current_status
+    await db.commit()
+
+
+async def merge_extraction_to_db(
+    db: AsyncSession,
+    extraction: ExtractionResult,
+    ticker: str,
+    cik: Optional[str] = None,
+    filing_date: Optional[date] = None,
+    update_existing: bool = True,
+) -> tuple[UUID, dict]:
+    """
+    Merge extracted data with existing database records (idempotent).
+
+    Unlike save_extraction_to_db which replaces all data, this function:
+    - Adds NEW entities not already in DB
+    - Adds NEW debt instruments not already in DB
+    - Optionally UPDATES existing entities/debt with new field values
+    - Updates company metadata (name, sector)
+
+    Args:
+        db: Database session
+        extraction: Extracted data
+        ticker: Stock ticker
+        cik: SEC CIK number
+        filing_date: Filing date for cache
+        update_existing: If True, update fields on existing records (default True)
+
+    Returns:
+        Tuple of (company_id, stats_dict)
+    """
+    ticker = ticker.upper()
+    stats = {
+        'entities_added': 0,
+        'entities_updated': 0,
+        'debt_added': 0,
+        'debt_updated': 0,
+        'guarantees_added': 0,
+    }
+
+    # 1. Get or create company
+    result = await db.execute(
+        select(Company).where(Company.ticker == ticker)
+    )
+    company = result.scalar_one_or_none()
+
+    if company:
+        # Update company metadata
+        company.name = extraction.company_name
+        company.sector = extraction.sector
+        if cik:
+            company.cik = cik
+    else:
+        company = Company(
+            id=uuid4(),
+            ticker=ticker,
+            name=extraction.company_name,
+            sector=extraction.sector,
+            cik=cik,
+        )
+        db.add(company)
+
+    await db.flush()
+    company_id = company.id
+
+    # 2. Get existing entities (for matching and updating)
+    result = await db.execute(
+        select(Entity).where(Entity.company_id == company_id)
+    )
+    existing_entities = result.scalars().all()
+
+    # Build lookups: normalized name -> entity object
+    existing_entity_by_name = {}
+    for e in existing_entities:
+        existing_entity_by_name[e.name.lower().strip()] = e
+
+    entity_name_to_id = {e.name: e.id for e in existing_entities}
+
+    # 3. Process entities: add new OR update existing
+    for ext_entity in extraction.entities:
+        normalized_name = ext_entity.name.lower().strip()
+        existing_entity = existing_entity_by_name.get(normalized_name)
+
+        # Determine structure tier
+        tier = 3
+        if ext_entity.entity_type == "holdco":
+            tier = 1
+        elif ext_entity.entity_type in ("opco", "finco"):
+            tier = 2
+        elif ext_entity.entity_type == "subsidiary":
+            tier = 3
+        elif ext_entity.entity_type in ("spv", "vie"):
+            tier = 4
+
+        owners = ext_entity.get_owners()
+        primary_ownership_pct = owners[0].ownership_pct if owners else 100.0
+
+        if existing_entity:
+            # UPDATE existing entity if update_existing is True
+            if update_existing:
+                updated = False
+
+                # Update fields if they have new non-null values
+                if ext_entity.jurisdiction and ext_entity.jurisdiction != existing_entity.jurisdiction:
+                    existing_entity.jurisdiction = ext_entity.jurisdiction
+                    updated = True
+                if ext_entity.formation_type and ext_entity.formation_type != existing_entity.formation_type:
+                    existing_entity.formation_type = ext_entity.formation_type
+                    updated = True
+                if ext_entity.entity_type and ext_entity.entity_type != existing_entity.entity_type:
+                    existing_entity.entity_type = ext_entity.entity_type
+                    existing_entity.structure_tier = tier
+                    updated = True
+                if ext_entity.is_guarantor and not existing_entity.is_guarantor:
+                    existing_entity.is_guarantor = True
+                    updated = True
+                if ext_entity.is_borrower and not existing_entity.is_borrower:
+                    existing_entity.is_borrower = True
+                    updated = True
+                if ext_entity.is_unrestricted and not existing_entity.is_unrestricted:
+                    existing_entity.is_unrestricted = True
+                    updated = True
+                if ext_entity.is_vie and not existing_entity.is_vie:
+                    existing_entity.is_vie = True
+                    updated = True
+
+                if updated:
+                    stats['entities_updated'] += 1
+
+            entity_name_to_id[ext_entity.name] = existing_entity.id
+        else:
+            # ADD new entity
+            entity_id = uuid4()
+            entity_name_to_id[ext_entity.name] = entity_id
+
+            entity = Entity(
+                id=entity_id,
+                company_id=company_id,
+                name=ext_entity.name,
+                slug=slugify(ext_entity.name),
+                entity_type=ext_entity.entity_type,
+                jurisdiction=ext_entity.jurisdiction,
+                formation_type=ext_entity.formation_type,
+                structure_tier=tier,
+                ownership_pct=primary_ownership_pct,
+                is_guarantor=ext_entity.is_guarantor,
+                is_borrower=ext_entity.is_borrower,
+                is_restricted=ext_entity.is_restricted,
+                is_unrestricted=ext_entity.is_unrestricted,
+                is_material=ext_entity.is_material,
+                is_domestic=ext_entity.is_domestic,
+                is_vie=ext_entity.is_vie,
+                vie_primary_beneficiary=ext_entity.vie_primary_beneficiary,
+                consolidation_method=ext_entity.consolidation_method,
+            )
+            db.add(entity)
+            stats['entities_added'] += 1
+
+    await db.flush()
+
+    # 4. Set parent relationships for entities (new and existing without parents)
+    for ext_entity in extraction.entities:
+        entity_id = entity_name_to_id.get(ext_entity.name)
+        if not entity_id:
+            continue
+
+        owners = ext_entity.get_owners()
+        if not owners:
+            continue
+
+        primary_owner = owners[0]
+        parent_id = entity_name_to_id.get(primary_owner.parent_name)
+        if parent_id:
+            result = await db.execute(select(Entity).where(Entity.id == entity_id))
+            entity = result.scalar_one_or_none()
+            if entity and entity.parent_id != parent_id:
+                entity.parent_id = parent_id
+
+    await db.flush()
+
+    # 5. Get existing debt instruments
+    result = await db.execute(
+        select(DebtInstrument).where(DebtInstrument.company_id == company_id)
+    )
+    existing_debt = result.scalars().all()
+
+    existing_debt_by_name = {}
+    for d in existing_debt:
+        existing_debt_by_name[d.name.lower().strip()] = d
+
+    used_debt_slugs = {d.slug for d in existing_debt if d.slug}
+
+    # 6. Process debt instruments: add new OR update existing
+    for ext_debt in extraction.debt_instruments:
+        normalized_name = ext_debt.name.lower().strip()
+        existing_debt_inst = existing_debt_by_name.get(normalized_name)
+
+        parsed_issue_date = parse_date(ext_debt.issue_date)
+        parsed_maturity_date = parse_date(ext_debt.maturity_date)
+        issue_date_estimated = False
+
+        if not parsed_issue_date and parsed_maturity_date:
+            parsed_issue_date = estimate_issue_date(
+                parsed_maturity_date,
+                ext_debt.name,
+                ext_debt.instrument_type,
+            )
+            issue_date_estimated = True
+
+        if existing_debt_inst:
+            # UPDATE existing debt instrument if update_existing is True
+            if update_existing:
+                updated = False
+
+                # Update outstanding amount if newer/different
+                new_outstanding = ext_debt.outstanding or ext_debt.principal
+                if new_outstanding and new_outstanding != existing_debt_inst.outstanding:
+                    existing_debt_inst.outstanding = new_outstanding
+                    updated = True
+
+                # Update interest rate if provided
+                if ext_debt.interest_rate and ext_debt.interest_rate != existing_debt_inst.interest_rate:
+                    existing_debt_inst.interest_rate = ext_debt.interest_rate
+                    updated = True
+
+                # Update spread if provided
+                if ext_debt.spread_bps and ext_debt.spread_bps != existing_debt_inst.spread_bps:
+                    existing_debt_inst.spread_bps = ext_debt.spread_bps
+                    updated = True
+
+                # Update maturity date if provided and different
+                if parsed_maturity_date and parsed_maturity_date != existing_debt_inst.maturity_date:
+                    existing_debt_inst.maturity_date = parsed_maturity_date
+                    updated = True
+
+                # Update issue date if not estimated and different
+                if parsed_issue_date and not issue_date_estimated:
+                    if parsed_issue_date != existing_debt_inst.issue_date:
+                        existing_debt_inst.issue_date = parsed_issue_date
+                        existing_debt_inst.issue_date_estimated = False
+                        updated = True
+
+                # Update benchmark if provided
+                if ext_debt.benchmark and ext_debt.benchmark != existing_debt_inst.benchmark:
+                    existing_debt_inst.benchmark = ext_debt.benchmark
+                    updated = True
+
+                # Update rate_type if provided
+                if ext_debt.rate_type and ext_debt.rate_type != existing_debt_inst.rate_type:
+                    existing_debt_inst.rate_type = ext_debt.rate_type
+                    updated = True
+
+                # Update seniority if different
+                if ext_debt.seniority and ext_debt.seniority != existing_debt_inst.seniority:
+                    existing_debt_inst.seniority = ext_debt.seniority
+                    updated = True
+
+                # Update security_type if provided
+                if ext_debt.security_type and ext_debt.security_type != existing_debt_inst.security_type:
+                    existing_debt_inst.security_type = ext_debt.security_type
+                    updated = True
+
+                if updated:
+                    stats['debt_updated'] += 1
+
+            # Add any new guarantees for existing debt
+            for guarantor_name in ext_debt.guarantor_names:
+                guarantor_id = entity_name_to_id.get(guarantor_name)
+                if guarantor_id:
+                    # Check if guarantee already exists
+                    existing_guarantee = await db.execute(
+                        select(Guarantee).where(
+                            Guarantee.debt_instrument_id == existing_debt_inst.id,
+                            Guarantee.guarantor_id == guarantor_id
+                        )
+                    )
+                    if not existing_guarantee.scalar_one_or_none():
+                        guarantee = Guarantee(
+                            id=uuid4(),
+                            debt_instrument_id=existing_debt_inst.id,
+                            guarantor_id=guarantor_id,
+                            guarantee_type="full",
+                        )
+                        db.add(guarantee)
+                        stats['guarantees_added'] += 1
+        else:
+            # ADD new debt instrument
+            issuer_id = entity_name_to_id.get(ext_debt.issuer_name)
+            if not issuer_id:
+                continue
+
+            # Generate unique slug
+            base_slug = slugify(ext_debt.name)
+            slug = base_slug
+            counter = 2
+            while slug in used_debt_slugs:
+                slug = f"{base_slug}-{counter}"
+                counter += 1
+            used_debt_slugs.add(slug)
+
+            debt_id = uuid4()
+
+            debt = DebtInstrument(
+                id=debt_id,
+                company_id=company_id,
+                issuer_id=issuer_id,
+                name=ext_debt.name,
+                slug=slug,
+                instrument_type=ext_debt.instrument_type,
+                seniority=ext_debt.seniority,
+                security_type=ext_debt.security_type,
+                commitment=ext_debt.commitment,
+                principal=ext_debt.principal,
+                outstanding=ext_debt.outstanding or ext_debt.principal,
+                currency=ext_debt.currency,
+                rate_type=ext_debt.rate_type,
+                interest_rate=ext_debt.interest_rate,
+                spread_bps=ext_debt.spread_bps,
+                benchmark=ext_debt.benchmark,
+                floor_bps=ext_debt.floor_bps,
+                issue_date=parsed_issue_date,
+                issue_date_estimated=issue_date_estimated,
+                maturity_date=parsed_maturity_date,
+                attributes=ext_debt.attributes,
+            )
+            db.add(debt)
+            stats['debt_added'] += 1
+
+            # Create guarantees for new debt
+            for guarantor_name in ext_debt.guarantor_names:
+                guarantor_id = entity_name_to_id.get(guarantor_name)
+                if guarantor_id:
+                    guarantee = Guarantee(
+                        id=uuid4(),
+                        debt_instrument_id=debt_id,
+                        guarantor_id=guarantor_id,
+                        guarantee_type="full",
+                    )
+                    db.add(guarantee)
+                    stats['guarantees_added'] += 1
+
+    await db.flush()
+
+    # 7. Refresh cache/metrics
+    await refresh_company_cache(db, company_id, ticker, filing_date)
+
+    await db.commit()
+
+    return company_id, stats
 
 
 async def save_extraction_to_db(

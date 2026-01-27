@@ -4,6 +4,15 @@ Context for AI assistants working on the DebtStack.ai codebase.
 
 > **IMPORTANT**: Before starting work, read `WORKPLAN.md` for current priorities, active tasks, and session history. Update the session log at the end of each session.
 
+## What's Next
+
+**Immediate**: Stripe billing integration - connect payment processing so users can upgrade to Pro tier.
+
+**Then**:
+1. Finnhub pricing expansion (30 → 200+ bonds)
+2. SDK publication to PyPI
+3. Mintlify docs deployment to docs.debtstack.ai
+
 ## Project Overview
 
 DebtStack.ai is a credit data API for AI agents. It extracts corporate structure and debt information from SEC filings, then serves pre-computed responses via a FastAPI REST API.
@@ -12,9 +21,13 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 ## Current Status (January 2026)
 
-**Database**: 189 companies | 5,979 entities | 2,651 debt instruments | 30 priced bonds | 6,500+ document sections | 4,881 guarantees | 230 collateral records
+**Database**: 201 companies | 5,374 entities | 2,485 debt instruments | 30 priced bonds | 6,500+ document sections | 4,881 guarantees | 230 collateral records
 
 **Document Coverage**: 100% (2,560 linked / 2,557 linkable instruments)
+
+**Ownership Coverage**: 199/201 companies have identified root entity (`is_root=true`); 862 explicit parent-child relationships
+
+**Data Quality**: QC audit passing - 0 critical, 0 errors, 4 warnings (2026-01-26)
 
 **Deployment**: Railway with Neon PostgreSQL + Upstash Redis
 - Live at: `https://credible-ai-production.up.railway.app`
@@ -59,7 +72,9 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 | `app/services/qa_agent.py` | 5-check QA verification |
 | `app/services/tiered_extraction.py` | LLM clients and prompts |
 | `app/services/extraction.py` | SEC clients, filing processing |
+| `app/services/extraction_utils.py` | Shared utilities (filing cleaning, debt sections, validation) |
 | `app/services/financial_extraction.py` | Financial statements with TTM support |
+| `scripts/script_utils.py` | Shared CLI utilities (DB sessions, parsers, progress) |
 | `app/models/schema.py` | SQLAlchemy models (includes User, UserCredits, UsageLog) |
 | `app/core/config.py` | Environment configuration |
 | `app/core/database.py` | Database connection |
@@ -68,8 +83,12 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 
 **Core Tables**:
 - `companies`: Master company data (ticker, name, CIK, sector)
-- `entities`: Corporate entities with hierarchy (`parent_id`, VIE tracking, direct/indirect ownership)
-- `ownership_links`: Complex ownership (JVs, partial ownership, direct/indirect relationships)
+- `entities`: Corporate entities with hierarchy (`parent_id`, `is_root`, VIE tracking)
+  - `is_root=true`: Ultimate parent company
+  - `is_root=false` + `parent_id IS NOT NULL`: Has known parent
+  - `is_root=false` + `parent_id IS NULL`: Orphan (parent unknown)
+- `ownership_links`: Complex ownership (JVs, partial ownership)
+  - `ownership_type`: "direct", "indirect", or NULL (unknown - documents say "subsidiary" without specifying)
 - `debt_instruments`: All debt with terms, linked via `issuer_id`
 - `guarantees`: Links debt to guarantor entities
 - `collateral`: Asset-backed collateral for secured debt (type, description, priority)
@@ -83,7 +102,7 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 - `usage_log`: API usage tracking
 
 **Cache Tables**:
-- `company_cache`: Pre-computed JSON responses
+- `company_cache`: Pre-computed JSON responses + `extraction_status` (JSONB tracking step attempts)
 - `company_metrics`: Computed credit metrics
 
 ## API Endpoints
@@ -132,33 +151,92 @@ All require `X-API-Key` header.
 4. **Name normalization**: Case-insensitive, punctuation-normalized
 5. **Robust JSON parsing**: `parse_json_robust()` handles LLM output issues
 6. **Estimated data must be flagged**: When data cannot be extracted from source documents after repeated attempts and must be estimated/inferred, it MUST be clearly marked as estimated. Users should always know when they're seeing inferred data vs. extracted data. Example: `issue_date_estimated: true` indicates the date was inferred from maturity date and typical bond tenors, not extracted from SEC filings.
+7. **ALWAYS detect scale from source document**: SEC filings state their scale explicitly (e.g., "in millions", "in thousands", "$000"). NEVER assume scale - always extract it from the filing header. The `detect_filing_scale()` function in `financial_extraction.py` handles this. **Critical lesson**: When fixing apparent scale errors, ALWAYS verify against the source SEC filing first. Do not blindly multiply/divide - the extraction may be correct and the comparison data may be stale or from a different source.
 
-## Running Extractions
+## Adding a New Company
+
+**One command** to add a complete company with all data:
 
 ```bash
-# Single company with QA
-python scripts/extract_iterative.py --ticker AAPL --cik 0000320193 --save-db
+# Get the company's CIK from SEC EDGAR first:
+# https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=COMPANY+NAME
 
-# Batch extraction
-python scripts/batch_index.py --phase 1
+# Run complete extraction pipeline
+python scripts/extract_iterative.py --ticker XXXX --cik 0001234567 --save-db
+```
 
-# Extract financials (single quarter)
-python scripts/extract_financials.py --ticker CHTR --save-db
+This single command runs all 9 steps:
 
-# Extract TTM financials (4 quarters - recommended for leverage ratios)
+| Step | What It Does | Data Created |
+|------|--------------|--------------|
+| 1 | Download SEC filings | Cached for reuse |
+| 2 | Core extraction with QA | Company, Entities, Debt Instruments |
+| 3 | Save to database | Core records |
+| 4 | Document sections | Searchable SEC filing sections |
+| 5 | TTM financials | 4 quarters of financial data |
+| 6 | Ownership hierarchy | parent_id, is_root relationships |
+| 7 | Guarantees | Guarantee relationships |
+| 8 | Collateral | Collateral for secured debt |
+| 9 | Metrics + QC | Leverage ratios, maturity profile, validation |
+
+**Options:**
+```bash
+--core-only        # Fastest: only entities + debt (skip financials, enrichment)
+--skip-financials  # Skip TTM financial extraction
+--skip-enrichment  # Skip guarantees, collateral, hierarchy
+--threshold 90     # QA score threshold (default: 85%)
+--force            # Re-run all steps (ignore skip conditions)
+--all              # Process all companies in database
+--resume           # Resume batch from last processed company
+--limit N          # Limit batch to N companies
+```
+
+**Idempotent Extraction:**
+
+The script is safe to re-run on existing companies. It tracks extraction status in `company_cache.extraction_status` (JSONB):
+
+```json
+{
+  "hierarchy": {"status": "no_data", "attempted_at": "2026-01-26T10:30:00", "details": "No Exhibit 21 found"},
+  "financials": {"status": "success", "latest_quarter": "2025Q3", "attempted_at": "..."}
+}
+```
+
+**Status values:**
+- `success` - Step completed with data (includes metadata like `latest_quarter`)
+- `no_data` - Source data unavailable (won't retry unless `--force`)
+- `error` - Step failed (will retry on next run)
+
+**Smart skip logic:**
+- Financials: Checks if new quarter available (~60 days after quarter end)
+- Hierarchy: Skips if no Exhibit 21 was found previously
+- Guarantees/Collateral: Skips if already extracted or source unavailable
+
+**Estimated time**: 2-5 minutes per company
+**Estimated cost**: ~$0.03-0.08 per company
+
+### Manual/Individual Steps
+
+For debugging or re-running specific steps:
+
+```bash
+# Financials only
 python scripts/extract_financials.py --ticker CHTR --ttm --save-db
 
-# Update pricing
-python scripts/update_pricing.py --ticker AAPL
+# Guarantees only
+python scripts/extract_guarantees.py --ticker CHTR --save-db
 
-# Recompute metrics (after extracting financials)
-python scripts/recompute_metrics.py --ticker CHTR
-
-# Extract ownership hierarchy from Exhibit 21 indentation
+# Ownership hierarchy only
 python scripts/extract_exhibit21_hierarchy.py --ticker CHTR --save-db
 
-# Batch extract ownership hierarchy for all companies
-python scripts/extract_exhibit21_hierarchy.py --all --save-db
+# Metrics recompute
+python scripts/recompute_metrics.py --ticker CHTR
+
+# QC check
+python scripts/qc_master.py --ticker CHTR --verbose
+
+# Pricing update (requires Finnhub)
+python scripts/update_pricing.py --ticker CHTR
 ```
 
 ### Document-to-Instrument Linking
@@ -185,11 +263,35 @@ python scripts/mark_no_doc_expected.py --execute       # Commercial paper, bank 
 
 ### Ownership Hierarchy Extraction
 
-Corporate ownership hierarchy is extracted from SEC Exhibit 21 filings by parsing HTML indentation:
-- SEC convention: "Indentation reflects the principal parent of each subsidiary"
-- Level 0 = root company, Level 1 = direct subsidiary, Level 2 = grandchild, etc.
-- Stored in `entities.parent_id` and `ownership_links.ownership_type` (direct/indirect)
-- Script: `scripts/extract_exhibit21_hierarchy.py`
+Corporate ownership hierarchy is extracted from multiple sources:
+
+**From Exhibit 21 (initial extraction):**
+```bash
+python scripts/extract_exhibit21_hierarchy.py --ticker CHTR --save-db
+python scripts/extract_exhibit21_hierarchy.py --all --save-db
+```
+
+**From Indentures/Credit Agreements (explicit relationships only):**
+```bash
+# Extract explicit parent-child relationships from SEC filings
+python scripts/fix_ownership_hierarchy.py --ticker CHTR           # Dry run
+python scripts/fix_ownership_hierarchy.py --ticker CHTR --save-db # Save to DB
+python scripts/fix_ownership_hierarchy.py --all --save-db         # All companies
+```
+
+**Key fields:**
+- `entities.is_root`: `true` = ultimate parent company, `false` = subsidiary/orphan
+- `entities.parent_id`: UUID of parent entity, or NULL if root/unknown
+- `ownership_links.ownership_type`: "direct", "indirect", or NULL (unknown)
+
+**Entity states:**
+| `is_root` | `parent_id` | Meaning |
+|-----------|-------------|---------|
+| `true` | `NULL` | Ultimate parent company |
+| `false` | UUID | Has known parent |
+| `false` | `NULL` | Orphan (parent unknown from SEC filings) |
+
+**Note:** SEC filings rarely contain explicit intermediate ownership chains. Documents typically say entities are "subsidiaries of the Company" without specifying intermediate holding companies. The extraction only captures what's explicitly documented - no inferences.
 
 ### TTM (Trailing Twelve Months) Extraction
 
@@ -198,6 +300,144 @@ For accurate leverage ratios, use `--ttm` to extract 4 quarters of financial dat
 - Uses `periodOfReport` from SEC API to determine fiscal quarter
 - TTM EBITDA = Sum of 4 quarters (more accurate than annualizing single quarter)
 - If fewer than 4 quarters available, annualizes what's available
+
+### Financial Data Quality Control
+
+Run QC audit to validate financial data accuracy:
+
+```bash
+# Full audit - checks for scale errors, extraction failures
+python scripts/qc_financials.py --verbose
+
+# Check single company
+python scripts/qc_financials.py --ticker AAPL
+
+# Spot-check random companies
+python scripts/qc_financials.py --sample 10
+
+# Fix QC issues (delete impossible records, report issues)
+python scripts/fix_qc_financials.py              # Dry run
+python scripts/fix_qc_financials.py --save-db    # Apply fixes
+```
+
+**QC Checks:**
+1. **Sanity checks** (no source doc needed): Revenue > $1T, EBITDA > Revenue, Debt > 10x Assets
+2. **Source validation**: Re-reads scale from SEC filing header, compares stored vs. source values
+
+**Current Status (2026-01-25):** 0 critical, 14 errors (all extraction failures, documented)
+
+### Covenant Relationship Extraction
+
+Extract additional relationship data from indentures (796) and credit agreements (1,720):
+
+```bash
+# Single company (dry run)
+python scripts/extract_covenant_relationships.py --ticker CHTR
+
+# Single company (save to database)
+python scripts/extract_covenant_relationships.py --ticker CHTR --save-db
+
+# Batch all companies
+python scripts/extract_covenant_relationships.py --all --save-db
+
+# Audit extraction results
+python scripts/audit_covenant_relationships.py --verbose
+```
+
+**Data Extracted:**
+- **Unrestricted subsidiaries**: Updates `entities.is_unrestricted` flag
+- **Guarantee conditions**: Adds release/add triggers to `guarantees.conditions` (JSONB)
+- **Cross-default links**: Creates records in `cross_default_links` table
+- **Non-guarantor disclosure**: Adds EBITDA/asset percentages to `company_metrics.non_guarantor_disclosure`
+
+## Bond Pricing (Finnhub Integration)
+
+Bond pricing data comes from Finnhub, which sources from FINRA TRACE (same data as Bloomberg/Reuters).
+
+### Data Flow
+
+```
+Finnhub API (FINRA TRACE)
+    ↓
+scripts/update_pricing.py (daily batch)
+    ↓
+bond_pricing table (current prices)
+    ↓
+bond_pricing_history table (daily snapshots)
+```
+
+### Finnhub API Endpoints
+
+| Endpoint | Purpose | Key Fields |
+|----------|---------|------------|
+| `GET /bond/price?isin={ISIN}` | Current pricing | close, yield, volume, timestamp |
+| `GET /bond/profile?isin={ISIN}` | Bond characteristics | FIGI, callable, coupon_type |
+
+**Note:** Finnhub requires ISIN, not CUSIP. Convert US CUSIPs by adding "US" prefix + check digit.
+
+### Data Mapping
+
+| Finnhub Field | DebtStack Column | Notes |
+|---------------|------------------|-------|
+| `close` | `bond_pricing.last_price` | Clean price as % of par (e.g., 94.25) |
+| `yield` | `bond_pricing.ytm_bps` | Convert to basis points (6.82% → 682) |
+| `volume` | `bond_pricing.last_trade_volume` | Face value in cents |
+| `t` (timestamp) | `bond_pricing.last_trade_date` | Unix → datetime |
+| `"Finnhub"` | `bond_pricing.price_source` | Track data source |
+
+### Tables
+
+**`bond_pricing`** - Current prices (one row per instrument):
+- `last_price`: Clean price as % of par
+- `ytm_bps`: Yield to maturity in basis points
+- `spread_to_treasury_bps`: Spread over benchmark treasury
+- `staleness_days`: Days since last trade
+- `price_source`: "TRACE", "Finnhub", "estimated"
+
+**`bond_pricing_history`** - Historical daily snapshots:
+- `price_date`: Date of snapshot
+- `price`, `ytm_bps`, `spread_bps`, `volume`
+- Unique constraint on (debt_instrument_id, price_date)
+
+### API Exposure
+
+```bash
+# Current prices (from bond_pricing)
+GET /v1/bonds?has_pricing=true&fields=name,cusip,pricing
+GET /v1/pricing?cusip=76825DAJ7
+
+# Historical prices (from bond_pricing_history)
+GET /v1/pricing/history?cusip=76825DAJ7&from=2025-01-01&to=2026-01-27
+```
+
+### Pricing Response Format
+
+```json
+{
+  "name": "8.000% Senior Notes due 2027",
+  "cusip": "76825DAJ7",
+  "pricing": {
+    "price": 94.25,
+    "ytm_pct": 9.82,
+    "spread_bps": 450,
+    "as_of": "2026-01-24",
+    "source": "Finnhub"
+  }
+}
+```
+
+### Scripts
+
+```bash
+# Update current prices for all instruments with CUSIPs
+python scripts/update_pricing.py --all
+
+# Update single company
+python scripts/update_pricing.py --ticker CHTR
+
+# Backfill historical data (optional)
+python scripts/backfill_pricing_history.py --days 365
+```
 
 ## Environment Variables
 
@@ -208,6 +448,7 @@ For accurate leverage ratios, use `--ttm` to extract 4 quarters of financial dat
 | `ANTHROPIC_API_KEY` | Yes | Claude for escalation |
 | `GEMINI_API_KEY` | Recommended | Gemini for extraction |
 | `SEC_API_KEY` | Recommended | SEC-API.io for filing retrieval |
+| `FINNHUB_API_KEY` | Optional | Finnhub for bond pricing (~$100/mo tier) |
 
 ## Deployment
 
@@ -229,7 +470,50 @@ alembic upgrade head     # Apply all
 alembic revision -m "description"  # Create new
 ```
 
-Current migrations: 001 (initial) through 013 (auth_tables)
+Current migrations: 001 (initial) through 017 (extraction_status)
+
+## Shared Utilities
+
+### Extraction Utilities (`app/services/extraction_utils.py`)
+
+Consolidated utilities for SEC filing processing:
+
+```python
+from app.services.extraction_utils import (
+    clean_filing_html,      # Clean HTML/XBRL from SEC filings
+    truncate_content,       # Smart truncation at sentence boundaries
+    combine_filings,        # Combine multiple filings with priority (10-K > 10-Q > exhibit_21 > 8-K)
+    extract_debt_sections,  # Extract debt-related content using keyword priority
+    ModelTier,              # LLM model tiers enum
+    calculate_cost,         # Calculate LLM token costs
+    LLMUsage,               # Token tracking dataclass
+    validate_extraction_structure,   # Validate extraction has required keys
+    validate_entity_references,      # Validate parent/issuer/guarantor references
+    validate_debt_amounts,           # Validate debt amounts are reasonable
+)
+```
+
+These are also re-exported from `app/services/utils.py` for backwards compatibility.
+
+### Script Utilities (`scripts/script_utils.py`)
+
+Shared utilities for CLI scripts:
+
+```python
+from script_utils import (
+    get_db_session,         # Async database session context manager
+    get_all_companies,      # Get all companies with CIKs
+    get_company_by_ticker,  # Get single company by ticker
+    create_base_parser,     # Base argparse with --ticker/--all/--limit
+    create_fix_parser,      # Fix script parser with --save/--verbose
+    create_extract_parser,  # Extraction parser with --cik/--save-db/--skip-existing
+    print_header,           # Print formatted header
+    print_summary,          # Print stats summary
+    print_progress,         # Print progress indicator
+    process_companies,      # Batch process companies with progress
+    run_async,              # Run async function with Windows event loop handling
+)
+```
 
 ## Common Issues
 
@@ -267,6 +551,20 @@ See `docs/operations/QA_TROUBLESHOOTING.md` for detailed debugging guides.
 3. **Pattern matching beats LLM for large docs** - Search for "Term A-6" directly rather than asking LLM
 4. **Fix data quality first** - Many matches fail due to NULL rates/maturities that can be extracted from names
 5. **Lower confidence is better than no link** - 60% confidence base indenture link is more useful than nothing
+
+### Scale Error Issues
+
+| Symptom | Root Cause | Solution |
+|---------|------------|----------|
+| Instrument totals 2-10x higher than financials | Scale mismatch - extraction used wrong multiplier | **ALWAYS check source SEC filing** for scale (e.g., "in millions") before fixing |
+| Instrument totals much lower than financials | May be missing amounts, not scale error | Check how many instruments have NULL outstanding |
+| Banks show huge mismatch | Banks report total debt including deposits/wholesale funding | Not an error - extraction only captures public notes |
+| Recent debt issuances cause mismatch | Financials are quarterly; new bonds issued after quarter end | Compare against most recent filing date |
+
+**Critical Rule**: NEVER blindly apply scale fixes (multiply/divide by 1000). Always:
+1. Read the source SEC filing to find the stated scale
+2. Verify the extraction matches the source document
+3. Consider that comparison data (financials) may be stale or from different period
 
 ## Cost
 

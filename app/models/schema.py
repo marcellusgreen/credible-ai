@@ -129,6 +129,7 @@ class Entity(Base):
     )  # 1=holdco, 2=intermediate, 3=opco, 4+=sub
 
     # Status flags
+    is_root: Mapped[bool] = mapped_column(Boolean, default=False)  # True = ultimate parent company
     is_guarantor: Mapped[bool] = mapped_column(Boolean, default=False)
     is_borrower: Mapped[bool] = mapped_column(Boolean, default=False)
     is_restricted: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -278,6 +279,9 @@ class DebtInstrument(Base):
     collateral: Mapped[list["Collateral"]] = relationship(
         back_populates="debt_instrument", cascade="all, delete-orphan"
     )
+    document_links: Mapped[list["DebtInstrumentDocument"]] = relationship(
+        back_populates="debt_instrument", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         UniqueConstraint("company_id", "slug", name="uq_debt_company_slug"),
@@ -394,8 +398,11 @@ class DocumentSection(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    # Relationship
+    # Relationships
     company: Mapped["Company"] = relationship(backref="document_sections")
+    debt_links: Mapped[list["DebtInstrumentDocument"]] = relationship(
+        back_populates="document_section", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("idx_document_sections_search_vector", "search_vector", postgresql_using="gin"),
@@ -496,6 +503,11 @@ class Guarantee(Base):
         BigInteger
     )  # For limited guarantees
 
+    # Guarantee release/add conditions (extracted from indentures)
+    # Example: {"release_triggers": ["sale_of_guarantor", "asset_sale_threshold_met"],
+    #           "add_triggers": ["acquisition_of_domestic_subsidiary"]}
+    conditions: Mapped[Optional[dict]] = mapped_column(JSONB, default=dict)
+
     # Metadata
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -511,6 +523,74 @@ class Guarantee(Base):
         ),
         Index("idx_guarantees_debt", "debt_instrument_id"),
         Index("idx_guarantees_guarantor", "guarantor_id"),
+    )
+
+
+class DebtInstrumentDocument(Base):
+    """Junction table linking debt instruments to their governing legal documents."""
+
+    __tablename__ = "debt_instrument_documents"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    debt_instrument_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("debt_instruments.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    document_section_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("document_sections.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    # Relationship type: governs, supplements, amends, related
+    relationship_type: Mapped[str] = mapped_column(
+        String(30), default="governs", nullable=False
+    )
+
+    # Matching algorithm metadata
+    match_confidence: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(4, 3)
+    )  # 0.000 - 1.000
+    match_method: Mapped[Optional[str]] = mapped_column(
+        String(30)
+    )  # coupon_maturity, facility_type, full_text, manual
+    match_evidence: Mapped[Optional[dict]] = mapped_column(JSONB)  # Signals that led to match
+
+    # Verification status
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Audit fields
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    created_by: Mapped[Optional[str]] = mapped_column(
+        String(50)
+    )  # 'algorithm', 'user:email@example.com', etc.
+
+    # Relationships
+    debt_instrument: Mapped["DebtInstrument"] = relationship(
+        back_populates="document_links"
+    )
+    document_section: Mapped["DocumentSection"] = relationship(
+        back_populates="debt_links"
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "debt_instrument_id", "document_section_id", "relationship_type",
+            name="uq_debt_doc_instrument_document_type"
+        ),
+        Index("ix_debt_instrument_documents_debt_id", "debt_instrument_id"),
+        Index("ix_debt_instrument_documents_doc_id", "document_section_id"),
+        Index("ix_debt_instrument_documents_confidence", "match_confidence"),
+        Index(
+            "ix_debt_instrument_documents_verified",
+            "is_verified",
+            postgresql_where=(is_verified == False),
+        ),
     )
 
 
@@ -551,6 +631,79 @@ class Collateral(Base):
     )
 
 
+class CrossDefaultLink(Base):
+    """
+    Links between debt instruments for cross-default, cross-acceleration, and pari passu relationships.
+
+    Extracted from indentures and credit agreements.
+    Examples:
+    - "Default on any debt > $50M triggers cross-default on this facility"
+    - "Notes rank pari passu with all other senior unsecured obligations"
+    """
+
+    __tablename__ = "cross_default_links"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    source_debt_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("debt_instruments.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    target_debt_id: Mapped[Optional[UUID]] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("debt_instruments.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+
+    # Relationship type: cross_default, cross_acceleration, pari_passu
+    relationship_type: Mapped[str] = mapped_column(String(30), nullable=False)
+
+    # Threshold details
+    threshold_amount: Mapped[Optional[int]] = mapped_column(BigInteger)  # in cents
+    threshold_description: Mapped[Optional[str]] = mapped_column(Text)
+
+    # Flags
+    is_bilateral: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Confidence and evidence
+    confidence: Mapped[Optional[Decimal]] = mapped_column(Numeric(4, 3))  # 0.000 - 1.000
+    source_document_id: Mapped[Optional[UUID]] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("document_sections.id"), nullable=True
+    )
+    evidence: Mapped[Optional[str]] = mapped_column(Text)
+
+    # Timestamp
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    # Relationships
+    source_debt: Mapped["DebtInstrument"] = relationship(
+        foreign_keys=[source_debt_id],
+        backref="cross_default_links_as_source",
+    )
+    target_debt: Mapped[Optional["DebtInstrument"]] = relationship(
+        foreign_keys=[target_debt_id],
+        backref="cross_default_links_as_target",
+    )
+    source_document: Mapped[Optional["DocumentSection"]] = relationship(
+        backref="cross_default_links",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "source_debt_id", "target_debt_id", "relationship_type",
+            name="uq_cross_default_source_target_type"
+        ),
+        Index("ix_cross_default_links_source", "source_debt_id"),
+        Index("ix_cross_default_links_target", "target_debt_id"),
+        Index("ix_cross_default_links_type", "relationship_type"),
+        Index("ix_cross_default_links_source_type", "source_debt_id", "relationship_type"),
+    )
+
+
 # =============================================================================
 # DENORMALIZED TABLES (Read Path)
 # =============================================================================
@@ -587,6 +740,11 @@ class CompanyCache(Base):
     total_debt: Mapped[Optional[int]] = mapped_column(BigInteger)
     entity_count: Mapped[Optional[int]] = mapped_column(Integer)
     sector: Mapped[Optional[str]] = mapped_column(String(100))
+
+    # Extraction status tracking (for idempotent re-runs)
+    # Format: {"step_name": {"status": "success|no_data|error", "attempted_at": "ISO timestamp", "details": "..."}}
+    # Steps: core, document_sections, financials, hierarchy, guarantees, collateral
+    extraction_status: Mapped[Optional[dict]] = mapped_column(JSONB)
 
     # Relationships
     company: Mapped["Company"] = relationship(back_populates="cache")
@@ -1045,6 +1203,10 @@ class CompanyMetrics(Base):
     rating_bucket: Mapped[Optional[str]] = mapped_column(
         String(20)
     )  # IG, HY-BB, HY-B, HY-CCC, NR
+
+    # Non-guarantor subsidiary disclosure (SEC Rule 13-01)
+    # Example: {"ebitda_pct": 15.3, "assets_pct": 12.1, "source": "Note 18 - Guarantor Information"}
+    non_guarantor_disclosure: Mapped[Optional[dict]] = mapped_column(JSONB)
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

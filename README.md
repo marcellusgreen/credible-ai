@@ -19,7 +19,7 @@ Corporate structure and debt analysis is complex. Even with AI, achieving accura
 
 ## Current Database
 
-**189 companies | 5,979 entities | 2,849 debt instruments | 30 priced bonds | 4,881 guarantees | 230 collateral records**
+**201 companies | 5,374 entities | 2,485 debt instruments | 30 priced bonds | 4,881 guarantees | 230 collateral records**
 
 Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
 
@@ -43,6 +43,8 @@ Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
 - **Individual Debt Instruments**: Each bond, note, and credit facility extracted separately (not just totals)
 - **Guarantee Relationships**: 4,881 guarantee records linking debt to guarantor subsidiaries
 - **Collateral Tracking**: 230 collateral records with asset types (equipment, vehicles, real estate, etc.)
+- **Corporate Ownership Hierarchy**: Nested parent-child structures parsed from SEC Exhibit 21 indentation
+- **Direct/Indirect Subsidiaries**: Clear classification of ownership relationships
 - **Complex Corporate Structures**: Multiple owners, joint ventures, VIEs, partial ownership
 - **Financial Statements**: Quarterly income statement, balance sheet, cash flow from 10-Q/10-K
 - **Credit Ratios**: Leverage, interest coverage, margins, liquidity metrics
@@ -203,11 +205,17 @@ docker-compose up -d
 Extract new companies using the iterative extraction system:
 
 ```bash
-# Single company with QA
+# Single company with QA (idempotent - safe to re-run)
 python scripts/extract_iterative.py --ticker AAPL --cik 0000320193 --save-db
 
-# Batch extraction
-python scripts/batch_index.py --phase 1
+# Force re-run all steps (ignores skip conditions)
+python scripts/extract_iterative.py --ticker AAPL --cik 0000320193 --save-db --force
+
+# Batch extraction for all companies
+python scripts/extract_iterative.py --all --save-db
+
+# Resume batch from last processed company
+python scripts/extract_iterative.py --all --save-db --resume
 
 # Extract financials (single quarter)
 python scripts/extract_financials.py --ticker CHTR --save-db
@@ -217,15 +225,26 @@ python scripts/extract_financials.py --ticker CHTR --ttm --save-db
 
 # Recompute metrics after extracting financials
 python scripts/recompute_metrics.py --ticker CHTR
+
+# Extract ownership hierarchy from Exhibit 21 HTML indentation
+python scripts/extract_exhibit21_hierarchy.py --ticker CHTR --save-db
 ```
 
-The extraction:
+The extraction pipeline is **idempotent** - safe to re-run on existing companies:
+- Skips steps where data already exists
+- Tracks extraction status (success/no_data/error) in database
+- Detects when new quarterly financials are available
+- Use `--force` to override skip logic and re-extract everything
+
+**Extraction steps:**
 1. Downloads 10-K, 10-Q, 8-K filings via SEC-API.io
 2. Extracts entities and debt instruments with Gemini (~$0.008)
 3. Runs 5 QA checks against source filings (~$0.006)
 4. Applies targeted fixes if QA score < 85%
 5. Escalates to Claude if still failing
-6. Saves to database and pre-computes API responses
+6. Parses Exhibit 21 for subsidiary hierarchy (supports table and div-based formats)
+7. Extracts guarantees and collateral
+8. Saves to database and pre-computes API responses
 
 **Typical cost: $0.02-0.03 per company**
 
@@ -247,6 +266,7 @@ credible/
 │       ├── qa_agent.py              # 5-check verification system
 │       ├── tiered_extraction.py     # LLM clients and prompts
 │       ├── extraction.py            # SEC clients, filing processing
+│       ├── extraction_utils.py      # Shared extraction utilities
 │       ├── financial_extraction.py  # Quarterly financials
 │       └── bond_pricing.py          # Pricing calculations
 ├── scripts/                       # CLI tools
