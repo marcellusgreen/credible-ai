@@ -23,27 +23,45 @@ settings = get_settings()
 # Initialize Stripe
 stripe.api_key = settings.stripe_api_key
 
-# Price IDs
+# Price IDs - Update these in Stripe Dashboard
+# Free: $0/month - 25 queries/day, 25 companies (curated sample)
+# Pro: $49/month - Unlimited queries, 200+ companies, historical pricing
+# Business: $499/month - Priority support, custom coverage, 99.9% SLA
 STRIPE_PRICES = {
-    "pro": "price_1StwgYAmvjlETourYUAbKPlB",
+    "pro": "price_1StwgYAmvjlETourYUAbKPlB",  # $49/month
+    "business": "price_1SuFq6AmvjlETourFzfIesa5",  # $499/month
 }
 
 # Tier configuration
 TIER_CONFIG = {
     "free": {
-        "credits": 1000,
+        "credits": 25,  # 25 queries/day
         "rate_limit": 10,
-        "has_pricing": False,
+        "has_pricing": True,  # Bond pricing included (updated throughout trading day)
+        "companies": 25,  # Curated sample
     },
     "pro": {
         "credits": -1,  # Unlimited
         "rate_limit": 120,
         "has_pricing": True,
+        "has_historical_pricing": True,
+        "companies": 200,  # Full coverage
     },
-    "enterprise": {
+    "business": {
         "credits": -1,  # Unlimited
         "rate_limit": 1000,
         "has_pricing": True,
+        "has_historical_pricing": True,
+        "companies": 200,  # Full coverage + custom requests
+        "priority_support": True,
+        "sla": "99.9%",
+    },
+    "enterprise": {  # Legacy alias for business
+        "credits": -1,
+        "rate_limit": 1000,
+        "has_pricing": True,
+        "has_historical_pricing": True,
+        "companies": 200,
     },
 }
 
@@ -187,16 +205,16 @@ async def handle_subscription_deleted(
     user.tier = "free"
     user.stripe_subscription_id = None
 
-    # Reset credits to free tier
+    # Reset credits to free tier (25 queries/day)
     credits_result = await db.execute(
         select(UserCredits).where(UserCredits.user_id == user.id)
     )
     credits = credits_result.scalar_one_or_none()
 
     if credits:
-        credits.credits_remaining = Decimal("1000")
-        credits.credits_monthly_limit = 1000
-        credits.billing_cycle_start = date.today().replace(day=1)
+        credits.credits_remaining = Decimal("25")
+        credits.credits_monthly_limit = 25  # Daily limit for free tier
+        credits.billing_cycle_start = date.today()  # Reset to today for daily tracking
 
     await db.commit()
     print(f"User {user.email} downgraded to Free")

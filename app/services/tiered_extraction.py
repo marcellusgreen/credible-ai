@@ -28,6 +28,12 @@ from app.services.extraction import (
     ExtractedDebtInstrument,
 )
 from app.services.utils import parse_json_robust
+from app.services.extraction_utils import (
+    extract_debt_sections as _extract_debt_sections,
+    clean_filing_html,
+    combine_filings,
+    truncate_content,
+)
 
 
 # =============================================================================
@@ -70,109 +76,8 @@ KNOWN_SIMPLE = {
 }
 
 
-def extract_debt_sections(content: str, max_chars: int = 50000) -> str:
-    """
-    Extract debt-related sections from filing content.
-    Looks for common debt disclosure patterns and extracts surrounding context.
-    Prioritizes debt footnotes that list individual instruments.
-    """
-    content_lower = content.lower()
-    sections = []
-    section_positions = []  # Track positions to deduplicate
-
-    # Priority 1: Debt footnote headings (usually contain the table of instruments)
-    priority_keywords = [
-        "debt - ",  # "Note 9 - Debt -" style
-        "long-term debt -",
-        "debt and credit",
-        "borrowings -",
-        "notes and debentures",
-        "senior notes due",  # Specific instrument names
-        "% notes due",  # e.g., "8.75% Notes due 2030"
-        "credit agreement",
-    ]
-
-    # Priority 2: General debt keywords
-    general_keywords = [
-        "long-term debt",
-        "notes payable",
-        "senior notes",
-        "credit facility",
-        "term loan",
-        "revolving credit",
-        "debt maturity",
-        "indebtedness",
-        "secured credit",
-        "aggregate principal",
-        "principal amount",
-    ]
-
-    # Priority 3: JV and complex ownership keywords (for complete structure extraction)
-    jv_keywords = [
-        "joint venture",
-        "equity method",
-        "unconsolidated",
-        "variable interest entit",  # matches "entity" and "entities"
-        "vie",
-        "50% owned",
-        "50/50",
-        "unrestricted subsidiar",  # matches "subsidiary" and "subsidiaries"
-    ]
-
-    def add_section(pos: int, keyword: str, context_before: int = 2000, context_after: int = 8000):
-        """Add a section around a position, checking for overlap."""
-        start = max(0, pos - context_before)
-        end = min(len(content), pos + context_after)
-
-        # Check for overlap with existing sections
-        for existing_start, existing_end in section_positions:
-            if start < existing_end and end > existing_start:
-                # Overlapping - extend the existing section instead
-                return
-
-        section_positions.append((start, end))
-        sections.append(content[start:end])
-
-    # First pass: priority keywords (larger context window)
-    for keyword in priority_keywords:
-        idx = 0
-        while idx < len(content_lower):
-            pos = content_lower.find(keyword, idx)
-            if pos == -1:
-                break
-            add_section(pos, keyword, context_before=1000, context_after=10000)
-            idx = pos + len(keyword)
-
-    # Second pass: general keywords (smaller context)
-    for keyword in general_keywords:
-        idx = 0
-        count = 0
-        while idx < len(content_lower) and count < 3:  # Limit per keyword
-            pos = content_lower.find(keyword, idx)
-            if pos == -1:
-                break
-            add_section(pos, keyword, context_before=2000, context_after=5000)
-            idx = pos + len(keyword)
-            count += 1
-
-    # Third pass: JV/VIE keywords (important for complete structure)
-    for keyword in jv_keywords:
-        idx = 0
-        count = 0
-        while idx < len(content_lower) and count < 2:  # Limit per keyword
-            pos = content_lower.find(keyword, idx)
-            if pos == -1:
-                break
-            add_section(pos, keyword, context_before=1500, context_after=4000)
-            idx = pos + len(keyword)
-            count += 1
-
-    if not sections:
-        return content[:max_chars]
-
-    # Combine sections
-    combined = "\n\n--- DEBT SECTION ---\n\n".join(sections[:15])
-    return combined[:max_chars]
+# Use shared utility - re-export for backwards compatibility
+extract_debt_sections = _extract_debt_sections
 
 # PE-heavy sectors (SIC codes)
 PE_HEAVY_SECTORS = {"5912", "5311", "8062", "8011", "5411"}
@@ -901,46 +806,15 @@ class TieredExtractionService:
         await self.edgar.close()
 
     def _clean_content(self, content: str, max_chars: int = 150000) -> str:
-        """Clean and truncate filing content."""
-        # Remove HTML tags
-        content = re.sub(r'<[^>]+>', ' ', content)
-        # Remove excessive whitespace
-        content = re.sub(r'\s+', ' ', content)
-        # Truncate
-        if len(content) > max_chars:
-            content = content[:max_chars] + "\n\n[TRUNCATED]"
-        return content.strip()
+        """Clean and truncate filing content. Uses shared utility."""
+        from app.services.extraction_utils import clean_filing_html, truncate_content
+        cleaned = clean_filing_html(content)
+        return truncate_content(cleaned, max_chars)
 
     def _combine_filings(self, filings: dict[str, str], max_chars: int = 300000) -> str:
-        """Combine filings into extraction context."""
-        combined = []
-        total_chars = 0
-
-        # Prioritize 10-K, then exhibits, then others
-        priority_order = ['10-K', 'exhibit_21', 'exhibit_10', '10-Q', '8-K']
-
-        sorted_keys = sorted(
-            filings.keys(),
-            key=lambda k: next(
-                (i for i, p in enumerate(priority_order) if p in k),
-                len(priority_order)
-            )
-        )
-
-        for key in sorted_keys:
-            content = self._clean_content(filings[key])
-            if total_chars + len(content) > max_chars:
-                # Truncate this filing to fit
-                remaining = max_chars - total_chars
-                if remaining > 10000:
-                    content = content[:remaining] + "\n[TRUNCATED]"
-                else:
-                    break
-
-            combined.append(f"=== {key} ===\n{content}")
-            total_chars += len(content)
-
-        return "\n\n".join(combined)
+        """Combine filings into extraction context. Uses shared utility."""
+        from app.services.extraction_utils import combine_filings
+        return combine_filings(filings, max_chars=max_chars, include_headers=True)
 
     async def extract_company(
         self,

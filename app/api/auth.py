@@ -197,10 +197,10 @@ async def upgrade_to_pro(
             detail="You are already on the Pro tier",
         )
 
-    if user.tier == "enterprise":
+    if user.tier in ("business", "enterprise"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Enterprise users should contact sales for billing changes",
+            detail="Business tier users should contact sales for billing changes",
         )
 
     try:

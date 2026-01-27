@@ -59,9 +59,10 @@ def get_api_key_prefix(api_key: str) -> str:
 
 
 TIER_CREDITS = {
-    "free": 1000,
+    "free": 25,  # 25 queries/day (enforced as daily limit)
     "pro": -1,  # Unlimited
-    "enterprise": -1,  # Unlimited
+    "business": -1,  # Unlimited
+    "enterprise": -1,  # Unlimited (legacy alias for business)
     # Legacy tiers (keep for backward compatibility)
     "starter": 3000,
     "growth": 15000,
@@ -71,7 +72,8 @@ TIER_CREDITS = {
 TIER_RATE_LIMITS = {
     "free": settings.rate_limit_free,
     "pro": settings.rate_limit_pro,
-    "enterprise": settings.rate_limit_enterprise,
+    "business": settings.rate_limit_business,
+    "enterprise": settings.rate_limit_enterprise,  # Legacy alias for business
     # Legacy tiers
     "starter": settings.rate_limit_starter,
     "growth": settings.rate_limit_growth,

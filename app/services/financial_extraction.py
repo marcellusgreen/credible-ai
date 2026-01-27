@@ -211,6 +211,10 @@ def detect_filing_scale(content: str) -> int:
         r'\(\s*millions\s*\)',
         r'amounts\s+in\s+millions',
         r'in\s+millions\s+of\s+u\.?s\.?\s+dollars',  # "In millions of U.S. dollars"
+        r'millions\s+(?:september|december|march|june|january|february|april|may|july|august|october|november)',  # "millions September 30" (OXY format)
+        r'millions,?\s+except\s+per[- ]share',  # "millions, except per-share amounts"
+        r'\(\s*millions\s+of\s+dollars',  # "(Millions of dollars" (CVX format)
+        r'millions\s+of\s+dollars',  # "Millions of dollars"
     ]
 
     # PRIORITY 1: Search near financial statement headers first (most reliable)
@@ -316,8 +320,27 @@ def detect_filing_scale(content: str) -> int:
 # PYDANTIC MODELS
 # =============================================================================
 
+def _coerce_to_int(v):
+    """Coerce float/string to int, handling LLM output variations."""
+    if v is None:
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float):
+        return int(round(v))
+    if isinstance(v, str):
+        # Handle string numbers like "1209.3" or "-14.9"
+        try:
+            return int(round(float(v)))
+        except ValueError:
+            return None
+    return None
+
+
 class ExtractedFinancials(BaseModel):
     """Validated financial extraction result."""
+
+    model_config = {"coerce_numbers_to_str": False}
 
     fiscal_year: int
     fiscal_quarter: int = Field(ge=1, le=4)
@@ -350,6 +373,19 @@ class ExtractedFinancials(BaseModel):
     capex: Optional[int] = None
 
     uncertainties: list[str] = Field(default_factory=list)
+
+    @field_validator(
+        "revenue", "cost_of_revenue", "gross_profit", "operating_income",
+        "interest_expense", "income_tax_expense", "net_income",
+        "depreciation_amortization", "ebitda", "cash_and_equivalents",
+        "total_current_assets", "total_assets", "total_current_liabilities",
+        "total_debt", "total_liabilities", "stockholders_equity",
+        "operating_cash_flow", "investing_cash_flow", "financing_cash_flow", "capex",
+        mode="before"
+    )
+    @classmethod
+    def coerce_numbers(cls, v):
+        return _coerce_to_int(v)
 
     @field_validator("period_end_date")
     @classmethod

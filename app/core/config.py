@@ -89,10 +89,12 @@ class Settings(BaseSettings):
     # Per-tier rate limits (requests per minute)
     rate_limit_free: int = 10
     rate_limit_pro: int = 120
+    rate_limit_business: int = 1000  # Business tier ($499/month)
+    rate_limit_enterprise: int = 1000  # Legacy alias for business
+    # Legacy tiers
     rate_limit_starter: int = 60
     rate_limit_growth: int = 120
     rate_limit_scale: int = 300
-    rate_limit_enterprise: int = 1000
 
     class Config:
         env_file = ".env"

@@ -1,9 +1,42 @@
 """
 Shared utility functions for extraction services.
+
+Core utilities:
+- parse_json_robust: Parse JSON from LLM responses
+- normalize_name: Normalize entity names for matching
+
+For filing-related utilities, see extraction_utils.py:
+- clean_filing_html: Clean SEC filing HTML/XBRL
+- combine_filings: Combine multiple filings
+- extract_debt_sections: Extract debt-related content
 """
 
 import json
 import re
+
+# Re-export from extraction_utils for backwards compatibility
+from app.services.extraction_utils import (
+    clean_filing_html,
+    combine_filings,
+    extract_debt_sections,
+    truncate_content,
+    calculate_cost,
+    ModelTier,
+    LLMUsage,
+)
+
+__all__ = [
+    'parse_json_robust',
+    'normalize_name',
+    'clean_html',
+    'clean_filing_html',
+    'combine_filings',
+    'extract_debt_sections',
+    'truncate_content',
+    'calculate_cost',
+    'ModelTier',
+    'LLMUsage',
+]
 
 
 def parse_json_robust(content: str) -> dict:
