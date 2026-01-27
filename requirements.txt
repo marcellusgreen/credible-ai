@@ -25,3 +25,6 @@ structlog>=24.1.0
 
 # Security
 python-jose[cryptography]>=3.3.0
+
+# Billing
+stripe>=7.0.0
