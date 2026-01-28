@@ -1,10 +1,10 @@
 # DebtStack Work Plan
 
-Last Updated: 2026-01-26
+Last Updated: 2026-01-27
 
 ## Current Status
 
-**Database**: 201 companies | 5,374 entities | 2,485 debt instruments | 30 priced bonds | 6,500+ document sections | 600+ financials | 4,881 guarantees | 230 collateral records
+**Database**: 201 companies | 5,374 entities | 2,485 debt instruments | 591 with CUSIP/ISIN | 30 priced bonds | 7,700+ document sections (4,877 indentures, 2,889 credit agreements) | 600+ financials | 4,881 guarantees | 230 collateral records
 **Deployment**: Live at `https://credible-ai-production.up.railway.app`
 **Infrastructure**: Railway + Neon PostgreSQL + Upstash Redis (complete)
 **Leverage Coverage**: 155/189 companies (82%) - good coverage across all sectors
@@ -1231,6 +1231,52 @@ When starting a new session, read this file first, then:
 ---
 
 ## Session Log
+
+### 2026-01-27 (Session 26) - Finnhub Planning & Railway Deployment Fix
+
+**Objective:** Plan Finnhub pricing integration, fix Railway deployment, document user journey.
+
+**Part 1: Finnhub Integration Planning**
+- ✅ Researched Finnhub Bond APIs (profile, price, tick)
+- ✅ Confirmed Finnhub does NOT provide credit ratings (S&P/Moody's/Fitch)
+- ✅ Documented data mapping: Finnhub → `bond_pricing` table
+- ✅ Planned Phase 1 (current pricing) and Phase 2 (historical pricing)
+- ✅ Added `bond_pricing_history` table design for daily snapshots
+- ✅ Confirmed 591 instruments have both CUSIP and ISIN (perfect overlap)
+
+**Part 2: Railway Deployment Fix**
+- ✅ Identified uncommitted changes blocking deployment
+- ✅ Added `stripe>=7.0.0` to requirements.txt (missing dependency)
+- ✅ Committed and pushed - deployment now successful
+
+**Part 3: Document Search User Journey**
+- ✅ Documented two-phase user journey:
+  - **Discovery**: `/v1/bonds` - filter by yield, collateral, seniority
+  - **Deep Dive**: `/v1/documents/search` - answer bond-specific questions
+- ✅ Confirmed Option C approach: API returns snippets, agent summarizes
+- ✅ Validated search coverage:
+  - 3,608 docs with "event of default"
+  - 2,050 docs with "change of control"
+  - 1,752 docs with "collateral"
+  - 976 docs with "asset sale"
+
+**Key Insight - User Journey:**
+```
+Discovery (Primitives)              Deep Dive (Document Search)
+───────────────────────            ─────────────────────────────
+1. Find bonds: yield >8%
+2. Filter: secured by equipment
+3. User picks specific bond ──────► 4. "What are the covenants?"
+                                    5. "Any make-whole premium?"
+                                    6. "What triggers default?"
+```
+
+**Files Modified:**
+- `requirements.txt` - Added stripe dependency
+- `WORKPLAN.md` - Finnhub phases, user journey documentation
+- `CLAUDE.md` - Finnhub integration section, env vars
+
+---
 
 ### 2026-01-26 (Session 25) - Duplicate Instruments Fix & Code Simplification
 

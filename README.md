@@ -19,7 +19,7 @@ Corporate structure and debt analysis is complex. Even with AI, achieving accura
 
 ## Current Database
 
-**201 companies | 5,374 entities | 2,485 debt instruments | 30 priced bonds | 4,881 guarantees | 230 collateral records**
+**201 companies | 5,374 entities | 2,485 debt instruments | 591 with CUSIP/ISIN | 7,700+ legal documents | 4,881 guarantees | 230 collateral records**
 
 Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
 
@@ -48,7 +48,8 @@ Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
 - **Complex Corporate Structures**: Multiple owners, joint ventures, VIEs, partial ownership
 - **Financial Statements**: Quarterly income statement, balance sheet, cash flow from 10-Q/10-K
 - **Credit Ratios**: Leverage, interest coverage, margins, liquidity metrics
-- **Bond Pricing**: YTM and spread-to-treasury calculations
+- **Bond Pricing**: YTM and spread-to-treasury calculations (Finnhub/FINRA TRACE)
+- **Document Search**: Full-text search across 4,877 indentures and 2,889 credit agreements
 - **Pre-computed Responses**: Sub-second API serving via cached JSON with ETag support
 
 ## Data Quality Principles
@@ -158,6 +159,28 @@ curl "/v1/bonds?seniority=senior_unsecured&min_ytm=8.0&has_pricing=true"
 ```bash
 curl -X POST "/v1/entities/traverse" -d '{"start":{"type":"bond","id":"893830AK8"},"relationships":["guarantees"]}'
 ```
+
+**Example - Document Search (Deep Dive on a Bond):**
+```bash
+# After selecting a bond, ask questions about covenants, defaults, etc.
+curl "/v1/documents/search?q=event+of+default&ticker=RIG&section_type=indenture"
+```
+
+### Agent Workflow: Discovery → Deep Dive
+
+```
+DISCOVERY (Structured Data)              DEEP DIVE (Document Search)
+───────────────────────────              ───────────────────────────
+1. GET /v1/bonds?min_ytm=800
+2. Filter by collateral, seniority
+3. User picks specific bond ───────────► 4. GET /v1/documents/search
+                                            ?q=covenant&ticker=XXX
+                                         5. Agent summarizes snippets
+                                         6. User sees plain English
+```
+
+**DebtStack provides**: Structured data + document snippets + source links
+**Your agent provides**: Query conversion + summarization + presentation
 
 See `docs/PRIMITIVES_API_SPEC.md` for full specification.
 
