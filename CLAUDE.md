@@ -59,6 +59,21 @@ Score >= 85%? → PostgreSQL → Cache → API
 Targeted Fixes → Loop up to 3x → Escalate to Claude
 ```
 
+### Code Organization
+
+**Service modules** contain business logic:
+- `app/services/hierarchy_extraction.py` - Exhibit 21 parsing, ownership hierarchy
+- `app/services/guarantee_extraction.py` - Guarantee extraction from indentures
+- `app/services/collateral_extraction.py` - Collateral for secured debt
+- `app/services/metrics.py` - Credit metrics (leverage, coverage ratios)
+- `app/services/qc.py` - Quality control checks
+
+**Scripts** are thin CLI wrappers that import from services:
+- `scripts/extract_iterative.py` - Complete extraction pipeline
+- `scripts/recompute_metrics.py` - Metrics recomputation
+
+This separation keeps business logic testable and reusable while scripts handle CLI concerns.
+
 ## Key Files
 
 | File | Purpose |
@@ -69,11 +84,18 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 | `app/core/auth.py` | API key generation, validation, tier config |
 | `app/core/cache.py` | Redis cache client (Upstash) |
 | `app/services/iterative_extraction.py` | Main extraction with QA loop |
+| `app/services/hierarchy_extraction.py` | Exhibit 21 parsing, ownership hierarchy |
+| `app/services/guarantee_extraction.py` | Guarantee relationships from indentures |
+| `app/services/collateral_extraction.py` | Collateral extraction for secured debt |
+| `app/services/metrics.py` | Credit metrics computation with TTM tracking |
+| `app/services/qc.py` | Quality control checks |
 | `app/services/qa_agent.py` | 5-check QA verification |
 | `app/services/tiered_extraction.py` | LLM clients and prompts |
 | `app/services/extraction.py` | SEC clients, filing processing |
 | `app/services/extraction_utils.py` | Shared utilities (filing cleaning, debt sections, validation) |
 | `app/services/financial_extraction.py` | Financial statements with TTM support |
+| `scripts/extract_iterative.py` | Complete extraction pipeline CLI (thin wrapper) |
+| `scripts/recompute_metrics.py` | Metrics recomputation CLI (thin wrapper) |
 | `scripts/script_utils.py` | Shared CLI utilities (DB sessions, parsers, progress) |
 | `app/models/schema.py` | SQLAlchemy models (includes User, UserCredits, UsageLog) |
 | `app/core/config.py` | Environment configuration |
@@ -103,7 +125,7 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 
 **Cache Tables**:
 - `company_cache`: Pre-computed JSON responses + `extraction_status` (JSONB tracking step attempts)
-- `company_metrics`: Computed credit metrics
+- `company_metrics`: Computed credit metrics + `source_filings` JSONB for TTM provenance
 
 ## API Endpoints
 

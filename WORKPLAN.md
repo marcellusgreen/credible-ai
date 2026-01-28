@@ -1,6 +1,6 @@
 # DebtStack Work Plan
 
-Last Updated: 2026-01-27
+Last Updated: 2026-01-28
 
 ## Current Status
 
@@ -36,6 +36,16 @@ Last Updated: 2026-01-27
 ## Recent Completed Work
 
 ### January 2026
+- [x] **Service Module Refactoring** (2026-01-28) - Moved extraction business logic from scripts to services:
+  - Created `app/services/hierarchy_extraction.py` (Exhibit 21 parsing, ownership hierarchy)
+  - Created `app/services/guarantee_extraction.py` (guarantee relationships)
+  - Created `app/services/collateral_extraction.py` (secured debt collateral)
+  - Created `app/services/qc.py` (quality control checks)
+  - Created `app/services/metrics.py` (credit metrics computation)
+  - Refactored `scripts/extract_iterative.py`: 1681 → 931 lines (-750 lines)
+  - Refactored `scripts/recompute_metrics.py` to thin CLI wrapper
+  - Added `source_filings` JSONB to `company_metrics` for TTM provenance tracking (migration 018)
+  - Added `source_filing_url` field to financial extraction
 - [x] **Idempotent Extraction Pipeline** (2026-01-26) - Made `extract_iterative.py` safe to re-run:
   - Added `check_existing_data()` to detect what data already exists
   - Added `merge_extraction_to_db()` to preserve existing data while adding new
@@ -1145,6 +1155,40 @@ python scripts/audit_covenant_relationships.py --verbose
 
 ---
 
+### Website Demo Scenarios
+**Status**: 📋 BACKLOG
+**Priority**: MEDIUM - Important for developer adoption
+
+Add guided demo scenarios to Mintlify docs showing real-world API usage patterns.
+
+**Recommended Demos:**
+1. **Bond Screener** - Filter by yield, seniority, collateral
+   ```
+   GET /v1/bonds?min_ytm=800&seniority=senior_secured&has_pricing=true
+   ```
+2. **Corporate Structure** - Entity traversal, guarantee relationships
+   ```
+   POST /v1/entities/traverse
+   {"start": {"type": "company", "ticker": "CHTR"}, "relationships": ["parent_of", "guarantees"]}
+   ```
+3. **Document Search** - Full-text search across SEC filings
+   ```
+   GET /v1/documents/search?q=change+of+control&ticker=CHTR&section_type=indenture
+   ```
+
+**Implementation:**
+- Create `docs/guides/scenarios.mdx` in debtstack-website repo
+- Use Mintlify's built-in API playground (already configured in `docs.json`)
+- Keep existing `/explorer` tab for visual corporate structure demos
+
+**Website Architecture Decision:**
+- Website repo: `debtstack-website` (Vercel) - marketing, demos, dashboard
+- API repo: `credible` (Railway) - API, extraction, data pipeline
+- Docs: Mintlify hosted, source in `debtstack-website/docs/`
+- Website calls production API with demo API key for interactive demos
+
+---
+
 ### Data Quality
 - [ ] Validate CUSIP mappings against FINRA (deferred - CUSIPs not needed for MVP)
 - [x] Fix any ticker/CIK mismatches - Done 2026-01-17 (137 companies updated)
@@ -1175,7 +1219,11 @@ python scripts/audit_covenant_relationships.py --verbose
 | Primitives API | `app/api/primitives.py` |
 | Legacy REST API | `app/api/routes.py` |
 | Extraction with QA | `app/services/iterative_extraction.py` |
-| Metrics computation | `app/services/extraction.py` (lines 1391-1512) |
+| Hierarchy extraction | `app/services/hierarchy_extraction.py` |
+| Guarantee extraction | `app/services/guarantee_extraction.py` |
+| Collateral extraction | `app/services/collateral_extraction.py` |
+| Metrics computation | `app/services/metrics.py` |
+| QC checks | `app/services/qc.py` |
 | Database schema | `app/models/schema.py` |
 | Monitoring/analytics | `app/core/monitoring.py` |
 | Financials extraction | `scripts/extract_financials.py` |
@@ -1231,6 +1279,59 @@ When starting a new session, read this file first, then:
 ---
 
 ## Session Log
+
+### 2026-01-28 (Session 27) - Service Module Refactoring & Website Demo Planning
+
+**Objective:** Refactor extraction logic into service modules, plan website demos.
+
+**Part 1: Service Module Refactoring**
+- ✅ Created `app/services/hierarchy_extraction.py` - Exhibit 21 parsing, ownership hierarchy
+- ✅ Created `app/services/guarantee_extraction.py` - Guarantee relationships from indentures
+- ✅ Created `app/services/collateral_extraction.py` - Collateral for secured debt
+- ✅ Created `app/services/qc.py` - Quality control checks
+- ✅ Created `app/services/metrics.py` - Credit metrics computation with TTM tracking
+- ✅ Refactored `scripts/extract_iterative.py`: 1681 → 931 lines (-750 lines removed)
+- ✅ Refactored `scripts/recompute_metrics.py` to thin CLI wrapper
+- ✅ Added `source_filings` JSONB to `company_metrics` (migration 018)
+- ✅ Added `source_filing_url` to financial extraction for provenance tracking
+- ✅ Verified all imports and tests pass
+
+**Part 2: Source Filing Provenance**
+- ✅ Added tracking for TTM calculations requiring multiple 10-Qs
+- ✅ `source_filings` JSONB stores: debt_source, debt_filing, ttm_quarters, ttm_filings, computed_at
+
+**Part 3: Website Demo Planning**
+- ✅ Explored `debtstack-website` codebase structure
+- ✅ Reviewed existing `/explorer` tab (corporate structure visualizer)
+- ✅ Reviewed existing `LiveDemo` component (animated code demos)
+- ✅ Reviewed Mintlify docs setup (`docs.json`, API reference MDX files)
+- ✅ **Decision:** Use Mintlify's built-in API playground instead of custom playground
+- ✅ **Decision:** Keep `/explorer` for visual demos, add scenarios guide to Mintlify docs
+
+**Recommended Demo Scenarios:**
+1. Bond Screener - `GET /v1/bonds?min_ytm=800&seniority=senior_secured`
+2. Corporate Structure - `POST /v1/entities/traverse`
+3. Document Search - `GET /v1/documents/search?q=change+of+control`
+
+**Files Created:**
+| File | Purpose |
+|------|---------|
+| `app/services/hierarchy_extraction.py` | Exhibit 21 parsing, ownership hierarchy |
+| `app/services/guarantee_extraction.py` | Guarantee relationships |
+| `app/services/collateral_extraction.py` | Collateral extraction |
+| `app/services/qc.py` | Quality control checks |
+| `app/services/metrics.py` | Credit metrics computation |
+| `alembic/versions/018_add_source_filings_to_metrics.py` | Migration for source_filings |
+
+**Files Modified:**
+| File | Changes |
+|------|---------|
+| `scripts/extract_iterative.py` | Refactored to use service modules (-750 lines) |
+| `scripts/recompute_metrics.py` | Now thin CLI wrapper |
+| `app/models/schema.py` | Added `source_filings` JSONB to CompanyMetrics |
+| `app/services/financial_extraction.py` | Added `source_filing_url` field |
+
+---
 
 ### 2026-01-27 (Session 26) - Finnhub Planning & Railway Deployment Fix
 
