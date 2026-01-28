@@ -1208,6 +1208,16 @@ class CompanyMetrics(Base):
     # Example: {"ebitda_pct": 15.3, "assets_pct": 12.1, "source": "Note 18 - Guarantor Information"}
     non_guarantor_disclosure: Mapped[Optional[dict]] = mapped_column(JSONB)
 
+    # Source filing provenance for computed metrics
+    # Example: {
+    #   "debt_source": "balance_sheet",
+    #   "debt_filing": "https://sec.gov/.../10-q-2025q3",
+    #   "ttm_quarters": ["2025Q1", "2025Q2", "2025Q3", "2024Q4"],
+    #   "ttm_filings": ["https://...", "https://...", "https://...", "https://..."],
+    #   "computed_at": "2026-01-28T12:00:00Z"
+    # }
+    source_filings: Mapped[Optional[dict]] = mapped_column(JSONB)
+
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

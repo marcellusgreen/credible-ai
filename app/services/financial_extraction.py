@@ -374,6 +374,9 @@ class ExtractedFinancials(BaseModel):
 
     uncertainties: list[str] = Field(default_factory=list)
 
+    # Source metadata (set by extraction, not LLM)
+    source_filing_url: Optional[str] = None
+
     @field_validator(
         "revenue", "cost_of_revenue", "gross_profit", "operating_income",
         "interest_expense", "income_tax_expense", "net_income",
@@ -624,6 +627,9 @@ async def extract_financials(
                 if operating is not None and da is not None:
                     data["ebitda"] = operating + da
 
+            # Include source filing URL for provenance tracking
+            data["source_filing_url"] = filing_url
+
             return ExtractedFinancials(**data)
     except Exception as e:
         print(f"Failed to parse financial extraction: {e}")
@@ -772,6 +778,9 @@ async def save_financials_to_db(
         print(f"Company not found: {ticker}")
         return None
 
+    # Use source_filing from parameter, or fall back to URL embedded in financials
+    filing_url = source_filing or financials.source_filing_url
+
     # Check if record already exists
     result = await session.execute(
         select(CompanyFinancials).where(
@@ -795,7 +804,7 @@ async def save_financials_to_db(
             value = getattr(financials, field)
             if value is not None:
                 setattr(existing, field, value)
-        existing.source_filing = source_filing
+        existing.source_filing = filing_url
         existing.extracted_at = datetime.utcnow()
         await session.commit()
         return existing
@@ -826,7 +835,7 @@ async def save_financials_to_db(
         investing_cash_flow=financials.investing_cash_flow,
         financing_cash_flow=financials.financing_cash_flow,
         capex=financials.capex,
-        source_filing=source_filing,
+        source_filing=filing_url,
     )
     session.add(record)
     await session.commit()
