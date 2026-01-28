@@ -375,6 +375,58 @@ def extract_note_descriptions(text: str) -> list[str]:
         except ValueError:
             pass
 
+    # Pattern 5: "the YYYY Notes" + "interest rate X.XX%"
+    # Handles: "the 2031 Notes bear interest...at the annual interest rate 1.800%"
+    # First find all "the YYYY Notes" references
+    year_notes_pattern = r'the\s+(\d{4})\s+Notes'
+    years_mentioned = set()
+    for match in re.finditer(year_notes_pattern, text, re.IGNORECASE):
+        years_mentioned.add(match.group(1))
+
+    # Then find interest rate patterns in the same document
+    rate_patterns = [
+        r'interest\s+rate\s+(?:of\s+)?(\d+\.?\d*)\s*%',
+        r'bear(?:s|ing)?\s+interest\s+(?:at\s+)?(?:the\s+)?(?:annual\s+)?(?:rate\s+)?(?:of\s+)?(\d+\.?\d*)\s*%',
+        r'(\d+\.?\d*)\s*%\s+(?:per\s+annum|annual)',
+    ]
+    rates_found = set()
+    for pattern in rate_patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            try:
+                rate_float = float(match.group(1))
+                if 0.1 <= rate_float <= 20:  # Reasonable bond rate range
+                    rates_found.add(rate_float)
+            except ValueError:
+                pass
+
+    # If we have year notes and rates, try to match them contextually
+    # Look for patterns where year and rate appear close together
+    for year in years_mentioned:
+        # Search for rate near year mention
+        year_context_pattern = rf'(\d{{4}})\s+Notes.{{0,500}}?interest\s+rate\s+(?:of\s+)?(\d+\.?\d*)\s*%'
+        for match in re.finditer(year_context_pattern, text, re.IGNORECASE | re.DOTALL):
+            if match.group(1) == year:
+                try:
+                    rate_float = float(match.group(2))
+                    normalized = f"{rate_float:.2f}% notes {year}"
+                    descriptions.append(normalized)
+                except ValueError:
+                    pass
+
+    # Pattern 6: "YYYY Notes" with rate on same line or nearby
+    # More specific context matching
+    line_pattern = r'(\d{4})\s+Notes[^\n]{0,200}?(\d+\.?\d*)\s*%'
+    for match in re.finditer(line_pattern, text, re.IGNORECASE):
+        year = match.group(1)
+        rate = match.group(2)
+        try:
+            rate_float = float(rate)
+            if 0.1 <= rate_float <= 20 and 2020 <= int(year) <= 2060:
+                normalized = f"{rate_float:.2f}% notes {year}"
+                descriptions.append(normalized)
+        except ValueError:
+            pass
+
     return list(set(descriptions))
 
 
@@ -1422,8 +1474,9 @@ def find_all_matching_documents(
         # appears in the document's list of note descriptions (higher confidence)
         if inst_coupon and inst_maturity_year:
             constructed_desc = f"{inst_coupon:.2f}% notes {inst_maturity_year}"
-            # Extract all note descriptions from document content
-            doc_descriptions = extract_note_descriptions(content_preview[:50000])
+            # Extract all note descriptions from full document content
+            # (note descriptions can appear deep in supplemental indentures)
+            doc_descriptions = extract_note_descriptions(content)
 
             if constructed_desc in doc_descriptions:
                 # This is a strong match - document explicitly mentions this exact bond
