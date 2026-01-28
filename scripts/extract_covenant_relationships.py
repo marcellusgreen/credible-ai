@@ -47,7 +47,7 @@ from app.models import (
     Entity,
     Guarantee,
 )
-from app.services.qa_agent import parse_json_robust
+from app.services.utils import parse_json_robust
 
 
 # =============================================================================

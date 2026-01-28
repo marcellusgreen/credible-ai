@@ -1,90 +1,112 @@
 """
-Guarantee Extraction Service for DebtStack.ai
+Guarantee Extraction Service
+============================
 
 Extracts guarantee relationships from indentures and credit agreements.
 Links debt instruments to their guarantor entities.
+
+USAGE
+-----
+    from app.services.guarantee_extraction import extract_guarantees
+
+    count = await extract_guarantees(session, company_id, ticker, filings)
 """
 
+from dataclasses import dataclass
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Entity, DebtInstrument, Guarantee, DocumentSection
-from app.services.utils import parse_json_robust
-from app.core.config import get_settings
+from app.services.base_extractor import BaseExtractor, ExtractionContext
+from app.services.llm_utils import LLMResponse
 
 
-async def extract_guarantees(
-    session: AsyncSession,
-    company_id: UUID,
-    ticker: str,
-    filings: dict
-) -> int:
+@dataclass
+class ParsedGuarantee:
+    """Parsed guarantee from LLM response."""
+    debt_name: str
+    guarantor_names: list[str]
+    guarantee_type: str = "full"
+
+
+class GuaranteeExtractor(BaseExtractor):
     """
-    Extract guarantee relationships from indentures and credit agreements.
+    Extracts guarantee relationships from SEC filings.
 
-    Args:
-        session: Database session
-        company_id: Company UUID
-        ticker: Stock ticker
-        filings: Dict of filing content by type
-
-    Returns:
-        Number of guarantees created
+    STEPS
+    -----
+    1. Load entities and debt instruments for company
+    2. Get indenture/credit agreement documents
+    3. Build prompt with entity and debt lists
+    4. Parse LLM response for guarantee relationships
+    5. Create Guarantee records linking debt to guarantors
     """
-    import google.generativeai as genai
 
-    settings = get_settings()
-    if not settings.gemini_api_key:
-        return 0
+    async def load_context(self, context: ExtractionContext) -> ExtractionContext:
+        """Load entities, instruments, and documents."""
+        session = context.session
+        company_id = context.company_id
 
-    genai.configure(api_key=settings.gemini_api_key)
-    model = genai.GenerativeModel("gemini-2.0-flash")
+        # Load entities
+        result = await session.execute(
+            select(Entity).where(Entity.company_id == company_id)
+        )
+        context.entities = list(result.scalars().all())
 
-    # Get entities and debt instruments
-    result = await session.execute(
-        select(Entity).where(Entity.company_id == company_id)
-    )
-    entities = list(result.scalars().all())
-    entity_names = [e.name for e in entities]
-    entity_map = {e.name.lower(): e.id for e in entities}
+        # Load debt instruments
+        result = await session.execute(
+            select(DebtInstrument).where(
+                DebtInstrument.company_id == company_id,
+                DebtInstrument.is_active == True,
+            )
+        )
+        context.instruments = list(result.scalars().all())
 
-    result = await session.execute(
-        select(DebtInstrument).where(DebtInstrument.company_id == company_id)
-    )
-    instruments = list(result.scalars().all())
+        # Load relevant documents
+        result = await session.execute(
+            select(DocumentSection).where(
+                DocumentSection.company_id == company_id,
+                DocumentSection.section_type.in_([
+                    'indenture', 'credit_agreement', 'guarantor_list'
+                ])
+            ).limit(5)
+        )
+        context.documents = list(result.scalars().all())
 
-    if not instruments or not entities:
-        return 0
+        return context
 
-    # Get document sections (indentures, credit agreements)
-    result = await session.execute(
-        select(DocumentSection).where(
-            DocumentSection.company_id == company_id,
-            DocumentSection.section_type.in_(['indenture', 'credit_agreement', 'guarantor_list'])
-        ).limit(5)
-    )
-    docs = list(result.scalars().all())
+    async def get_prompt(self, context: ExtractionContext) -> str:
+        """Build prompt for guarantee extraction."""
+        if not context.instruments or not context.entities:
+            return ""
 
-    # Build context from filings if no stored docs
-    doc_content = ""
-    if docs:
-        doc_content = "\n\n".join([f"=== {d.section_type} ===\n{d.content[:30000]}" for d in docs])
-    else:
-        # Use raw filings
-        for key, content in list(filings.items())[:3]:
-            if content:
-                doc_content += f"\n\n=== {key} ===\n{content[:30000]}"
+        # Build content from documents or filings
+        doc_content = ""
+        if context.documents:
+            doc_content = "\n\n".join([
+                f"=== {d.section_type} ===\n{d.content[:30000]}"
+                for d in context.documents
+            ])
+        else:
+            for key, content in list(context.filings.items())[:3]:
+                if content:
+                    doc_content += f"\n\n=== {key} ===\n{content[:30000]}"
 
-    if not doc_content:
-        return 0
+        if not doc_content:
+            return ""
 
-    # Build prompt
-    entity_list = "\n".join([f"- {name}" for name in entity_names[:50]])
-    debt_list = "\n".join([f"- {i.name}" for i in instruments[:30]])
+        # Build entity and debt lists
+        entity_list = "\n".join([
+            f"- {e.name}" for e in context.entities[:50]
+        ])
+        debt_list = "\n".join([
+            f"- {i.name}" for i in context.instruments[:30]
+        ])
 
-    prompt = f"""Analyze these documents to extract guarantee relationships for {ticker}.
+        return f"""Analyze these documents to extract guarantee relationships for {context.ticker}.
 
 ENTITIES (use exact names):
 {entity_list}
@@ -104,19 +126,42 @@ Return JSON:
 
 Only include guarantors that EXACTLY match entity names above."""
 
-    try:
-        response = model.generate_content(prompt)
-        result_data = parse_json_robust(response.text)
+    async def parse_result(
+        self,
+        response: LLMResponse,
+        context: ExtractionContext
+    ) -> list[ParsedGuarantee]:
+        """Parse guarantee relationships from LLM response."""
+        guarantees = []
+        for g in response.data.get('guarantees', []):
+            guarantees.append(ParsedGuarantee(
+                debt_name=g.get('debt_name', ''),
+                guarantor_names=g.get('guarantor_names', []),
+                guarantee_type=g.get('guarantee_type', 'full'),
+            ))
+        return guarantees
+
+    async def save_result(
+        self,
+        items: list[ParsedGuarantee],
+        context: ExtractionContext
+    ) -> int:
+        """Save guarantee records to database."""
+        session = context.session
+
+        # Build lookup maps
+        entity_map = {e.name.lower(): e.id for e in context.entities}
+        instrument_map = {i.name.lower(): i for i in context.instruments}
 
         guarantees_created = 0
-        for g in result_data.get('guarantees', []):
-            debt_name = g.get('debt_name', '').lower()
+
+        for parsed in items:
             # Find matching instrument
-            instrument = next((i for i in instruments if i.name and i.name.lower() == debt_name), None)
+            instrument = instrument_map.get(parsed.debt_name.lower())
             if not instrument:
                 continue
 
-            for guarantor_name in g.get('guarantor_names', []):
+            for guarantor_name in parsed.guarantor_names:
                 entity_id = entity_map.get(guarantor_name.lower())
                 if not entity_id:
                     continue
@@ -135,13 +180,45 @@ Only include guarantors that EXACTLY match entity names above."""
                     id=uuid4(),
                     debt_instrument_id=instrument.id,
                     guarantor_id=entity_id,
-                    guarantee_type=g.get('guarantee_type', 'full'),
+                    guarantee_type=parsed.guarantee_type,
                 )
                 session.add(guarantee)
                 guarantees_created += 1
 
         await session.commit()
         return guarantees_created
-    except Exception as e:
-        print(f"      Guarantee extraction error: {e}")
-        return 0
+
+
+# Convenience function matching original API
+async def extract_guarantees(
+    session: AsyncSession,
+    company_id: UUID,
+    ticker: str,
+    filings: dict
+) -> int:
+    """
+    Extract guarantee relationships from indentures and credit agreements.
+
+    PARAMETERS
+    ----------
+    session : AsyncSession
+        Database session
+    company_id : UUID
+        Company UUID
+    ticker : str
+        Stock ticker
+    filings : dict
+        Dict of filing content by type
+
+    RETURNS
+    -------
+    int
+        Number of guarantees created
+    """
+    extractor = GuaranteeExtractor()
+    return await extractor.extract(
+        session=session,
+        company_id=company_id,
+        ticker=ticker,
+        filings=filings,
+    )

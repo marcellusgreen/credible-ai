@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
 from app.models import Company, Entity, DebtInstrument, Guarantee
-from app.services.qa_agent import parse_json_robust
+from app.services.utils import parse_json_robust
 
 
 # =============================================================================

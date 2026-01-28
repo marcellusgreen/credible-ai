@@ -32,8 +32,8 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
 from app.models import Company, Entity, DebtInstrument, Guarantee, DocumentSection
-from app.services.extraction import SecApiClient, clean_filing_html
-from app.services.qa_agent import parse_json_robust
+from app.services.extraction import SecApiClient
+from app.services.utils import clean_filing_html, parse_json_robust
 
 
 # =============================================================================

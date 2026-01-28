@@ -1,14 +1,11 @@
 """
-Iterative Extraction Service with QA Feedback Loop.
+Iterative Extraction Service with QA Feedback Loop
+===================================================
 
-Optimizes for speed, accuracy, and cost by:
-1. Starting with cheap Tier 1 extraction
-2. Running targeted QA checks
-3. Only escalating/re-extracting sections that failed QA
-4. Caching successful extractions to avoid re-work
-5. Using targeted prompts to fix specific issues
+Wraps TieredExtractionService with automated QA and targeted fixes.
 
-Flow:
+FLOW
+----
 ┌─────────────────────────────────────────────────────────────┐
 │ Initial Extraction (Gemini ~$0.01)                          │
 └─────────────────────┬───────────────────────────────────────┘
@@ -21,7 +18,7 @@ Flow:
 └─────────────────────┬───────────────────────────────────────┘
                       ▼
               ┌───────────────┐
-              │ Score >= 90%? │──Yes──► Done! (~$0.015 total)
+              │ Score >= 85%? │──Yes──► Done! (~$0.015 total)
               └───────┬───────┘
                       │ No
                       ▼
@@ -38,8 +35,27 @@ Flow:
                       ▼
               [Loop back to QA]
 
-Max cost for simple company: ~$0.03
-Max cost for complex company: ~$0.20 (with Claude escalation)
+COST
+----
+- Simple company: ~$0.02-0.03
+- Complex company: ~$0.15-0.20 (with Claude escalation)
+
+RELATIONSHIP TO OTHER MODULES
+-----------------------------
+- Uses TieredExtractionService from tiered_extraction.py for LLM calls
+- Uses QAAgent from qa_agent.py for verification
+- This is the main entry point for extraction (via scripts/extract_iterative.py)
+
+USAGE
+-----
+    from app.services.iterative_extraction import IterativeExtractionService
+
+    service = IterativeExtractionService(
+        gemini_api_key=...,
+        anthropic_api_key=...,
+        sec_api_key=...,
+    )
+    result = await service.extract(ticker, cik, filings)
 """
 
 import json

@@ -17,8 +17,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Company, ObligorGroupFinancials
-from app.services.extraction import SecApiClient, clean_filing_html
-from app.services.qa_agent import parse_json_robust
+from app.services.extraction import SecApiClient
+from app.services.utils import clean_filing_html, parse_json_robust
 
 # Import API clients
 import anthropic

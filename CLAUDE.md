@@ -61,12 +61,27 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 
 ### Code Organization
 
-**Service modules** contain business logic:
-- `app/services/hierarchy_extraction.py` - Exhibit 21 parsing, ownership hierarchy
-- `app/services/guarantee_extraction.py` - Guarantee extraction from indentures
-- `app/services/collateral_extraction.py` - Collateral for secured debt
-- `app/services/metrics.py` - Credit metrics (leverage, coverage ratios)
-- `app/services/qc.py` - Quality control checks
+**Utilities** are stateless helper functions (no DB, no API calls):
+
+| File | Domain | Functions |
+|------|--------|-----------|
+| `app/services/utils.py` | Text/parsing | `parse_json_robust`, `normalize_name`, `parse_date` |
+| `app/services/extraction_utils.py` | SEC filings | `clean_filing_html`, `combine_filings`, `extract_debt_sections` |
+| `app/services/llm_utils.py` | LLM clients | `get_gemini_model`, `call_gemini`, `LLMResponse` |
+| `app/services/yield_calculation.py` | Financial math | YTM, duration, treasury yields |
+
+**Services** do complete jobs (orchestrate DB, APIs, workflows):
+
+| File | Purpose |
+|------|---------|
+| `app/services/sec_client.py` | SEC filing clients (`SecApiClient`, `SECEdgarClient`) |
+| `app/services/extraction.py` | Core extraction service + DB persistence |
+| `app/services/base_extractor.py` | Base class for LLM extraction services |
+| `app/services/hierarchy_extraction.py` | Exhibit 21 + indenture ownership enrichment |
+| `app/services/guarantee_extraction.py` | Guarantee extraction from indentures |
+| `app/services/collateral_extraction.py` | Collateral for secured debt |
+| `app/services/metrics.py` | Credit metrics (leverage, coverage ratios) |
+| `app/services/qc.py` | Quality control checks |
 
 **Scripts** are thin CLI wrappers that import from services:
 - `scripts/extract_iterative.py` - Complete extraction pipeline
@@ -83,16 +98,21 @@ This separation keeps business logic testable and reusable while scripts handle 
 | `app/api/routes.py` | Legacy FastAPI endpoints (26 routes) |
 | `app/core/auth.py` | API key generation, validation, tier config |
 | `app/core/cache.py` | Redis cache client (Upstash) |
-| `app/services/iterative_extraction.py` | Main extraction with QA loop |
-| `app/services/hierarchy_extraction.py` | Exhibit 21 parsing, ownership hierarchy |
+| `app/services/utils.py` | Core utilities: JSON parsing, name normalization, dates |
+| `app/services/extraction_utils.py` | SEC filing utilities: HTML cleaning, content combining |
+| `app/services/llm_utils.py` | LLM client utilities: Gemini, Claude, cost tracking |
+| `app/services/sec_client.py` | SEC clients: SecApiClient, SECEdgarClient |
+| `app/services/base_extractor.py` | Base class for LLM extraction services |
+| `app/services/extraction.py` | ExtractionService + database persistence |
+| `app/services/iterative_extraction.py` | Main extraction with QA loop (entry point) |
+| `app/services/tiered_extraction.py` | LLM clients for extraction, prompts, escalation |
+| `app/services/hierarchy_extraction.py` | Exhibit 21 + indenture ownership enrichment |
 | `app/services/guarantee_extraction.py` | Guarantee relationships from indentures |
 | `app/services/collateral_extraction.py` | Collateral extraction for secured debt |
 | `app/services/metrics.py` | Credit metrics computation with TTM tracking |
 | `app/services/qc.py` | Quality control checks |
 | `app/services/qa_agent.py` | 5-check QA verification |
 | `app/services/tiered_extraction.py` | LLM clients and prompts |
-| `app/services/extraction.py` | SEC clients, filing processing |
-| `app/services/extraction_utils.py` | Shared utilities (filing cleaning, debt sections, validation) |
 | `app/services/financial_extraction.py` | Financial statements with TTM support |
 | `scripts/extract_iterative.py` | Complete extraction pipeline CLI (thin wrapper) |
 | `scripts/recompute_metrics.py` | Metrics recomputation CLI (thin wrapper) |
@@ -494,28 +514,74 @@ alembic revision -m "description"  # Create new
 
 Current migrations: 001 (initial) through 017 (extraction_status)
 
-## Shared Utilities
+## Utilities & Services Architecture
 
-### Extraction Utilities (`app/services/extraction_utils.py`)
+The codebase distinguishes between **utilities** (stateless helpers) and **services** (orchestrate complete jobs):
 
-Consolidated utilities for SEC filing processing:
+### Utilities (Stateless Functions)
 
+**`app/services/utils.py`** - Core text/parsing utilities:
+```python
+from app.services.utils import (
+    parse_json_robust,    # Parse JSON from LLM output (handles code blocks, trailing commas)
+    normalize_name,       # Normalize entity names for matching (case, suffixes)
+    parse_date,           # Parse various date formats to date objects
+    extract_sections,     # Extract sections by keywords with context
+    clean_html,           # Simple HTML tag removal
+)
+```
+
+**`app/services/extraction_utils.py`** - SEC filing utilities:
 ```python
 from app.services.extraction_utils import (
     clean_filing_html,      # Clean HTML/XBRL from SEC filings
     truncate_content,       # Smart truncation at sentence boundaries
-    combine_filings,        # Combine multiple filings with priority (10-K > 10-Q > exhibit_21 > 8-K)
+    combine_filings,        # Combine multiple filings with priority
     extract_debt_sections,  # Extract debt-related content using keyword priority
     ModelTier,              # LLM model tiers enum
-    calculate_cost,         # Calculate LLM token costs
     LLMUsage,               # Token tracking dataclass
-    validate_extraction_structure,   # Validate extraction has required keys
-    validate_entity_references,      # Validate parent/issuer/guarantor references
-    validate_debt_amounts,           # Validate debt amounts are reasonable
+    calculate_cost,         # Calculate LLM token costs
 )
 ```
 
-These are also re-exported from `app/services/utils.py` for backwards compatibility.
+**`app/services/llm_utils.py`** - LLM client utilities:
+```python
+from app.services.llm_utils import (
+    get_gemini_model,     # Get configured Gemini model
+    get_claude_client,    # Get configured Anthropic client
+    call_gemini,          # Call Gemini with JSON parsing
+    call_claude,          # Call Claude with JSON parsing
+    LLMResponse,          # Standardized response dataclass
+    calculate_cost,       # Calculate cost from LLMResponse
+)
+```
+
+### Services (Orchestration)
+
+**`app/services/sec_client.py`** - SEC filing clients:
+```python
+from app.services.sec_client import SecApiClient, SECEdgarClient, FilingInfo
+
+# SEC-API.io (faster, no rate limits)
+client = SecApiClient(api_key="...")
+filings = await client.get_all_relevant_filings("AAPL")
+
+# Direct EDGAR (free, rate-limited)
+edgar = SECEdgarClient()
+filings = await edgar.get_all_relevant_filings(cik="0000320193")
+```
+
+**`app/services/base_extractor.py`** - Base class for LLM extraction:
+```python
+from app.services.base_extractor import BaseExtractor, ExtractionContext
+
+class GuaranteeExtractor(BaseExtractor):
+    async def get_prompt(self, context: ExtractionContext) -> str: ...
+    async def parse_result(self, response, context) -> list: ...
+    async def save_result(self, items, context) -> int: ...
+```
+
+This pattern is used by `guarantee_extraction.py` and `collateral_extraction.py`.
 
 ### Script Utilities (`scripts/script_utils.py`)
 

@@ -1,12 +1,34 @@
 """
-Tiered extraction service for cost-optimized corporate structure extraction.
+Tiered Extraction Service
+=========================
 
-Model Tiers:
-- Tier 1 (DeepSeek V3): $0.27/$1.10 per 1M tokens - bulk extraction
+Cost-optimized extraction using tiered LLM models with escalation.
+
+MODEL TIERS
+-----------
+- Tier 1 (Gemini Flash): $0.10/$0.40 per 1M tokens - bulk extraction
+- Tier 1.5 (Gemini Pro): $1.25/$10.00 per 1M tokens - intermediate escalation
 - Tier 2 (Claude Sonnet): $3/$15 per 1M tokens - validation/medium complexity
 - Tier 3 (Claude Opus): $15/$75 per 1M tokens - complex structures/QA
 
-Target: <$0.25 per company average, >95% accuracy
+Target: <$0.03 per company average, >90% accuracy
+
+RELATIONSHIP TO OTHER MODULES
+-----------------------------
+- This module provides: LLM clients, prompts, validation, TieredExtractionService
+- iterative_extraction.py wraps this with QA feedback loop
+- llm_utils.py provides lower-level LLM utilities (generic)
+
+TYPICAL USAGE
+-------------
+    # Direct usage (rare)
+    service = TieredExtractionService(gemini_key, anthropic_key, sec_api_key)
+    result = await service.extract(ticker, cik)
+
+    # Via iterative extraction (recommended)
+    from app.services.iterative_extraction import IterativeExtractionService
+    service = IterativeExtractionService(...)
+    result = await service.extract(ticker, cik, filings)
 """
 
 import json
@@ -33,6 +55,9 @@ from app.services.extraction_utils import (
     clean_filing_html,
     combine_filings,
     truncate_content,
+    validate_extraction_structure,
+    validate_entity_references,
+    validate_debt_amounts as _validate_debt_amounts,
 )
 
 
@@ -403,6 +428,10 @@ def classify_complexity(
 # =============================================================================
 # VALIDATION
 # =============================================================================
+# Note: These validation functions return bool for simple pass/fail checks.
+# For more detailed validation with error messages, see extraction_utils.py:
+#   validate_extraction_structure, validate_entity_references, validate_debt_amounts
+
 
 def validate_hierarchy(entities: list[dict]) -> bool:
     """Check that all parent references are valid."""

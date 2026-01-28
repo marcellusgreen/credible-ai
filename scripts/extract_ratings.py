@@ -31,7 +31,8 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.config import get_settings
 from app.models import Company, CompanyMetrics
-from app.services.extraction import SecApiClient, clean_filing_html
+from app.services.extraction import SecApiClient
+from app.services.utils import clean_filing_html
 
 settings = get_settings()
 

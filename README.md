@@ -285,11 +285,21 @@ credible/
 │   │   └── cache.py               # Redis cache client
 │   ├── models/schema.py           # SQLAlchemy models
 │   └── services/
+│       ├── # UTILITIES (stateless helpers)
+│       ├── utils.py                 # Core: JSON parsing, name normalization
+│       ├── extraction_utils.py      # SEC filing: HTML cleaning, content combining
+│       ├── llm_utils.py             # LLM clients: Gemini, Claude, cost tracking
+│       ├── yield_calculation.py     # Financial math: YTM, duration
+│       │
+│       ├── # SERVICES (orchestration)
+│       ├── sec_client.py            # SEC filing clients (SecApiClient, SECEdgarClient)
+│       ├── base_extractor.py        # Base class for LLM extraction services
+│       ├── extraction.py            # ExtractionService + DB persistence
 │       ├── iterative_extraction.py  # Main extraction with QA loop
+│       ├── hierarchy_extraction.py  # Exhibit 21 parsing, ownership
+│       ├── guarantee_extraction.py  # Guarantee relationships
+│       ├── collateral_extraction.py # Collateral for secured debt
 │       ├── qa_agent.py              # 5-check verification system
-│       ├── tiered_extraction.py     # LLM clients and prompts
-│       ├── extraction.py            # SEC clients, filing processing
-│       ├── extraction_utils.py      # Shared extraction utilities
 │       ├── financial_extraction.py  # Quarterly financials
 │       └── bond_pricing.py          # Pricing calculations
 ├── scripts/                       # CLI tools
