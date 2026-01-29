@@ -335,12 +335,63 @@ python scripts/fix_ownership_hierarchy.py --all --save-db         # All companie
 
 **Note:** SEC filings rarely contain explicit intermediate ownership chains. Documents typically say entities are "subsidiaries of the Company" without specifying intermediate holding companies. The extraction only captures what's explicitly documented - no inferences.
 
-### TTM (Trailing Twelve Months) Extraction
+### TTM EBITDA Calculation (Leverage Ratios)
+
+The metrics service (`app/services/metrics.py`) calculates TTM EBITDA for leverage ratios using smart filing-type detection:
+
+**Rule: 10-K vs 10-Q Logic**
+- **If latest filing is 10-K**: Use annual figures directly (already represents full year TTM)
+- **If latest filing is 10-Q**: Sum trailing 4 quarters of 10-Q data
+
+This prevents the common error of mixing annual and quarterly figures.
+
+**EBITDA Computation:**
+1. Use `ebitda` field if directly available
+2. Otherwise compute: `operating_income + depreciation_amortization`
+3. Fallback: Use `operating_income` alone if D&A unavailable (flagged as estimated)
+
+**Annualization:**
+- If fewer than 4 quarters of 10-Q data available, extrapolate: `ttm_ebitda = sum * (4 / quarters_available)`
+- This is flagged in metadata so users know data quality
+
+**Data Quality Tracking (`source_filings` JSONB):**
+```json
+{
+  "ebitda_source": "annual_10k",       // or "quarterly_sum"
+  "ebitda_quarters": 4,                 // Number of quarters used
+  "ebitda_quarters_with_da": 4,         // Quarters where D&A was available
+  "is_annualized": false,               // True if extrapolated from <4 quarters
+  "ebitda_estimated": false,            // True if some quarters used OpInc only
+  "ttm_quarters": ["2025FY"],           // Periods used (e.g., "2025FY" or "2025Q3,2025Q2,...")
+  "computed_at": "2026-01-29T16:32:47Z"
+}
+```
+
+**API Exposure:**
+```bash
+GET /v1/companies?ticker=AAPL&include_metadata=true
+```
+
+Returns `_metadata.leverage_data_quality` with all tracking fields, enabling users to assess data reliability.
+
+**Current Coverage (201 companies):**
+| Category | Count | Percent |
+|----------|-------|---------|
+| Full TTM (4 quarters or 10-K) | 73 | 36% |
+| Annualized (<4 quarters) | 111 | 55% |
+| No EBITDA data | 17 | 8% |
+
+**Data Freshness vs LLMs:**
+DebtStack extracts from the latest SEC filings (Oct-Dec 2025), while LLMs like Gemini/ChatGPT have knowledge cutoffs ~18 months stale. Comparison testing showed:
+- Companies where periods align: 100% match rate (within 15% tolerance)
+- Apparent "mismatches" are due to LLM data being from Q1-Q2 2024
+
+### TTM Financial Extraction
 
 For accurate leverage ratios, use `--ttm` to extract 4 quarters of financial data:
 - Fetches most recent 3 10-Qs (Q1, Q2, Q3) + 1 10-K (full year as Q4 proxy)
 - Uses `periodOfReport` from SEC API to determine fiscal quarter
-- TTM EBITDA = Sum of 4 quarters (more accurate than annualizing single quarter)
+- Stores `filing_type` field ("10-K" or "10-Q") for each record
 - If fewer than 4 quarters available, annualizes what's available
 
 ### Financial Data Quality Control
@@ -365,8 +416,10 @@ python scripts/fix_qc_financials.py --save-db    # Apply fixes
 **QC Checks:**
 1. **Sanity checks** (no source doc needed): Revenue > $1T, EBITDA > Revenue, Debt > 10x Assets
 2. **Source validation**: Re-reads scale from SEC filing header, compares stored vs. source values
+3. **Leverage quality**: Flags high leverage (>20x) with insufficient EBITDA quarters
+4. **Leverage consistency**: Compares stored leverage vs calculated (debt/EBITDA)
 
-**Current Status (2026-01-25):** 0 critical, 14 errors (all extraction failures, documented)
+**Current Status (2026-01-29):** 0 critical, 0 errors, 4 warnings
 
 ### Covenant Relationship Extraction
 

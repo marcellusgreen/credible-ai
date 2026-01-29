@@ -342,6 +342,83 @@ async def check_scale_sanity(db: AsyncSession) -> list[dict]:
             'period': f"Q{row[4]} {row[3]}"
         })
 
+    # Check 5: Extreme leverage (>20x) with insufficient EBITDA quarters
+    # High leverage from <4 quarters of EBITDA is likely a data issue
+    result = await db.execute(text('''
+        WITH company_ebitda AS (
+            SELECT
+                c.id as company_id,
+                c.ticker,
+                COUNT(cf.id) as quarter_count,
+                SUM(cf.ebitda) as ttm_ebitda
+            FROM companies c
+            JOIN company_financials cf ON cf.company_id = c.id
+            WHERE cf.ebitda IS NOT NULL AND cf.ebitda > 0
+            GROUP BY c.id, c.ticker
+        )
+        SELECT
+            ce.ticker,
+            cm.net_leverage_ratio,
+            cm.total_debt / 100.0 / 1e9 as debt_b,
+            ce.ttm_ebitda / 100.0 / 1e9 as ebitda_b,
+            ce.quarter_count
+        FROM company_ebitda ce
+        JOIN company_metrics cm ON cm.company_id = ce.company_id
+        WHERE cm.net_leverage_ratio > 20
+        AND ce.quarter_count < 4
+        ORDER BY cm.net_leverage_ratio DESC
+    '''))
+    for row in result.fetchall():
+        ticker, leverage, debt_b, ebitda_b, quarters = row
+        issues.append({
+            'ticker': ticker,
+            'issue': f"Leverage {float(leverage):.1f}x with only {quarters} quarter(s) of EBITDA (${float(ebitda_b):.2f}B) - likely understated TTM",
+            'severity': 'error',
+            'field': 'net_leverage_ratio',
+            'period': f"{quarters}Q data"
+        })
+
+    # Check 6: Leverage ratio mismatch between stored metric and calculated value
+    # Catches cases where metrics were computed with stale/wrong EBITDA
+    result = await db.execute(text('''
+        WITH company_ebitda AS (
+            SELECT
+                c.id as company_id,
+                c.ticker,
+                SUM(cf.ebitda) as ttm_ebitda,
+                COUNT(cf.id) as quarter_count
+            FROM companies c
+            JOIN company_financials cf ON cf.company_id = c.id
+            WHERE cf.ebitda IS NOT NULL AND cf.ebitda > 0
+            GROUP BY c.id, c.ticker
+            HAVING COUNT(cf.id) >= 4
+        )
+        SELECT
+            ce.ticker,
+            cm.net_leverage_ratio as stored_leverage,
+            CASE WHEN ce.ttm_ebitda > 0
+                 THEN cm.net_debt::float / ce.ttm_ebitda::float
+                 ELSE NULL END as calc_leverage,
+            cm.net_debt / 100.0 / 1e9 as net_debt_b,
+            ce.ttm_ebitda / 100.0 / 1e9 as ebitda_b
+        FROM company_ebitda ce
+        JOIN company_metrics cm ON cm.company_id = ce.company_id
+        WHERE cm.net_leverage_ratio IS NOT NULL
+        AND ce.ttm_ebitda > 0
+        AND ABS(cm.net_leverage_ratio - (cm.net_debt::float / ce.ttm_ebitda::float)) > 2
+        ORDER BY ABS(cm.net_leverage_ratio - (cm.net_debt::float / ce.ttm_ebitda::float)) DESC
+    '''))
+    for row in result.fetchall():
+        ticker, stored, calc, debt_b, ebitda_b = row
+        if calc:
+            issues.append({
+                'ticker': ticker,
+                'issue': f"Leverage mismatch: stored {float(stored):.1f}x vs calculated {float(calc):.1f}x (debt ${float(debt_b):.1f}B / EBITDA ${float(ebitda_b):.2f}B)",
+                'severity': 'warning',
+                'field': 'net_leverage_ratio',
+                'period': 'metrics'
+            })
+
     return issues
 
 
@@ -365,9 +442,10 @@ async def run_audit(
 
     critical_count = sum(1 for i in sanity_issues if i['severity'] == 'critical')
     error_count = sum(1 for i in sanity_issues if i['severity'] == 'error')
+    warning_count = sum(1 for i in sanity_issues if i['severity'] == 'warning')
 
     if sanity_issues:
-        print(f"\n  Found {len(sanity_issues)} issues ({critical_count} critical, {error_count} errors):\n")
+        print(f"\n  Found {len(sanity_issues)} issues ({critical_count} critical, {error_count} errors, {warning_count} warnings):\n")
         for issue in sanity_issues:
             severity = issue['severity'].upper()
             print(f"  [{severity}] {issue['ticker']} ({issue['period']}): {issue['issue']}")
@@ -423,6 +501,7 @@ async def run_audit(
     print(f"\nSanity Check Issues:")
     print(f"  Critical: {critical_count}")
     print(f"  Errors:   {error_count}")
+    print(f"  Warnings: {warning_count}")
 
     if audit_results:
         validation_failures = sum(

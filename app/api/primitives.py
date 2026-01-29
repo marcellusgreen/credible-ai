@@ -397,21 +397,37 @@ async def search_companies(
         }
 
         # Add metadata if requested
-        if include_metadata and c.id in metadata_map:
-            meta = metadata_map[c.id]
-            company_data["_metadata"] = {
-                "qa_score": float(meta.qa_score) if meta.qa_score else None,
-                "extraction_method": meta.extraction_method,
-                "data_version": meta.data_version,
-                "structure_extracted_at": meta.structure_extracted_at.isoformat() if meta.structure_extracted_at else None,
-                "debt_extracted_at": meta.debt_extracted_at.isoformat() if meta.debt_extracted_at else None,
-                "financials_extracted_at": meta.financials_extracted_at.isoformat() if meta.financials_extracted_at else None,
-                "pricing_updated_at": meta.pricing_updated_at.isoformat() if meta.pricing_updated_at else None,
-                "source_10k_date": meta.source_10k_date.isoformat() if meta.source_10k_date else None,
-                "source_10q_url": meta.source_10q_url,
-                "field_confidence": meta.field_confidence,
-                "warnings": meta.warnings if meta.warnings else [],
-            }
+        if include_metadata:
+            metadata = {}
+            # Add extraction metadata if available
+            if c.id in metadata_map:
+                meta = metadata_map[c.id]
+                metadata.update({
+                    "qa_score": float(meta.qa_score) if meta.qa_score else None,
+                    "extraction_method": meta.extraction_method,
+                    "data_version": meta.data_version,
+                    "structure_extracted_at": meta.structure_extracted_at.isoformat() if meta.structure_extracted_at else None,
+                    "debt_extracted_at": meta.debt_extracted_at.isoformat() if meta.debt_extracted_at else None,
+                    "financials_extracted_at": meta.financials_extracted_at.isoformat() if meta.financials_extracted_at else None,
+                    "pricing_updated_at": meta.pricing_updated_at.isoformat() if meta.pricing_updated_at else None,
+                    "source_10k_date": meta.source_10k_date.isoformat() if meta.source_10k_date else None,
+                    "source_10q_url": meta.source_10q_url,
+                    "field_confidence": meta.field_confidence,
+                    "warnings": meta.warnings if meta.warnings else [],
+                })
+            # Add leverage data quality info from source_filings
+            if m.source_filings:
+                sf = m.source_filings
+                metadata["leverage_data_quality"] = {
+                    "ebitda_source": sf.get("ebitda_source"),  # "annual_10k" or "quarterly_sum"
+                    "ebitda_quarters": sf.get("ebitda_quarters"),
+                    "ebitda_quarters_with_da": sf.get("ebitda_quarters_with_da"),
+                    "is_annualized": sf.get("is_annualized", False),
+                    "ebitda_estimated": sf.get("ebitda_estimated", False),
+                    "ttm_quarters": sf.get("ttm_quarters", []),
+                    "computed_at": sf.get("computed_at"),
+                }
+            company_data["_metadata"] = metadata
 
         data.append(filter_dict(company_data, selected_fields))
 
@@ -1986,13 +2002,26 @@ async def _batch_search_companies(params: dict, db: AsyncSession) -> dict:
             "has_near_term_maturity": m.has_near_term_maturity,
         }
 
-        if include_metadata and c.id in metadata_map:
-            meta = metadata_map[c.id]
-            company_data["_metadata"] = {
-                "qa_score": float(meta.qa_score) if meta.qa_score else None,
-                "extraction_method": meta.extraction_method,
-                "warnings": meta.warnings if meta.warnings else [],
-            }
+        if include_metadata:
+            metadata = {}
+            if c.id in metadata_map:
+                meta = metadata_map[c.id]
+                metadata.update({
+                    "qa_score": float(meta.qa_score) if meta.qa_score else None,
+                    "extraction_method": meta.extraction_method,
+                    "warnings": meta.warnings if meta.warnings else [],
+                })
+            # Add leverage data quality info
+            if m.source_filings:
+                sf = m.source_filings
+                metadata["leverage_data_quality"] = {
+                    "ebitda_quarters": sf.get("ebitda_quarters"),
+                    "ebitda_quarters_with_da": sf.get("ebitda_quarters_with_da"),
+                    "is_annualized": sf.get("is_annualized", False),
+                    "ebitda_estimated": sf.get("ebitda_estimated", False),
+                    "ttm_quarters": sf.get("ttm_quarters", []),
+                }
+            company_data["_metadata"] = metadata
 
         data.append(filter_dict(company_data, selected_fields) if selected_fields else company_data)
 

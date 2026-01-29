@@ -626,6 +626,27 @@ async def extract_financials(
                 da = data.get("depreciation_amortization")
                 if operating is not None and da is not None:
                     data["ebitda"] = operating + da
+                elif operating is not None:
+                    # Fallback: use operating income as EBITDA proxy when D&A unavailable
+                    # This is a lower bound estimate (EBITDA >= Operating Income)
+                    # Track this in uncertainties so downstream can assess data quality
+                    data["ebitda"] = operating
+                    uncertainties = data.get("uncertainties", [])
+                    uncertainties.append("EBITDA estimated from operating_income (D&A not found)")
+                    data["uncertainties"] = uncertainties
+
+            # Track extraction completeness for data quality assessment
+            uncertainties = data.get("uncertainties", [])
+            critical_fields = {
+                "revenue": "Revenue not extracted",
+                "operating_income": "Operating income not extracted",
+                "total_debt": "Total debt not extracted",
+                "depreciation_amortization": "D&A not extracted (EBITDA may be understated)",
+            }
+            for field, warning in critical_fields.items():
+                if data.get(field) is None and warning not in uncertainties:
+                    uncertainties.append(warning)
+            data["uncertainties"] = uncertainties
 
             # Include source filing URL for provenance tracking
             data["source_filing_url"] = filing_url

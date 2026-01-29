@@ -61,6 +61,49 @@ Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
 
 This transparency ensures you always know when you're working with extracted data vs. inferred data.
 
+### Leverage Ratio Data Quality
+
+Leverage ratios require TTM (Trailing Twelve Months) EBITDA calculations. We track data quality metadata so you know exactly how reliable each ratio is:
+
+```bash
+# Get leverage with data quality metadata
+curl "/v1/companies?ticker=AAPL&include_metadata=true"
+```
+
+Returns:
+```json
+{
+  "ticker": "AAPL",
+  "leverage_ratio": 0.63,
+  "_metadata": {
+    "leverage_data_quality": {
+      "ebitda_source": "annual_10k",     // Used 10-K annual figures
+      "ebitda_quarters": 4,               // Equivalent to 4 quarters
+      "is_annualized": false,             // Not extrapolated
+      "ebitda_estimated": false,          // D&A was available
+      "ttm_quarters": ["2025FY"]          // Period used
+    }
+  }
+}
+```
+
+**TTM EBITDA Calculation Rules:**
+- **10-K filing**: Use annual figures directly (already represents full year)
+- **10-Q filing**: Sum trailing 4 quarters
+- **<4 quarters available**: Annualize (flagged as `is_annualized: true`)
+- **No D&A data**: Use operating income as proxy (flagged as `ebitda_estimated: true`)
+
+### Data Freshness Advantage
+
+DebtStack extracts directly from the latest SEC EDGAR filings, providing **12-18 months fresher data** than LLMs like ChatGPT or Gemini, which rely on stale training data.
+
+| Source | Data Period | NVDA EBITDA Example |
+|--------|-------------|---------------------|
+| **DebtStack** | Nov 2025 (FY2026 Q3) | $121B |
+| Gemini/ChatGPT | Q1 2025 (knowledge cutoff) | $39B |
+
+This matters for fast-growing companies where financial metrics change significantly between LLM training updates.
+
 ## Quick Start
 
 ### 1. Clone and Setup
@@ -247,7 +290,13 @@ python scripts/extract_financials.py --ticker CHTR --save-db
 python scripts/extract_financials.py --ticker CHTR --ttm --save-db
 
 # Recompute metrics after extracting financials
+# Uses smart 10-K vs 10-Q logic:
+#   - If latest filing is 10-K: uses annual figures directly (already TTM)
+#   - If latest filing is 10-Q: sums trailing 4 quarters
 python scripts/recompute_metrics.py --ticker CHTR
+
+# Recompute metrics for all companies
+python scripts/recompute_metrics.py
 
 # Extract ownership hierarchy from Exhibit 21 HTML indentation
 python scripts/extract_exhibit21_hierarchy.py --ticker CHTR --save-db

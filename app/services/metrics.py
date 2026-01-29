@@ -182,39 +182,90 @@ async def recompute_metrics_for_company(
     secured_leverage = None
     net_debt = None
 
-    # Get TTM financials (4 quarters) for more accurate ratios
+    # Get TTM financials for EBITDA calculation
+    # Rule: If latest filing is 10-K, use annual figures directly (already TTM)
+    #       If latest filing is 10-Q, sum trailing 4 quarters
     ttm_financials = await get_ttm_financials(db, company_id)
 
-    # Calculate TTM EBITDA from available quarters
+    # Calculate TTM EBITDA
     ttm_ebitda = 0
     ttm_interest = 0
     quarters_with_ebitda = 0
+    quarters_with_da = 0  # Track quarters where D&A was available
     ttm_quarters = []  # Track which quarters were used
     ttm_filings = []   # Track source filing URLs
+    ebitda_source = "quarterly"  # Track whether we used annual or quarterly data
 
-    for fin in ttm_financials:
-        # Get EBITDA for this quarter (direct or computed)
-        q_ebitda = fin.ebitda
-        if not q_ebitda:
-            if fin.operating_income and fin.depreciation_amortization:
-                q_ebitda = fin.operating_income + fin.depreciation_amortization
-            elif fin.operating_income:
-                q_ebitda = fin.operating_income
+    if ttm_financials:
+        latest = ttm_financials[0]
 
-        if q_ebitda and q_ebitda > 0:
-            ttm_ebitda += q_ebitda
-            quarters_with_ebitda += 1
-            ttm_quarters.append(f"{fin.fiscal_year}Q{fin.fiscal_quarter}")
-            if fin.source_filing:
-                ttm_filings.append(fin.source_filing)
+        # Check if latest filing is a 10-K (annual report)
+        if latest.filing_type == "10-K":
+            # Use annual figures directly - they represent full year TTM
+            ebitda_source = "annual_10k"
+            q_ebitda = latest.ebitda
+            has_da = False
 
-        if fin.interest_expense:
-            ttm_interest += fin.interest_expense
+            if not q_ebitda:
+                if latest.operating_income and latest.depreciation_amortization:
+                    q_ebitda = latest.operating_income + latest.depreciation_amortization
+                    has_da = True
+                elif latest.operating_income:
+                    q_ebitda = latest.operating_income
+            else:
+                has_da = True
 
-    # If we have fewer than 4 quarters, annualize what we have
-    if quarters_with_ebitda > 0 and quarters_with_ebitda < 4:
-        ttm_ebitda = int(ttm_ebitda * (4 / quarters_with_ebitda))
-        ttm_interest = int(ttm_interest * (4 / quarters_with_ebitda))
+            if q_ebitda and q_ebitda > 0:
+                ttm_ebitda = q_ebitda
+                quarters_with_ebitda = 4  # Annual = 4 quarters equivalent
+                if has_da:
+                    quarters_with_da = 4
+                ttm_quarters.append(f"{latest.fiscal_year}FY")
+                if latest.source_filing:
+                    ttm_filings.append(latest.source_filing)
+
+            if latest.interest_expense:
+                ttm_interest = latest.interest_expense
+
+        else:
+            # Latest is 10-Q - sum trailing 4 quarters
+            ebitda_source = "quarterly_sum"
+            for fin in ttm_financials:
+                # Skip if this is an annual 10-K mixed in with quarters
+                # (we only want quarterly 10-Q data for summation)
+                if fin.filing_type == "10-K":
+                    continue
+
+                # Get EBITDA for this quarter (direct or computed)
+                q_ebitda = fin.ebitda
+                has_da = False
+                if not q_ebitda:
+                    if fin.operating_income and fin.depreciation_amortization:
+                        q_ebitda = fin.operating_income + fin.depreciation_amortization
+                        has_da = True
+                    elif fin.operating_income:
+                        # Fallback to operating income when D&A not available
+                        q_ebitda = fin.operating_income
+                else:
+                    # Direct EBITDA was available
+                    has_da = True
+
+                if q_ebitda and q_ebitda > 0:
+                    ttm_ebitda += q_ebitda
+                    quarters_with_ebitda += 1
+                    if has_da:
+                        quarters_with_da += 1
+                    ttm_quarters.append(f"{fin.fiscal_year}Q{fin.fiscal_quarter}")
+                    if fin.source_filing:
+                        ttm_filings.append(fin.source_filing)
+
+                if fin.interest_expense:
+                    ttm_interest += fin.interest_expense
+
+            # If we have fewer than 4 quarters, annualize what we have
+            if quarters_with_ebitda > 0 and quarters_with_ebitda < 4:
+                ttm_ebitda = int(ttm_ebitda * (4 / quarters_with_ebitda))
+                ttm_interest = int(ttm_interest * (4 / quarters_with_ebitda))
 
     # Get cash from latest quarter
     cash = latest_financials.cash_and_equivalents if latest_financials else 0
@@ -222,13 +273,14 @@ async def recompute_metrics_for_company(
 
     # Require at least 1 quarter of EBITDA data for leverage calculation
     # (single quarter will be annualized - less accurate but better than nothing)
+    # Note: We calculate leverage even if extreme - users can filter based on
+    # ebitda_quarters in source_filings for data quality assessment
     if ttm_ebitda and ttm_ebitda > 0 and quarters_with_ebitda >= 1:
         # Leverage = Total Debt / TTM EBITDA
         if total_debt > 0:
             lev = total_debt / ttm_ebitda
-            # Sanity check: leverage > 20x is unusual (skip unless confirmed)
-            if lev <= 20:
-                leverage_ratio = Decimal(str(round(lev, 2)))
+            # Cap at 999.99 for DB storage, but still save extreme values
+            leverage_ratio = Decimal(str(round(min(lev, 999.99), 2)))
 
         # Net Debt = Total Debt - Cash
         net_debt = total_debt - cash
@@ -236,14 +288,15 @@ async def recompute_metrics_for_company(
         # Net Leverage = Net Debt / TTM EBITDA
         if net_debt:
             net_lev = net_debt / ttm_ebitda
-            if abs(net_lev) <= 20:
-                net_leverage_ratio = Decimal(str(round(net_lev, 2)))
+            # Cap at 999.99 for DB storage
+            net_leverage_ratio = Decimal(str(round(min(abs(net_lev), 999.99), 2)))
+            if net_lev < 0:
+                net_leverage_ratio = -net_leverage_ratio
 
         # Secured Leverage = Secured Debt / TTM EBITDA
         if secured_debt > 0:
             sec_lev = secured_debt / ttm_ebitda
-            if sec_lev <= 20:
-                secured_leverage = Decimal(str(round(sec_lev, 2)))
+            secured_leverage = Decimal(str(round(min(sec_lev, 999.99), 2)))
 
         # Interest Coverage = TTM EBITDA / TTM Interest Expense
         if ttm_interest and ttm_interest > 0:
@@ -255,7 +308,12 @@ async def recompute_metrics_for_company(
     # Build source filings provenance
     source_filings = {
         "debt_source": debt_source,
+        "ebitda_source": ebitda_source,  # "annual_10k" or "quarterly_sum"
         "ttm_quarters": ttm_quarters,
+        "ebitda_quarters": quarters_with_ebitda,  # Number of quarters used for EBITDA
+        "ebitda_quarters_with_da": quarters_with_da,  # Quarters where D&A was available
+        "is_annualized": ebitda_source == "quarterly_sum" and quarters_with_ebitda < 4 and quarters_with_ebitda > 0,
+        "ebitda_estimated": quarters_with_da < quarters_with_ebitda,  # True if some quarters used OpInc only
         "computed_at": datetime.utcnow().isoformat() + "Z",
     }
     # Add debt filing URL if using balance sheet
