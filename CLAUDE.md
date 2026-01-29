@@ -21,13 +21,15 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 ## Current Status (January 2026)
 
-**Database**: 201 companies | 5,374 entities | 2,485 debt instruments | 30 priced bonds | 6,500+ document sections | 4,881 guarantees | 230 collateral records
+**Database**: 201 companies | 5,374 entities | 3,056 active debt instruments | 30 priced bonds | 13,862 document sections | 3,831 guarantees | 626 collateral records
 
-**Document Coverage**: 100% (2,560 linked / 2,557 linkable instruments)
+**Document Coverage**: 93% of instruments linked (2,829 / 3,056) via `DebtInstrumentDocument` junction table
+
+**Entity Distribution**: 94 companies (47%) have 50+ entities, 71 (35%) have 11-50, 34 (17%) have 2-10, 2 have 1 entity (ODFL, TTD - legitimate single-entity companies with no Exhibit 21 subsidiaries)
 
 **Ownership Coverage**: 199/201 companies have identified root entity (`is_root=true`); 862 explicit parent-child relationships
 
-**Data Quality**: QC audit passing - 0 critical, 0 errors, 4 warnings (2026-01-26)
+**Data Quality**: QC audit passing - 0 critical, 0 errors, 4 warnings (2026-01-29)
 
 **Deployment**: Railway with Neon PostgreSQL + Upstash Redis
 - Live at: `https://credible-ai-production.up.railway.app`
@@ -77,7 +79,10 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 | `app/services/sec_client.py` | SEC filing clients (`SecApiClient`, `SECEdgarClient`) |
 | `app/services/extraction.py` | Core extraction service + DB persistence |
 | `app/services/base_extractor.py` | Base class for LLM extraction services |
+| `app/services/section_extraction.py` | Extract and store document sections from filings |
+| `app/services/document_linking.py` | Link debt instruments to source documents (indentures, credit agreements) |
 | `app/services/hierarchy_extraction.py` | Exhibit 21 + indenture ownership enrichment |
+| `app/services/financial_extraction.py` | TTM financial statements from 10-K/10-Q |
 | `app/services/guarantee_extraction.py` | Guarantee extraction from indentures |
 | `app/services/collateral_extraction.py` | Collateral for secured debt |
 | `app/services/metrics.py` | Credit metrics (leverage, coverage ratios) |
@@ -107,6 +112,8 @@ This separation keeps business logic testable and reusable while scripts handle 
 | `app/services/iterative_extraction.py` | Main extraction with QA loop (entry point) |
 | `app/services/tiered_extraction.py` | LLM clients for extraction, prompts, escalation |
 | `app/services/hierarchy_extraction.py` | Exhibit 21 + indenture ownership enrichment |
+| `app/services/section_extraction.py` | Document section extraction and storage |
+| `app/services/document_linking.py` | Link instruments to source documents |
 | `app/services/guarantee_extraction.py` | Guarantee relationships from indentures |
 | `app/services/collateral_extraction.py` | Collateral extraction for secured debt |
 | `app/services/metrics.py` | Credit metrics computation with TTM tracking |
@@ -207,7 +214,7 @@ All require `X-API-Key` header.
 python scripts/extract_iterative.py --ticker XXXX --cik 0001234567 --save-db
 ```
 
-This single command runs all 9 steps:
+This single command runs all 11 steps:
 
 | Step | What It Does | Data Created |
 |------|--------------|--------------|
@@ -215,11 +222,13 @@ This single command runs all 9 steps:
 | 2 | Core extraction with QA | Company, Entities, Debt Instruments |
 | 3 | Save to database | Core records |
 | 4 | Document sections | Searchable SEC filing sections |
-| 5 | TTM financials | 4 quarters of financial data |
-| 6 | Ownership hierarchy | parent_id, is_root relationships |
-| 7 | Guarantees | Guarantee relationships |
-| 8 | Collateral | Collateral for secured debt |
-| 9 | Metrics + QC | Leverage ratios, maturity profile, validation |
+| 5 | Document linking | Links instruments to indentures/credit agreements |
+| 6 | TTM financials | 4 quarters of financial data |
+| 7 | Ownership hierarchy | parent_id, is_root relationships |
+| 8 | Guarantees | Guarantee relationships (uses linked docs) |
+| 9 | Collateral | Collateral for secured debt (uses linked docs) |
+| 10 | Metrics | Leverage ratios, maturity profile |
+| 11 | QC checks | Validation and data quality |
 
 **Options:**
 ```bash
@@ -259,20 +268,37 @@ The script is safe to re-run on existing companies. It tracks extraction status 
 
 ### Manual/Individual Steps
 
-For debugging or re-running specific steps:
+Each extraction service has its own CLI for debugging or re-running specific steps:
 
 ```bash
-# Financials only
-python scripts/extract_financials.py --ticker CHTR --ttm --save-db
+# Document sections
+python -m app.services.section_extraction --ticker CHTR
+python -m app.services.section_extraction --all --limit 10
+python -m app.services.section_extraction --ticker CHTR --force  # Re-extract
 
-# Guarantees only
-python scripts/extract_guarantees.py --ticker CHTR --save-db
+# Document linking (links instruments to indentures/credit agreements)
+python -m app.services.document_linking --ticker CHTR
+python -m app.services.document_linking --all --heuristic  # Fast, no LLM
 
-# Ownership hierarchy only
-python scripts/extract_exhibit21_hierarchy.py --ticker CHTR --save-db
+# Financials (TTM = 4 quarters)
+python -m app.services.financial_extraction --ticker CHTR --ttm --save-db
+python -m app.services.financial_extraction --ticker CHTR --claude  # Use Claude instead of Gemini
+
+# Ownership hierarchy (from Exhibit 21)
+python -m app.services.hierarchy_extraction --ticker CHTR
+python -m app.services.hierarchy_extraction --all --limit 10
+
+# Guarantees
+python -m app.services.guarantee_extraction --ticker CHTR
+python -m app.services.guarantee_extraction --all
+
+# Collateral
+python -m app.services.collateral_extraction --ticker CHTR
+python -m app.services.collateral_extraction --all
 
 # Metrics recompute
-python scripts/recompute_metrics.py --ticker CHTR
+python -m app.services.metrics --ticker CHTR
+python -m app.services.metrics --all --dry-run  # Preview changes
 
 # QC check
 python scripts/qc_master.py --ticker CHTR --verbose

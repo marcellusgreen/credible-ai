@@ -555,3 +555,102 @@ async def delete_company_sections(
     )
     await db.commit()
     return result.rowcount
+
+
+# =============================================================================
+# CLI
+# =============================================================================
+
+if __name__ == "__main__":
+    import argparse
+    import asyncio
+    import sys
+
+    from sqlalchemy import select, func
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+
+    # Fix Windows encoding
+    if sys.platform == 'win32':
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
+    # Add parent to path for imports
+    sys.path.insert(0, str(__file__).replace('app/services/section_extraction.py', ''))
+
+    from app.core.config import get_settings
+    from app.models import Company
+    from app.services.extraction import download_filings
+
+    async def main():
+        parser = argparse.ArgumentParser(description="Extract document sections from SEC filings")
+        parser.add_argument("--ticker", help="Company ticker")
+        parser.add_argument("--all", action="store_true", help="Process all companies")
+        parser.add_argument("--limit", type=int, help="Limit companies")
+        parser.add_argument("--force", action="store_true", help="Re-extract even if sections exist")
+        args = parser.parse_args()
+
+        if not args.ticker and not args.all:
+            print("Usage: python -m app.services.section_extraction --ticker CHTR")
+            print("       python -m app.services.section_extraction --all [--limit N]")
+            return
+
+        settings = get_settings()
+        engine = create_async_engine(
+            settings.database_url.replace("postgresql://", "postgresql+asyncpg://")
+        )
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        async with async_session() as db:
+            if args.ticker:
+                companies = [await db.scalar(
+                    select(Company).where(Company.ticker == args.ticker.upper())
+                )]
+            else:
+                # Get companies without sections (or all if --force)
+                if args.force:
+                    result = await db.execute(
+                        select(Company).order_by(Company.ticker)
+                    )
+                else:
+                    # Companies with fewer than 5 document sections
+                    result = await db.execute(
+                        select(Company)
+                        .outerjoin(DocumentSection, DocumentSection.company_id == Company.id)
+                        .group_by(Company.id)
+                        .having(func.count(DocumentSection.id) < 5)
+                        .order_by(Company.ticker)
+                    )
+                companies = list(result.scalars())
+                if args.limit:
+                    companies = companies[:args.limit]
+
+        print(f"Processing {len(companies)} companies")
+        total = 0
+
+        for company in companies:
+            if not company:
+                continue
+            async with async_session() as db:
+                print(f"[{company.ticker}] {company.name}")
+                cik = company.cik or ''
+                if not cik:
+                    print("  No CIK, skipping")
+                    continue
+
+                # Download filings
+                print("  Downloading filings...")
+                filings = await download_filings(company.ticker, cik, include_8k=True)
+                if not filings:
+                    print("  No filings found")
+                    continue
+
+                # Extract and store sections
+                count = await extract_and_store_sections(db, company.id, filings)
+                print(f"  Sections extracted: {count}")
+                total += count
+            await asyncio.sleep(0.5)
+
+        print(f"\nTotal sections extracted: {total}")
+        await engine.dispose()
+
+    asyncio.run(main())

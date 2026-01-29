@@ -379,3 +379,84 @@ async def recompute_metrics_for_company(
         await db.flush()
 
     return metrics_data
+
+
+# =============================================================================
+# CLI
+# =============================================================================
+
+if __name__ == "__main__":
+    import argparse
+    import asyncio
+    import sys
+
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+
+    # Fix Windows encoding
+    if sys.platform == 'win32':
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
+    # Add parent to path for imports
+    sys.path.insert(0, str(__file__).replace('app/services/metrics.py', ''))
+
+    from app.core.config import get_settings
+
+    async def main():
+        parser = argparse.ArgumentParser(description="Compute credit metrics for companies")
+        parser.add_argument("--ticker", help="Company ticker")
+        parser.add_argument("--all", action="store_true", help="Process all companies")
+        parser.add_argument("--limit", type=int, help="Limit companies")
+        parser.add_argument("--dry-run", action="store_true", help="Compute but don't save")
+        args = parser.parse_args()
+
+        if not args.ticker and not args.all:
+            print("Usage: python -m app.services.metrics --ticker CHTR")
+            print("       python -m app.services.metrics --all [--limit N]")
+            return
+
+        settings = get_settings()
+        engine = create_async_engine(
+            settings.database_url.replace("postgresql://", "postgresql+asyncpg://")
+        )
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        async with async_session() as db:
+            if args.ticker:
+                result = await db.execute(
+                    select(Company).where(Company.ticker == args.ticker.upper())
+                )
+                companies = [result.scalar_one_or_none()]
+            else:
+                result = await db.execute(
+                    select(Company).order_by(Company.ticker)
+                )
+                companies = list(result.scalars())
+                if args.limit:
+                    companies = companies[:args.limit]
+
+        print(f"Processing {len(companies)} companies")
+        total = 0
+
+        for company in companies:
+            if not company:
+                continue
+
+            async with async_session() as db:
+                print(f"[{company.ticker}] {company.name}")
+                metrics = await recompute_metrics_for_company(db, company, dry_run=args.dry_run)
+
+                lev = metrics.get('leverage_ratio')
+                cov = metrics.get('interest_coverage')
+                debt = metrics.get('total_debt', 0) or 0
+                print(f"  Debt: ${debt/100/1e9:.2f}B | Leverage: {lev}x | Coverage: {cov}x")
+
+                if not args.dry_run:
+                    await db.commit()
+                total += 1
+
+        print(f"\nProcessed {total} companies")
+        await engine.dispose()
+
+    asyncio.run(main())

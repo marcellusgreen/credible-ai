@@ -40,7 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
     Company, CompanyCache, CompanyFinancials, CompanyMetrics, Collateral,
-    DebtInstrument, DocumentSection, Entity, Guarantee, OwnershipLink
+    DebtInstrument, DebtInstrumentDocument, DocumentSection, Entity, Guarantee, OwnershipLink
 )
 from app.services.utils import clean_filing_html
 
@@ -613,6 +613,14 @@ async def check_existing_data(db: AsyncSession, ticker: str) -> dict:
     )
     document_section_count = result.scalar() or 0
 
+    # Count document links (DebtInstrumentDocument)
+    result = await db.execute(
+        select(func.count()).select_from(DebtInstrumentDocument)
+        .join(DebtInstrument)
+        .where(DebtInstrument.company_id == company_id)
+    )
+    document_link_count = result.scalar() or 0
+
     # Get extraction status from cache
     result = await db.execute(
         select(CompanyCache).where(CompanyCache.company_id == company_id)
@@ -632,6 +640,7 @@ async def check_existing_data(db: AsyncSession, ticker: str) -> dict:
         'guarantee_count': guarantee_count,
         'collateral_count': collateral_count,
         'document_section_count': document_section_count,
+        'document_link_count': document_link_count,
         'extraction_status': extraction_status or {},
     }
 

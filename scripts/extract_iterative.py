@@ -15,12 +15,13 @@ Skip conditions:
   2. Core extraction - skip if entity_count > 20 AND debt_count > 0
   3. Save to DB - uses merge logic to preserve existing data
   4. Document sections - skip if count > 5
-  5. TTM financials - skip if latest_quarter is current (checks if 60+ days past next quarter end)
-  6. Ownership hierarchy - skip if entity_count > 50 OR status='no_data' (no Exhibit 21)
-  7. Guarantees - skip if guarantee_count > 0 OR status='no_data'
-  8. Collateral - skip if collateral_count > 0 OR status='no_data'
-  9. Metrics computation - always run
-  10. QC validation
+  5. Document linking - skip if 50%+ of instruments already linked OR no linkable documents
+  6. TTM financials - skip if latest_quarter is current (checks if 60+ days past next quarter end)
+  7. Ownership hierarchy - skip if entity_count > 50 OR status='no_data' (no Exhibit 21)
+  8. Guarantees - skip if guarantee_count > 0 OR status='no_data'
+  9. Collateral - skip if collateral_count > 0 OR status='no_data'
+  10. Metrics computation - always run
+  11. QC validation
 
 The extraction_status field in company_cache tracks step attempts:
   - "success": Step completed with data (includes metadata like latest_quarter)
@@ -75,6 +76,7 @@ from app.services.extraction import SecApiClient, SECEdgarClient, check_existing
 from app.services.hierarchy_extraction import extract_ownership_hierarchy
 from app.services.guarantee_extraction import extract_guarantees
 from app.services.collateral_extraction import extract_collateral
+from app.services.document_linking import link_documents, link_documents_heuristic
 from app.services.metrics import recompute_metrics_for_company
 from app.services.qc import run_qc_checks
 
@@ -106,58 +108,28 @@ async def download_filings(ticker: str, cik: str, sec_api_key: str = None) -> di
 
 
 # =============================================================================
-# DOCUMENT LINKING (kept inline - simple logic)
+# DOCUMENT LINKING (delegated to document_linking service)
 # =============================================================================
 
 
-async def link_documents_to_instruments(session, company_id: UUID) -> int:
-    """Link debt instruments to their governing documents."""
-    from sqlalchemy import select
-    from app.models import DebtInstrument, DocumentSection
+async def link_documents_to_instruments(session, company_id: UUID, ticker: str, use_llm: bool = False) -> int:
+    """
+    Link debt instruments to their governing documents.
 
-    # Get unlinked instruments
-    result = await session.execute(
-        select(DebtInstrument).where(
-            DebtInstrument.company_id == company_id,
-        )
-    )
-    instruments = list(result.scalars().all())
+    Uses the document_linking service which creates DebtInstrumentDocument records
+    that guarantee/collateral extraction can use.
 
-    if not instruments:
-        return 0
-
-    # Get available documents
-    result = await session.execute(
-        select(DocumentSection).where(
-            DocumentSection.company_id == company_id,
-            DocumentSection.section_type.in_(['indenture', 'credit_agreement'])
-        )
-    )
-    docs = list(result.scalars().all())
-
-    if not docs:
-        return 0
-
-    # Simple matching: notes -> indentures, loans -> credit agreements
-    indentures = [d for d in docs if d.section_type == 'indenture']
-    credit_agreements = [d for d in docs if d.section_type == 'credit_agreement']
-
-    links_created = 0
-    for inst in instruments:
-        inst_type = (inst.instrument_type or '').lower()
-        inst_name = (inst.name or '').lower()
-
-        # Match based on instrument type
-        if any(x in inst_type or x in inst_name for x in ['note', 'bond', 'debenture']):
-            if indentures:
-                # Would need source_document_id field - skip for now
-                links_created += 1
-        elif any(x in inst_type or x in inst_name for x in ['loan', 'term', 'revolver', 'credit']):
-            if credit_agreements:
-                links_created += 1
-
-    await session.commit()
-    return links_created
+    Args:
+        session: Database session
+        company_id: Company UUID
+        ticker: Stock ticker
+        use_llm: If True, use LLM-based matching (slower but more accurate).
+                 If False, use heuristic matching (faster).
+    """
+    if use_llm:
+        return await link_documents(session, company_id, ticker)
+    else:
+        return await link_documents_heuristic(session, company_id)
 
 
 async def recompute_metrics(session, company_id: UUID, ticker: str) -> bool:
@@ -250,6 +222,7 @@ async def run_iterative_extraction(
                 print(f"    - Debt instruments: {existing_data.get('debt_count', 0)}")
                 print(f"    - Financials: {existing_data.get('financials_count', 0)} quarters")
                 print(f"    - Ownership links: {existing_data.get('ownership_link_count', 0)}")
+                print(f"    - Document links: {existing_data.get('document_link_count', 0)}")
                 print(f"    - Guarantees: {existing_data.get('guarantee_count', 0)}")
                 print(f"    - Collateral: {existing_data.get('collateral_count', 0)}")
                 print(f"    - Document sections: {existing_data.get('document_section_count', 0)}")
@@ -269,6 +242,7 @@ async def run_iterative_extraction(
     # Determine what to skip based on existing data
     skip_core = False
     skip_document_sections = False
+    skip_document_linking = skip_enrichment or core_only
     skip_ttm_financials = skip_financials or core_only
     skip_hierarchy = False
     skip_guarantees = skip_enrichment or core_only
@@ -325,8 +299,19 @@ async def run_iterative_extraction(
             skip_collateral = True
             print(f"  [SKIP] Collateral (no data available - previously attempted)")
 
+        # Skip document linking if most debt instruments are already linked
+        debt_count = existing_data.get('debt_count', 0)
+        document_link_count = existing_data.get('document_link_count', 0)
+        if debt_count > 0 and document_link_count >= debt_count * 0.5:
+            # At least 50% of instruments are linked
+            skip_document_linking = True
+            print(f"  [SKIP] Document linking (have {document_link_count}/{debt_count} instrument links)")
+        elif step_has_no_data('document_linking'):
+            skip_document_linking = True
+            print(f"  [SKIP] Document linking (no linkable documents - previously attempted)")
+
     # Download filings (always done, needed for various steps)
-    print(f"\n[1/10] Downloading SEC filings...")
+    print(f"\n[1/11] Downloading SEC filings...")
     filings = await download_filings(ticker, cik, sec_api_key)
 
     if not filings:
@@ -336,7 +321,7 @@ async def run_iterative_extraction(
     # Core extraction with QA loop
     result = None
     if not skip_core:
-        print(f"\n[2/10] Running core extraction (entities + debt)...")
+        print(f"\n[2/11] Running core extraction (entities + debt)...")
         service = IterativeExtractionService(
             gemini_api_key=gemini_api_key,
             anthropic_api_key=anthropic_api_key,
@@ -368,7 +353,7 @@ async def run_iterative_extraction(
                 json.dump(result.extraction, f, indent=2, default=str)
             print(f"    - Saved to {extraction_path}")
     else:
-        print(f"\n[2/10] Skipping core extraction (data exists)")
+        print(f"\n[2/11] Skipping core extraction (data exists)")
         # Create a dummy result for compatibility
         from datetime import datetime
         from app.services.qa_agent import QAReport
@@ -403,7 +388,7 @@ async def run_iterative_extraction(
         # Save core extraction (use merge if data exists)
         if not skip_core and result.extraction.get('entities'):
             async with async_session() as session:
-                print(f"\n[3/10] Saving to database...")
+                print(f"\n[3/11] Saving to database...")
                 extraction_result = convert_to_extraction_result(result.extraction, ticker)
 
                 if existing_data.get('exists') and not force:
@@ -417,13 +402,13 @@ async def run_iterative_extraction(
                     print(f"    [OK] Saved core extraction")
 
         else:
-            print(f"\n[3/10] Skipping save (no new core data)")
+            print(f"\n[3/11] Skipping save (no new core data)")
 
         await engine.dispose()
 
         # Document sections
         if not skip_document_sections and company_id:
-            print(f"\n[4/10] Extracting document sections...")
+            print(f"\n[4/11] Extracting document sections...")
             engine = create_async_engine(database_url, echo=False)
             async_session = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -440,7 +425,45 @@ async def run_iterative_extraction(
 
             await engine.dispose()
         else:
-            print(f"\n[4/10] Skipping document sections")
+            print(f"\n[4/11] Skipping document sections")
+
+        # Document linking - link debt instruments to their source documents
+        # This MUST run before guarantees/collateral so they can use linked docs
+        if not skip_document_linking and company_id:
+            print(f"\n[5/11] Linking documents to debt instruments...")
+            engine = create_async_engine(database_url, echo=False)
+            async_session = async_sessionmaker(engine, expire_on_commit=False)
+
+            async with async_session() as session:
+                try:
+                    # Use heuristic matching (fast, no LLM needed)
+                    links_count = await link_documents_to_instruments(
+                        session, company_id, ticker, use_llm=False
+                    )
+                    # Record status
+                    from app.services.extraction import update_extraction_status
+                    if links_count > 0:
+                        await update_extraction_status(
+                            session, company_id, 'document_linking', 'success',
+                            f"Created {links_count} document links"
+                        )
+                    else:
+                        await update_extraction_status(
+                            session, company_id, 'document_linking', 'no_data',
+                            'No linkable documents or all instruments already linked'
+                        )
+                    print(f"    [OK] Created {links_count} document links")
+                except Exception as e:
+                    print(f"    [WARN] Document linking failed: {e}")
+                    try:
+                        from app.services.extraction import update_extraction_status
+                        await update_extraction_status(session, company_id, 'document_linking', 'error', str(e))
+                    except:
+                        pass
+
+            await engine.dispose()
+        else:
+            print(f"\n[5/11] Skipping document linking")
 
         # TTM Financials - check if new quarters might be available
         if not skip_ttm_financials and existing_data.get('has_financials') and not force:
@@ -485,7 +508,7 @@ async def run_iterative_extraction(
                 print(f"  [SKIP] TTM financials (have {existing_data.get('financials_count', 0)} quarters)")
 
         if not skip_ttm_financials and company_id:
-            print(f"\n[5/10] Extracting TTM financials (4 quarters)...")
+            print(f"\n[6/11] Extracting TTM financials (4 quarters)...")
             try:
                 from app.services.financial_extraction import extract_ttm_financials, save_financials_to_db
 
@@ -542,11 +565,11 @@ async def run_iterative_extraction(
                     except:
                         pass
         else:
-            print(f"\n[5/10] Skipping TTM financials")
+            print(f"\n[6/11] Skipping TTM financials")
 
         # Ownership hierarchy (FULL Exhibit 21 integration)
         if not skip_hierarchy and company_id:
-            print(f"\n[6/10] Extracting ownership hierarchy from Exhibit 21...")
+            print(f"\n[7/11] Extracting ownership hierarchy from Exhibit 21...")
             engine = create_async_engine(database_url, echo=False)
             async_session = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -584,11 +607,11 @@ async def run_iterative_extraction(
 
             await engine.dispose()
         else:
-            print(f"\n[6/10] Skipping ownership hierarchy")
+            print(f"\n[7/11] Skipping ownership hierarchy")
 
         # Guarantees
         if not skip_guarantees and company_id:
-            print(f"\n[7/10] Extracting guarantees...")
+            print(f"\n[8/11] Extracting guarantees...")
             engine = create_async_engine(database_url, echo=False)
             async_session = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -614,11 +637,11 @@ async def run_iterative_extraction(
 
             await engine.dispose()
         else:
-            print(f"\n[7/10] Skipping guarantees")
+            print(f"\n[8/11] Skipping guarantees")
 
         # Collateral
         if not skip_collateral and company_id:
-            print(f"\n[8/10] Extracting collateral...")
+            print(f"\n[9/11] Extracting collateral...")
             engine = create_async_engine(database_url, echo=False)
             async_session = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -642,21 +665,13 @@ async def run_iterative_extraction(
                     except:
                         pass
 
-                # Document linking
-                print(f"\n        Linking documents to instruments...")
-                try:
-                    links_count = await link_documents_to_instruments(session, company_id)
-                    print(f"    [OK] Linked {links_count} instruments")
-                except Exception as e:
-                    print(f"    [WARN] Document linking failed: {e}")
-
             await engine.dispose()
         else:
-            print(f"\n[8/10] Skipping collateral")
+            print(f"\n[9/11] Skipping collateral")
 
         # Metrics computation (always run)
         if company_id:
-            print(f"\n[9/10] Computing metrics...")
+            print(f"\n[10/11] Computing metrics...")
             engine = create_async_engine(database_url, echo=False)
             async_session = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -668,7 +683,7 @@ async def run_iterative_extraction(
                     print(f"    [WARN] Metrics computation failed: {e}")
 
                 # QC checks
-                print(f"\n[10/10] Running QC checks...")
+                print(f"\n[11/11] Running QC checks...")
                 qc_results = await run_qc_checks(session, company_id, ticker)
                 print(f"    - Entities: {qc_results['entities']}")
                 print(f"    - Debt instruments: {qc_results['debt_instruments']}")
@@ -681,7 +696,7 @@ async def run_iterative_extraction(
 
             await engine.dispose()
     else:
-        print(f"\n[3-10] Skipping database operations (--save-db not specified)")
+        print(f"\n[3-11] Skipping database operations (--save-db not specified)")
 
     # Final summary
     print(f"\n{'='*70}")

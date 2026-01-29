@@ -964,3 +964,108 @@ def calculate_credit_ratios(
             ratios["interest_coverage_ebit"] = round(operating_income / interest_expense, 2)
 
     return ratios
+
+
+# =============================================================================
+# CLI
+# =============================================================================
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+
+    from sqlalchemy import select, func
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+
+    # Fix Windows encoding
+    if sys.platform == 'win32':
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
+    # Add parent to path for imports
+    sys.path.insert(0, str(__file__).replace('app/services/financial_extraction.py', ''))
+
+    from app.core.config import get_settings
+
+    async def main():
+        parser = argparse.ArgumentParser(description="Extract financial data from SEC filings")
+        parser.add_argument("--ticker", help="Company ticker")
+        parser.add_argument("--all", action="store_true", help="Process all companies")
+        parser.add_argument("--limit", type=int, help="Limit companies")
+        parser.add_argument("--ttm", action="store_true", help="Extract TTM (4 quarters)")
+        parser.add_argument("--save-db", action="store_true", help="Save to database")
+        parser.add_argument("--claude", action="store_true", help="Use Claude instead of Gemini")
+        args = parser.parse_args()
+
+        if not args.ticker and not args.all:
+            print("Usage: python -m app.services.financial_extraction --ticker CHTR --ttm --save-db")
+            print("       python -m app.services.financial_extraction --all --limit 10 --ttm --save-db")
+            return
+
+        settings = get_settings()
+        engine = create_async_engine(
+            settings.database_url.replace("postgresql://", "postgresql+asyncpg://")
+        )
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        async with async_session() as db:
+            if args.ticker:
+                result = await db.execute(
+                    select(Company).where(Company.ticker == args.ticker.upper())
+                )
+                companies = [result.scalar_one_or_none()]
+            else:
+                # Get companies without recent financials
+                result = await db.execute(
+                    select(Company)
+                    .outerjoin(CompanyFinancials, CompanyFinancials.company_id == Company.id)
+                    .group_by(Company.id)
+                    .having(func.count(CompanyFinancials.id) < 4)
+                    .order_by(Company.ticker)
+                )
+                companies = list(result.scalars())
+                if args.limit:
+                    companies = companies[:args.limit]
+
+        print(f"Processing {len(companies)} companies")
+        total_quarters = 0
+
+        for company in companies:
+            if not company:
+                continue
+
+            print(f"\n[{company.ticker}] {company.name}")
+            cik = company.cik or ''
+
+            if args.ttm:
+                # Extract 4 quarters
+                financials = await extract_ttm_financials(
+                    company.ticker, cik, use_claude=args.claude
+                )
+                if financials:
+                    print(f"  Extracted {len(financials)} quarters")
+                    if args.save_db:
+                        async with async_session() as db:
+                            for fin in financials:
+                                await save_financials_to_db(db, company.ticker, fin)
+                            print(f"  Saved to database")
+                    total_quarters += len(financials)
+            else:
+                # Extract latest quarter only
+                fin = await extract_financials(
+                    company.ticker, cik, use_claude=args.claude
+                )
+                if fin:
+                    print(f"  Extracted Q{fin.fiscal_quarter} {fin.fiscal_year}")
+                    if args.save_db:
+                        async with async_session() as db:
+                            await save_financials_to_db(db, company.ticker, fin)
+                            print(f"  Saved to database")
+                    total_quarters += 1
+
+            await asyncio.sleep(1)
+
+        print(f"\nTotal quarters extracted: {total_quarters}")
+        await engine.dispose()
+
+    asyncio.run(main())

@@ -19,7 +19,7 @@ Corporate structure and debt analysis is complex. Even with AI, achieving accura
 
 ## Current Database
 
-**201 companies | 5,374 entities | 2,485 debt instruments | 591 with CUSIP/ISIN | 7,700+ legal documents | 4,881 guarantees | 230 collateral records**
+**201 companies | 5,374 entities | 3,056 debt instruments | 591 with CUSIP/ISIN | 13,862 document sections | 3,831 guarantees | 626 collateral records**
 
 Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
 
@@ -41,15 +41,15 @@ Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
 - **Authentication**: API key auth with credit-based usage tracking
 - **Iterative QA Extraction**: 5 automated verification checks with targeted fixes until 85%+ quality threshold
 - **Individual Debt Instruments**: Each bond, note, and credit facility extracted separately (not just totals)
-- **Guarantee Relationships**: 4,881 guarantee records linking debt to guarantor subsidiaries
-- **Collateral Tracking**: 230 collateral records with asset types (equipment, vehicles, real estate, etc.)
+- **Guarantee Relationships**: 3,831 guarantee records linking debt to guarantor subsidiaries
+- **Collateral Tracking**: 626 collateral records with asset types (equipment, vehicles, real estate, etc.)
 - **Corporate Ownership Hierarchy**: Nested parent-child structures parsed from SEC Exhibit 21 indentation
 - **Direct/Indirect Subsidiaries**: Clear classification of ownership relationships
 - **Complex Corporate Structures**: Multiple owners, joint ventures, VIEs, partial ownership
 - **Financial Statements**: Quarterly income statement, balance sheet, cash flow from 10-Q/10-K
 - **Credit Ratios**: Leverage, interest coverage, margins, liquidity metrics
 - **Bond Pricing**: YTM and spread-to-treasury calculations (Finnhub/FINRA TRACE)
-- **Document Search**: Full-text search across 4,877 indentures and 2,889 credit agreements
+- **Document Search**: Full-text search across 4,957 indentures and 2,946 credit agreements
 - **Pre-computed Responses**: Sub-second API serving via cached JSON with ETag support
 
 ## Data Quality Principles
@@ -308,15 +308,18 @@ The extraction pipeline is **idempotent** - safe to re-run on existing companies
 - Detects when new quarterly financials are available
 - Use `--force` to override skip logic and re-extract everything
 
-**Extraction steps:**
+**Extraction steps (11 total):**
 1. Downloads 10-K, 10-Q, 8-K filings via SEC-API.io
 2. Extracts entities and debt instruments with Gemini (~$0.008)
 3. Runs 5 QA checks against source filings (~$0.006)
 4. Applies targeted fixes if QA score < 85%
 5. Escalates to Claude if still failing
-6. Parses Exhibit 21 for subsidiary hierarchy (supports table and div-based formats)
-7. Extracts guarantees and collateral
-8. Saves to database and pre-computes API responses
+6. Extracts document sections (indentures, credit agreements, debt footnotes)
+7. Links debt instruments to their governing documents
+8. Extracts TTM financials (4 quarters)
+9. Parses Exhibit 21 for subsidiary hierarchy
+10. Extracts guarantees and collateral (using linked documents)
+11. Computes metrics and runs QC validation
 
 **Typical cost: $0.02-0.03 per company**
 

@@ -20,7 +20,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import DebtInstrument, Collateral, DocumentSection
+from app.models import DebtInstrument, Collateral, DocumentSection, DebtInstrumentDocument
 from app.services.base_extractor import BaseExtractor, ExtractionContext
 from app.services.llm_utils import LLMResponse
 
@@ -121,18 +121,31 @@ class CollateralExtractor(BaseExtractor):
     """
 
     async def load_context(self, context: ExtractionContext) -> ExtractionContext:
-        """Load secured instruments and relevant documents."""
+        """Load secured instruments and their linked documents."""
         session = context.session
         company_id = context.company_id
 
-        # Get secured debt instruments
+        # Get debt instruments that are likely secured:
+        # 1. Explicit secured seniority/security_type
+        # 2. Term loans (almost always secured)
+        # 3. Revolvers/ABL (usually secured)
+        # 4. Any with "secured" in the name
         result = await session.execute(
             select(DebtInstrument).where(
                 DebtInstrument.company_id == company_id,
                 DebtInstrument.is_active == True,
+                DebtInstrument.collateral_data_confidence.in_(['unknown', None]),
                 or_(
                     DebtInstrument.seniority.in_(['senior_secured', 'secured']),
-                    DebtInstrument.security_type.in_(['first_lien', 'second_lien'])
+                    DebtInstrument.security_type.in_(['first_lien', 'second_lien']),
+                    DebtInstrument.instrument_type.in_([
+                        'term_loan', 'term_loan_a', 'term_loan_b',
+                        'revolver', 'revolving_credit_facility',
+                        'abl', 'senior_secured_notes'
+                    ]),
+                    DebtInstrument.name.ilike('%secured%'),
+                    DebtInstrument.name.ilike('%term loan%'),
+                    DebtInstrument.name.ilike('%revolver%'),
                 )
             )
         )
@@ -141,7 +154,7 @@ class CollateralExtractor(BaseExtractor):
         if not secured:
             return context
 
-        # Filter to those without collateral
+        # Filter to those without collateral records
         result = await session.execute(
             select(Collateral.debt_instrument_id).where(
                 Collateral.debt_instrument_id.in_([i.id for i in secured])
@@ -153,42 +166,75 @@ class CollateralExtractor(BaseExtractor):
         if not context.instruments:
             return context
 
-        # Get documents with collateral keywords
+        # PRIORITY 1: Get documents linked to these specific instruments
+        instrument_ids = [i.id for i in context.instruments]
         result = await session.execute(
-            select(DocumentSection).where(
-                DocumentSection.company_id == company_id,
-                or_(
-                    DocumentSection.content.ilike('%secured by%'),
-                    DocumentSection.content.ilike('%collateral%'),
-                    DocumentSection.content.ilike('%first-priority lien%'),
-                    DocumentSection.content.ilike('%pledged%'),
-                    DocumentSection.content.ilike('%security interest%')
-                )
-            ).order_by(DocumentSection.section_type)
+            select(DocumentSection)
+            .join(DebtInstrumentDocument, DebtInstrumentDocument.document_section_id == DocumentSection.id)
+            .where(DebtInstrumentDocument.debt_instrument_id.in_(instrument_ids))
+            .order_by(DebtInstrumentDocument.match_confidence.desc())
         )
-        collateral_docs = list(result.scalars().all())
+        linked_docs = list(result.scalars().all())
 
-        # Also get standard debt documents
-        result = await session.execute(
-            select(DocumentSection).where(
-                DocumentSection.company_id == company_id,
-                DocumentSection.section_type.in_([
-                    'credit_agreement', 'indenture', 'debt_footnote',
-                    'debt_overview', 'long_term_debt'
-                ])
-            ).order_by(DocumentSection.section_type)
-        )
-        standard_docs = list(result.scalars().all())
+        # Store instrument-to-document mapping for targeted extraction
+        context.metadata['instrument_docs'] = {}
+        for inst in context.instruments:
+            result = await session.execute(
+                select(DocumentSection)
+                .join(DebtInstrumentDocument, DebtInstrumentDocument.document_section_id == DocumentSection.id)
+                .where(DebtInstrumentDocument.debt_instrument_id == inst.id)
+            )
+            inst_docs = list(result.scalars().all())
+            if inst_docs:
+                context.metadata['instrument_docs'][inst.id] = inst_docs
 
-        # Combine and dedupe
+        # PRIORITY 2: If no linked docs, fall back to company-wide search
+        if not linked_docs:
+            # Get documents with collateral keywords
+            result = await session.execute(
+                select(DocumentSection).where(
+                    DocumentSection.company_id == company_id,
+                    or_(
+                        DocumentSection.content.ilike('%secured by%'),
+                        DocumentSection.content.ilike('%collateral%'),
+                        DocumentSection.content.ilike('%first-priority lien%'),
+                        DocumentSection.content.ilike('%pledged%'),
+                        DocumentSection.content.ilike('%security interest%')
+                    )
+                ).order_by(DocumentSection.section_type).limit(20)
+            )
+            linked_docs = list(result.scalars().all())
+
+            # Also get standard debt documents
+            result = await session.execute(
+                select(DocumentSection).where(
+                    DocumentSection.company_id == company_id,
+                    DocumentSection.section_type.in_([
+                        'credit_agreement', 'indenture', 'debt_footnote',
+                        'debt_overview', 'long_term_debt'
+                    ])
+                ).order_by(DocumentSection.section_type).limit(20)
+            )
+            standard_docs = list(result.scalars().all())
+
+            # Combine and dedupe
+            seen_ids = set()
+            all_docs = []
+            for doc in linked_docs + standard_docs:
+                if doc.id not in seen_ids:
+                    seen_ids.add(doc.id)
+                    all_docs.append(doc)
+            linked_docs = all_docs
+
+        # Dedupe and limit
         seen_ids = set()
-        all_docs = []
-        for doc in collateral_docs + standard_docs:
+        unique_docs = []
+        for doc in linked_docs:
             if doc.id not in seen_ids:
                 seen_ids.add(doc.id)
-                all_docs.append(doc)
+                unique_docs.append(doc)
 
-        context.documents = all_docs[:10]
+        context.documents = unique_docs[:30]  # Increased from 10 to 30 for better coverage
         return context
 
     async def get_prompt(self, context: ExtractionContext) -> str:
@@ -297,10 +343,11 @@ Return ONLY valid JSON."""
         items: list[ParsedCollateral],
         context: ExtractionContext
     ) -> int:
-        """Save collateral records to database."""
+        """Save collateral records to database and update confidence."""
         session = context.session
         instruments = context.instruments
         created = 0
+        instruments_processed = set()
 
         for parsed in items:
             # Match by number first
@@ -315,6 +362,12 @@ Return ONLY valid JSON."""
                         break
 
             if not instrument:
+                continue
+
+            instruments_processed.add(instrument.id)
+
+            # Skip if no collateral type (LLM may return unsecured debt)
+            if not parsed.collateral_type:
                 continue
 
             # Check if already exists
@@ -333,6 +386,14 @@ Return ONLY valid JSON."""
             )
             session.add(collateral)
             created += 1
+
+        # Update confidence for all instruments in context
+        for inst in instruments:
+            if inst.id in instruments_processed:
+                inst.collateral_data_confidence = 'extracted'
+            elif inst.collateral_data_confidence in ['unknown', None]:
+                # No collateral found - mark as extracted (unsecured or no data)
+                inst.collateral_data_confidence = 'extracted'
 
         await session.commit()
         return created
@@ -371,3 +432,81 @@ async def extract_collateral(
         ticker=ticker,
         filings=filings,
     )
+
+
+# =============================================================================
+# CLI
+# =============================================================================
+
+if __name__ == "__main__":
+    import argparse
+    import asyncio
+    import sys
+
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.orm import sessionmaker
+
+    # Fix Windows encoding
+    if sys.platform == 'win32':
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
+    # Add parent to path for imports
+    sys.path.insert(0, str(__file__).replace('app/services/collateral_extraction.py', ''))
+
+    from app.core.config import get_settings
+    from app.models import Company, DebtInstrument
+
+    async def main():
+        parser = argparse.ArgumentParser(description="Extract collateral")
+        parser.add_argument("--ticker", help="Company ticker")
+        parser.add_argument("--all", action="store_true", help="Process all companies")
+        parser.add_argument("--limit", type=int, help="Limit companies")
+        args = parser.parse_args()
+
+        if not args.ticker and not args.all:
+            print("Usage: python -m app.services.collateral_extraction --ticker CHTR")
+            print("       python -m app.services.collateral_extraction --all [--limit N]")
+            return
+
+        settings = get_settings()
+        engine = create_async_engine(
+            settings.database_url.replace("postgresql://", "postgresql+asyncpg://")
+        )
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        async with async_session() as db:
+            if args.ticker:
+                companies = [await db.scalar(
+                    select(Company).where(Company.ticker == args.ticker.upper())
+                )]
+            else:
+                result = await db.execute(
+                    select(Company)
+                    .join(DebtInstrument, DebtInstrument.company_id == Company.id)
+                    .where(DebtInstrument.collateral_data_confidence.in_(['unknown', None]))
+                    .group_by(Company.id)
+                    .order_by(Company.ticker)
+                )
+                companies = list(result.scalars())
+                if args.limit:
+                    companies = companies[:args.limit]
+
+        print(f"Processing {len(companies)} companies")
+        extractor = CollateralExtractor()
+        total = 0
+
+        for company in companies:
+            if not company:
+                continue
+            async with async_session() as db:
+                print(f"[{company.ticker}] {company.name}")
+                count = await extractor.extract(db, company.id, company.ticker, {})
+                print(f"  Collateral: {count}")
+                total += count
+            await asyncio.sleep(1)
+
+        print(f"\nTotal collateral records created: {total}")
+        await engine.dispose()
+
+    asyncio.run(main())
