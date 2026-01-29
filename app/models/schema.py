@@ -328,7 +328,7 @@ class BondPricing(Base):
     treasury_benchmark: Mapped[Optional[str]] = mapped_column(String(10))  # "2Y", "5Y", "10Y", "30Y"
 
     # Quality indicators
-    price_source: Mapped[str] = mapped_column(String(20), default="TRACE")  # TRACE, estimated, manual
+    price_source: Mapped[str] = mapped_column(String(20), default="TRACE")  # TRACE, Finnhub, estimated, manual
     staleness_days: Mapped[Optional[int]] = mapped_column(Integer)  # Days since last trade
 
     # Timestamps
@@ -1015,7 +1015,7 @@ class User(Base):
     )
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     api_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)  # SHA-256 hash
-    api_key_prefix: Mapped[str] = mapped_column(String(8), nullable=False)  # First 8 chars for display
+    api_key_prefix: Mapped[str] = mapped_column(String(16), nullable=False)  # "ds_" + 8 hex chars for display
 
     # Subscription tier: free, starter, growth, scale, enterprise
     tier: Mapped[str] = mapped_column(String(20), default="free", nullable=False)
