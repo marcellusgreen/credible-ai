@@ -35,7 +35,7 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 - Live at: `https://credible-ai-production.up.railway.app`
 
 **What's Working**:
-- **Primitives API**: 8 core endpoints optimized for AI agents (field selection, powerful filters)
+- **Primitives API**: 7 core endpoints optimized for AI agents (field selection, powerful filters)
 - **Auth & Credits**: API key auth, tier-based credits, usage tracking
 - **Legacy REST API**: 26 endpoints for detailed company data
 - Iterative extraction with QA feedback loop (5 checks, 85% threshold)
@@ -98,7 +98,7 @@ This separation keeps business logic testable and reusable while scripts handle 
 
 | File | Purpose |
 |------|---------|
-| `app/api/primitives.py` | **Primitives API** - 8 core endpoints for agents |
+| `app/api/primitives.py` | **Primitives API** - 7 core endpoints for agents |
 | `app/api/auth.py` | **Auth API** - signup, user info |
 | `app/api/routes.py` | Legacy FastAPI endpoints (26 routes) |
 | `app/core/auth.py` | API key generation, validation, tier config |
@@ -163,7 +163,7 @@ This separation keeps business logic testable and reusable while scripts handle 
 | `/v1/auth/signup` | POST | Create account, returns API key |
 | `/v1/auth/me` | GET | Get user info and credits (requires API key) |
 
-### Primitives API (8 endpoints - optimized for agents)
+### Primitives API (7 endpoints - optimized for agents)
 
 All require `X-API-Key` header.
 

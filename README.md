@@ -37,7 +37,7 @@ Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
 
 ## Features
 
-- **Primitives API**: 8 core endpoints optimized for AI agents with field selection
+- **Primitives API**: 7 core endpoints optimized for AI agents with field selection
 - **Authentication**: API key auth with credit-based usage tracking
 - **Iterative QA Extraction**: 5 automated verification checks with targeted fixes until 85%+ quality threshold
 - **Individual Debt Instruments**: Each bond, note, and credit facility extracted separately (not just totals)
@@ -182,6 +182,7 @@ These 7 endpoints are designed for agents writing code - simple REST, field sele
 | `GET /v1/companies` | 1 | Search companies with field selection and 15+ filters |
 | `GET /v1/bonds` | 1 | Search/screen bonds with pricing, filters for yield, seniority, maturity |
 | `GET /v1/bonds/resolve` | 1 | Map bond identifiers - free-text to CUSIP (e.g., "RIG 8% 2027") |
+| `GET /v1/companies/{ticker}/changes` | 2 | Diff against historical snapshots |
 | `POST /v1/entities/traverse` | 3 | Graph traversal for guarantor chains, org structure |
 | `GET /v1/documents/search` | 3 | Full-text search across SEC filings |
 | `POST /v1/batch` | Sum | Execute multiple primitives in parallel |
@@ -464,7 +465,7 @@ credible/
 ├── app/
 │   ├── api/
 │   │   ├── routes.py              # Legacy FastAPI endpoints
-│   │   └── primitives.py          # Primitives API (8 core endpoints)
+│   │   └── primitives.py          # Primitives API (7 core endpoints)
 │   ├── core/
 │   │   ├── config.py              # Configuration
 │   │   ├── database.py            # Database connection
