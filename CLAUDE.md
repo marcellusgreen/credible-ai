@@ -447,6 +447,77 @@ python scripts/fix_qc_financials.py --save-db    # Apply fixes
 
 **Current Status (2026-01-29):** 0 critical, 0 errors, 4 warnings
 
+## Testing
+
+DebtStack has a comprehensive testing infrastructure with 4 layers:
+
+### Test Structure
+
+```
+tests/                          # pytest test suite
+├── conftest.py                 # Fixtures, sample data
+├── unit/                       # Pure function tests (no DB/API)
+│   ├── test_name_normalization.py    # Entity name matching
+│   ├── test_fuzzy_matching.py        # Guarantor matching
+│   ├── test_maturity_parsing.py      # Date extraction
+│   └── test_document_classification.py
+├── integration/                # Service tests (mocked)
+└── api/                        # API contract tests
+    └── test_companies_endpoint.py
+
+scripts/                        # Standalone test scripts
+├── run_all_tests.py           # Unified test runner
+├── test_demo_scenarios.py     # 8 E2E scenarios
+├── test_api_edge_cases.py     # Security/robustness tests
+├── qc_master.py               # Data quality checks
+└── qc_financials.py           # Financial validation
+```
+
+### Running Tests
+
+```bash
+# Quick: Unit tests only (no external deps, fast)
+python -m pytest tests/unit -v -s
+
+# All pytest tests
+python -m pytest tests/ -v -s
+
+# Unified runner (includes E2E scripts)
+python scripts/run_all_tests.py              # All suites
+python scripts/run_all_tests.py --quick      # Unit only
+python scripts/run_all_tests.py --unit       # Unit only
+python scripts/run_all_tests.py --api        # API contract tests
+python scripts/run_all_tests.py --e2e        # E2E scripts
+python scripts/run_all_tests.py --qc         # Include QC checks
+python scripts/run_all_tests.py --json       # JSON output
+
+# Individual E2E scripts
+python scripts/test_demo_scenarios.py        # 8 demo scenarios
+python scripts/test_api_edge_cases.py        # API robustness
+
+# Data quality
+python scripts/qc_master.py                  # Full QC audit
+python scripts/qc_master.py --category integrity  # Specific category
+python scripts/qc_financials.py --verbose    # Financial validation
+```
+
+### Test Coverage
+
+| Category | Tests | Purpose |
+|----------|-------|---------|
+| Unit | 73 | Pure functions: name normalization, fuzzy matching, parsing |
+| API Contract | 15+ | Endpoint schemas, response types |
+| E2E Scenarios | 8 | Full user journeys against production API |
+| API Edge Cases | 50+ | Security, error handling, edge cases |
+| QC Checks | 30+ | Data integrity, business logic, completeness |
+
+### Adding Tests
+
+1. **Unit tests** go in `tests/unit/test_*.py` - no DB, no API, no mocks
+2. **API tests** go in `tests/api/test_*.py` - require `DEBTSTACK_API_KEY`
+3. Use `@pytest.mark.unit` or `@pytest.mark.api` markers
+4. Install dev deps: `pip install -r requirements-dev.txt`
+
 ### Covenant Relationship Extraction
 
 Extract additional relationship data from indentures (796) and credit agreements (1,720):
