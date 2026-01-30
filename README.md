@@ -180,9 +180,8 @@ These 7 endpoints are designed for agents writing code - simple REST, field sele
 | Endpoint | Credits | Description |
 |----------|---------|-------------|
 | `GET /v1/companies` | 1 | Search companies with field selection and 15+ filters |
-| `GET /v1/bonds` | 1 | Search bonds across all companies with pricing |
-| `GET /v1/bonds/resolve` | 1 | Resolve bond identifiers (CUSIP lookup, fuzzy search) |
-| `GET /v1/pricing` | 1 | Bond pricing data with YTM/spread filters |
+| `GET /v1/bonds` | 1 | Search/screen bonds with pricing, filters for yield, seniority, maturity |
+| `GET /v1/bonds/resolve` | 1 | Map bond identifiers - free-text to CUSIP (e.g., "RIG 8% 2027") |
 | `POST /v1/entities/traverse` | 3 | Graph traversal for guarantor chains, org structure |
 | `GET /v1/documents/search` | 3 | Full-text search across SEC filings |
 | `POST /v1/batch` | Sum | Execute multiple primitives in parallel |
@@ -192,9 +191,19 @@ These 7 endpoints are designed for agents writing code - simple REST, field sele
 curl "/v1/companies?ticker=AAPL,MSFT&fields=ticker,name,net_leverage_ratio&sort=-net_leverage_ratio"
 ```
 
-**Example - Bond Search:**
+**Example - Bond Search (Screening):**
 ```bash
+# Find high-yield senior unsecured bonds with pricing data
 curl "/v1/bonds?seniority=senior_unsecured&min_ytm=8.0&has_pricing=true"
+```
+
+**Example - Bond Resolve (Identifier Lookup):**
+```bash
+# Map trader shorthand to CUSIP
+curl "/v1/bonds/resolve?q=RIG%208%25%202027"
+
+# Lookup by CUSIP
+curl "/v1/bonds/resolve?cusip=89157VAG8"
 ```
 
 **Example - Entity Traversal:**

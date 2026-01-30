@@ -486,7 +486,15 @@ curl -X POST "https://api.debtstack.ai/v1/entities/traverse" \
 
 ---
 
-## Primitive 5: search.pricing
+## Primitive 5: search.pricing (DEPRECATED)
+
+> **⚠️ DEPRECATED**: This endpoint is deprecated as of 2026-01-30. Use `GET /v1/bonds?has_pricing=true` instead.
+> **Removal Date**: 2026-06-01
+>
+> **Migration**: The `/v1/bonds` endpoint now always includes pricing data in responses. Use these filters:
+> - `has_pricing=true` - Only bonds with pricing
+> - `min_ytm=8.0` - Filter by yield
+> - `ticker=RIG` - Filter by company
 
 ### Endpoint
 ```
@@ -717,7 +725,7 @@ Execute multiple primitive operations in a single request for efficient batch pr
 | `search.bonds` | Maps to GET /v1/bonds |
 | `resolve.bond` | Maps to GET /v1/bonds/resolve |
 | `traverse.entities` | Maps to POST /v1/entities/traverse |
-| `search.pricing` | Maps to GET /v1/pricing |
+| `search.pricing` | Maps to GET /v1/bonds?has_pricing=true (deprecated: /v1/pricing) |
 | `search.documents` | Maps to GET /v1/documents/search |
 
 ### Limits

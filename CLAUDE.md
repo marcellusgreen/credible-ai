@@ -170,9 +170,8 @@ All require `X-API-Key` header.
 | Endpoint | Method | Credits | Purpose |
 |----------|--------|---------|---------|
 | `/v1/companies` | GET | 1 | Search companies with field selection |
-| `/v1/bonds` | GET | 1 | Search bonds with pricing filters |
-| `/v1/bonds/resolve` | GET | 1 | Resolve CUSIP/bond identifiers |
-| `/v1/pricing` | GET | 1 | Bond pricing data |
+| `/v1/bonds` | GET | 1 | Search/screen bonds with pricing (YTM, seniority, maturity filters) |
+| `/v1/bonds/resolve` | GET | 1 | Map bond identifiers - free-text to CUSIP (e.g., "RIG 8% 2027") |
 | `/v1/companies/{ticker}/changes` | GET | 2 | Diff against historical snapshots |
 | `/v1/entities/traverse` | POST | 3 | Graph traversal (guarantors, structure) |
 | `/v1/documents/search` | GET | 3 | Full-text search across SEC filings |
@@ -181,6 +180,14 @@ All require `X-API-Key` header.
 **Field selection**: `?fields=ticker,name,net_leverage_ratio`
 **Sorting**: `?sort=-net_leverage_ratio` (prefix `-` for descending)
 **Filtering**: `?min_ytm=8.0&seniority=senior_unsecured`
+
+**Bonds vs Bonds/Resolve:**
+| `/v1/bonds` | `/v1/bonds/resolve` |
+|-------------|---------------------|
+| Bulk search/screening | Identifier resolution |
+| Filters: yield, seniority, maturity | Free-text parsing: "RIG 8% 2027" |
+| Always includes pricing | Fuzzy + exact match modes |
+| Use: "Show me all IG bonds with 5%+ yield" | Use: "What's the CUSIP for RIG's 8% 2027?" |
 
 ### Legacy REST Endpoints (26 total)
 
@@ -594,13 +601,15 @@ bond_pricing_history table (daily snapshots)
 ### API Exposure
 
 ```bash
-# Current prices (from bond_pricing)
+# Current prices (from bond_pricing) - pricing always included in bonds response
 GET /v1/bonds?has_pricing=true&fields=name,cusip,pricing
-GET /v1/pricing?cusip=76825DAJ7
+GET /v1/bonds?ticker=RIG&fields=name,cusip,pricing
 
 # Historical prices (from bond_pricing_history)
 GET /v1/pricing/history?cusip=76825DAJ7&from=2025-01-01&to=2026-01-27
 ```
+
+**Note:** The `/v1/pricing` endpoint is deprecated (removal: 2026-06-01). Use `/v1/bonds?has_pricing=true` instead.
 
 ### Pricing Response Format
 
