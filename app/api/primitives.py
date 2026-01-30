@@ -1,15 +1,17 @@
 """
 Primitives API for DebtStack.ai
 
-8 core primitives optimized for AI agents:
+7 core primitives optimized for AI agents:
 1. GET /v1/companies - Horizontal company search
-2. GET /v1/bonds - Horizontal bond search
+2. GET /v1/bonds - Horizontal bond search (includes pricing)
 3. GET /v1/bonds/resolve - Bond identifier resolution
 4. POST /v1/entities/traverse - Graph traversal
-5. GET /v1/pricing - Bond pricing data
-6. GET /v1/documents/search - Full-text search across SEC filings
-7. POST /v1/batch - Batch operations
-8. GET /v1/companies/{ticker}/changes - Diff/changelog since date
+5. GET /v1/documents/search - Full-text search across SEC filings
+6. POST /v1/batch - Batch operations
+7. GET /v1/companies/{ticker}/changes - Diff/changelog since date
+
+DEPRECATED:
+- GET /v1/pricing - Use GET /v1/bonds?has_pricing=true instead
 """
 
 import csv
@@ -1315,7 +1317,7 @@ async def traverse_entities(
 # =============================================================================
 
 
-@router.get("/pricing", tags=["Primitives"])
+@router.get("/pricing", tags=["Primitives"], deprecated=True)
 async def search_pricing(
     ticker: Optional[str] = Query(None, description="Company ticker(s), comma-separated"),
     cusip: Optional[str] = Query(None, description="CUSIP(s), comma-separated"),
@@ -1334,6 +1336,13 @@ async def search_pricing(
     db: AsyncSession = Depends(get_db),
 ):
     """
+    **DEPRECATED**: Use `GET /v1/bonds?has_pricing=true` instead.
+
+    This endpoint will be removed in a future version.
+    The /v1/bonds endpoint now includes pricing data for all bonds.
+
+    ---
+
     Search bond pricing data from FINRA TRACE.
 
     Use `format=csv` for CSV export.
@@ -1343,9 +1352,9 @@ async def search_pricing(
     GET /v1/pricing?ticker=RIG
     ```
 
-    **Example:** Export pricing to CSV:
+    **Migration:** Use instead:
     ```
-    GET /v1/pricing?format=csv
+    GET /v1/bonds?ticker=RIG&has_pricing=true
     ```
     """
     selected_fields = parse_fields(fields, PRICING_FIELDS)
@@ -1452,13 +1461,18 @@ async def search_pricing(
             "limit": limit,
             "offset": offset,
             "as_of": datetime.utcnow().isoformat() + "Z",
+        },
+        "_deprecation": {
+            "warning": "This endpoint is deprecated. Use GET /v1/bonds?has_pricing=true instead.",
+            "migration": "GET /v1/bonds?has_pricing=true&ticker=XXX",
+            "removal_date": "2026-06-01",
         }
     }
     return etag_response(response_data, if_none_match)
 
 
 # =============================================================================
-# PRIMITIVE 6: documents.search
+# PRIMITIVE 5: documents.search
 # =============================================================================
 
 # Available fields for document search
@@ -1771,10 +1785,10 @@ async def batch_operations(
 
     **Supported Primitives:**
     - `search.companies` - Search companies (maps to GET /v1/companies)
-    - `search.bonds` - Search bonds (maps to GET /v1/bonds)
+    - `search.bonds` - Search bonds (maps to GET /v1/bonds) - includes pricing data
     - `resolve.bond` - Resolve bond identifier (maps to GET /v1/bonds/resolve)
     - `traverse.entities` - Graph traversal (maps to POST /v1/entities/traverse)
-    - `search.pricing` - Search pricing (maps to GET /v1/pricing)
+    - `search.pricing` - **DEPRECATED** - Use search.bonds with has_pricing=true instead
     - `search.documents` - Search documents (maps to GET /v1/documents/search)
 
     **Example Request:**
