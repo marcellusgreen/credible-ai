@@ -515,26 +515,18 @@ async def search_bonds(
     # Parse and validate fields
     selected_fields = parse_fields(fields, BOND_FIELDS)
 
-    # Determine if we need pricing join
-    needs_pricing = any([min_ytm, max_ytm, min_spread, max_spread, has_pricing])
+    # Determine if we need pricing filters (always include pricing data via outer join)
+    needs_pricing_filter = any([min_ytm, max_ytm, min_spread, max_spread, has_pricing])
     pricing_sort = sort.replace("-", "").startswith("pricing")
-    needs_pricing = needs_pricing or pricing_sort
 
-    # Build base query
-    if needs_pricing:
-        query = select(DebtInstrument, Company, Entity, BondPricing).join(
-            Company, DebtInstrument.company_id == Company.id
-        ).join(
-            Entity, DebtInstrument.issuer_id == Entity.id
-        ).outerjoin(
-            BondPricing, DebtInstrument.id == BondPricing.debt_instrument_id
-        )
-    else:
-        query = select(DebtInstrument, Company, Entity).join(
-            Company, DebtInstrument.company_id == Company.id
-        ).join(
-            Entity, DebtInstrument.issuer_id == Entity.id
-        )
+    # Always join pricing data so it's available in response
+    query = select(DebtInstrument, Company, Entity, BondPricing).join(
+        Company, DebtInstrument.company_id == Company.id
+    ).join(
+        Entity, DebtInstrument.issuer_id == Entity.id
+    ).outerjoin(
+        BondPricing, DebtInstrument.id == BondPricing.debt_instrument_id
+    )
 
     filters = []
 
@@ -593,7 +585,7 @@ async def search_bonds(
         filters.append(DebtInstrument.cusip.is_(None))
 
     # Pricing filters
-    if needs_pricing:
+    if needs_pricing_filter:
         if min_ytm is not None:
             filters.append(BondPricing.ytm_bps >= int(min_ytm * 100))
         if max_ytm is not None:
@@ -618,22 +610,20 @@ async def search_bonds(
     if filters:
         query = query.where(and_(*filters))
 
-    # Count query
+    # Count query (always join pricing for consistent filtering)
     count_query = select(func.count(DebtInstrument.id.distinct())).select_from(DebtInstrument).join(
         Company, DebtInstrument.company_id == Company.id
     ).join(
         Entity, DebtInstrument.issuer_id == Entity.id
+    ).outerjoin(
+        BondPricing, DebtInstrument.id == BondPricing.debt_instrument_id
     )
-    if needs_pricing:
-        count_query = count_query.outerjoin(
-            BondPricing, DebtInstrument.id == BondPricing.debt_instrument_id
-        )
     if filters:
         count_query = count_query.where(and_(*filters))
 
     total = await db.scalar(count_query)
 
-    # Apply sorting
+    # Apply sorting (pricing columns always available since we always join)
     sort_column_map = {
         "maturity_date": DebtInstrument.maturity_date,
         "coupon_rate": DebtInstrument.interest_rate,
@@ -641,11 +631,10 @@ async def search_bonds(
         "name": DebtInstrument.name,
         "issuer_type": Entity.entity_type,
         "company_ticker": Company.ticker,
+        "pricing.ytm": BondPricing.ytm_bps,
+        "pricing.spread": BondPricing.spread_to_treasury_bps,
+        "pricing.last_price": BondPricing.last_price,
     }
-    if needs_pricing:
-        sort_column_map["pricing.ytm"] = BondPricing.ytm_bps
-        sort_column_map["pricing.spread"] = BondPricing.spread_to_treasury_bps
-        sort_column_map["pricing.last_price"] = BondPricing.last_price
 
     query = apply_sort(query, sort, sort_column_map, DebtInstrument.maturity_date)
 
@@ -684,14 +673,10 @@ async def search_bonds(
                 "estimated_value": coll.estimated_value,
             })
 
-    # Build response
+    # Build response (always have 4 elements since we always join pricing)
     data = []
     for row in rows:
-        if needs_pricing:
-            d, c, issuer, pricing = row
-        else:
-            d, c, issuer = row
-            pricing = None
+        d, c, issuer, pricing = row
 
         bond_data = {
             "id": str(d.id),
@@ -727,8 +712,8 @@ async def search_bonds(
             "collateral_data_confidence": d.collateral_data_confidence,
         }
 
-        # Add pricing if available
-        if pricing:
+        # Add pricing data (always included, null if no pricing exists)
+        if pricing and pricing.last_price is not None:
             bond_data["pricing"] = {
                 "last_price": float(pricing.last_price) if pricing.last_price else None,
                 "last_trade_date": pricing.last_trade_date.isoformat() if pricing.last_trade_date else None,
@@ -740,7 +725,7 @@ async def search_bonds(
                 "price_source": pricing.price_source,
                 "staleness_days": pricing.staleness_days,
             }
-        elif needs_pricing or (selected_fields and "pricing" in selected_fields):
+        else:
             bond_data["pricing"] = None
 
         data.append(filter_dict(bond_data, selected_fields))
