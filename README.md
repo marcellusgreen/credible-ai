@@ -175,7 +175,7 @@ All other endpoints require an API key passed via `X-API-Key` header.
 
 ### Primitives API (Optimized for AI Agents)
 
-These 8 endpoints are designed for agents writing code - simple REST, field selection, powerful filtering.
+These 7 endpoints are designed for agents writing code - simple REST, field selection, powerful filtering.
 
 | Endpoint | Credits | Description |
 |----------|---------|-------------|
@@ -183,7 +183,6 @@ These 8 endpoints are designed for agents writing code - simple REST, field sele
 | `GET /v1/bonds` | 1 | Search bonds across all companies with pricing |
 | `GET /v1/bonds/resolve` | 1 | Resolve bond identifiers (CUSIP lookup, fuzzy search) |
 | `GET /v1/pricing` | 1 | Bond pricing data with YTM/spread filters |
-| `GET /v1/companies/{ticker}/changes` | 2 | Diff/changelog against historical snapshots |
 | `POST /v1/entities/traverse` | 3 | Graph traversal for guarantor chains, org structure |
 | `GET /v1/documents/search` | 3 | Full-text search across SEC filings |
 | `POST /v1/batch` | Sum | Execute multiple primitives in parallel |
@@ -208,6 +207,132 @@ curl -X POST "/v1/entities/traverse" -d '{"start":{"type":"bond","id":"893830AK8
 # After selecting a bond, ask questions about covenants, defaults, etc.
 curl "/v1/documents/search?q=event+of+default&ticker=RIG&section_type=indenture"
 ```
+
+### Advanced Primitives
+
+#### Traverse Entities - `POST /v1/entities/traverse`
+
+Navigate the corporate structure graph. Follow guarantor chains, find subsidiary hierarchies, or trace ownership relationships.
+
+**Request Body:**
+```json
+{
+  "start": {
+    "type": "bond" | "entity" | "company",
+    "id": "CUSIP, entity UUID, or ticker"
+  },
+  "relationships": ["guarantees", "subsidiaries", "parent"],
+  "direction": "outbound" | "inbound" | "both",
+  "max_depth": 3
+}
+```
+
+**Relationship Types:**
+| Relationship | Direction | Description |
+|--------------|-----------|-------------|
+| `guarantees` | inbound | Find entities that guarantee a bond |
+| `subsidiaries` | outbound | Find entities owned by a parent |
+| `parent` | outbound | Find the parent of an entity |
+| `issuer` | outbound | Find who issued a bond |
+
+**Example - Find Bond Guarantors:**
+```bash
+curl -X POST "/v1/entities/traverse" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start": {"type": "bond", "id": "893830AK8"},
+    "relationships": ["guarantees"],
+    "direction": "inbound"
+  }'
+
+# Returns:
+{
+  "start": {
+    "type": "bond",
+    "id": "893830AK8",
+    "name": "8.000% Senior Secured Notes due 2027"
+  },
+  "paths": [
+    {
+      "relationship": "guarantees",
+      "entities": [
+        {"name": "Transocean Inc.", "jurisdiction": "Cayman Islands"},
+        {"name": "Transocean Offshore Deepwater Drilling Inc.", "jurisdiction": "Delaware"},
+        {"name": "Triton Holding Company", "jurisdiction": "Cayman Islands"}
+      ]
+    }
+  ],
+  "total_guarantors": 47
+}
+```
+
+**Example - Find Corporate Hierarchy:**
+```bash
+curl -X POST "/v1/entities/traverse" \
+  -d '{
+    "start": {"type": "company", "id": "CHTR"},
+    "relationships": ["subsidiaries"],
+    "max_depth": 2
+  }'
+```
+
+**Use Cases:**
+- Structural subordination analysis (which subs guarantee which debt)
+- Recovery analysis (trace collateral through entity chains)
+- Regulatory exposure (find entities in specific jurisdictions)
+
+---
+
+#### Search Documents - `GET /v1/documents/search`
+
+Full-text search across 13,862 SEC filing sections including indentures, credit agreements, and debt footnotes.
+
+**Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `q` | string | Search query (supports phrases: `"event of default"`) |
+| `ticker` | string | Filter to specific company |
+| `section_type` | string | `indenture`, `credit_agreement`, `debt_footnote`, `exhibit_21` |
+| `filing_type` | string | `10-K`, `10-Q`, `8-K` |
+| `limit` | int | Max results (default: 10, max: 50) |
+| `highlight` | bool | Include matching snippets (default: true) |
+
+**Example - Find Covenant Language:**
+```bash
+curl "/v1/documents/search?q=restricted+payment+dividend&ticker=RIG&section_type=indenture"
+
+# Returns:
+{
+  "query": "restricted payment dividend",
+  "total_matches": 12,
+  "results": [
+    {
+      "section_type": "indenture",
+      "document_title": "Indenture dated April 11, 2024",
+      "filing_date": "2024-04-15",
+      "snippet": "...shall not, and shall not permit any Restricted Subsidiary to, directly or indirectly, declare or pay any **dividend** or make any **payment** or distribution...",
+      "relevance_score": 0.89,
+      "source_url": "https://www.sec.gov/Archives/edgar/data/..."
+    }
+  ]
+}
+```
+
+**Common Search Queries:**
+| Query | Documents | Use Case |
+|-------|-----------|----------|
+| `"event of default"` | 3,608 | Default triggers, grace periods |
+| `"change of control"` | 2,050 | Put provisions, 101% repurchase rights |
+| `collateral` | 1,752 | Security package analysis |
+| `"asset sale"` | 976 | Mandatory prepayment triggers |
+| `"make-whole"` | 679 | Early redemption premiums |
+| `"restricted payment"` | 464 | Dividend/buyback restrictions |
+
+**Use Cases:**
+- Answer specific covenant questions ("Can they pay dividends?")
+- Find default triggers and grace periods
+- Research change of control provisions
+- Analyze collateral and security packages
 
 ### Agent Workflow: Discovery → Deep Dive
 
