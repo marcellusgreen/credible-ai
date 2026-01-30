@@ -37,7 +37,7 @@ Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
 
 ## Features
 
-- **Primitives API**: 7 core endpoints optimized for AI agents with field selection
+- **Primitives API**: 9 core endpoints optimized for AI agents with field selection
 - **Authentication**: API key auth with credit-based usage tracking
 - **Iterative QA Extraction**: 5 automated verification checks with targeted fixes until 85%+ quality threshold
 - **Individual Debt Instruments**: Each bond, note, and credit facility extracted separately (not just totals)
@@ -175,13 +175,15 @@ All other endpoints require an API key passed via `X-API-Key` header.
 
 ### Primitives API (Optimized for AI Agents)
 
-These 7 endpoints are designed for agents writing code - simple REST, field selection, powerful filtering.
+These 9 endpoints are designed for agents writing code - simple REST, field selection, powerful filtering.
 
 | Endpoint | Credits | Description |
 |----------|---------|-------------|
 | `GET /v1/companies` | 1 | Search companies with field selection and 15+ filters |
 | `GET /v1/bonds` | 1 | Search/screen bonds with pricing, filters for yield, seniority, maturity |
 | `GET /v1/bonds/resolve` | 1 | Map bond identifiers - free-text to CUSIP (e.g., "RIG 8% 2027") |
+| `GET /v1/financials` | 1 | Quarterly financial statements (income, balance sheet, cash flow) |
+| `GET /v1/collateral` | 1 | Collateral securing debt (types, values, priority) |
 | `GET /v1/companies/{ticker}/changes` | 2 | Diff against historical snapshots |
 | `POST /v1/entities/traverse` | 3 | Graph traversal for guarantor chains, org structure |
 | `GET /v1/documents/search` | 3 | Full-text search across SEC filings |
@@ -205,6 +207,24 @@ curl "/v1/bonds/resolve?q=RIG%208%25%202027"
 
 # Lookup by CUSIP
 curl "/v1/bonds/resolve?cusip=89157VAG8"
+```
+
+**Example - Financials (TTM):**
+```bash
+# Get trailing twelve months financials for AAPL
+curl "/v1/financials?ticker=AAPL&period=TTM"
+
+# Get all Q3 2025 financials for comparison
+curl "/v1/financials?fiscal_year=2025&fiscal_quarter=3&format=csv"
+```
+
+**Example - Collateral (Recovery Analysis):**
+```bash
+# Find all first-lien collateral for RIG
+curl "/v1/collateral?ticker=RIG&priority=first_lien"
+
+# Get collateral with valuations
+curl "/v1/collateral?has_valuation=true&collateral_type=equipment"
 ```
 
 **Example - Entity Traversal:**
@@ -465,7 +485,7 @@ credible/
 ├── app/
 │   ├── api/
 │   │   ├── routes.py              # Legacy FastAPI endpoints
-│   │   └── primitives.py          # Primitives API (7 core endpoints)
+│   │   └── primitives.py          # Primitives API (9 core endpoints)
 │   ├── core/
 │   │   ├── config.py              # Configuration
 │   │   ├── database.py            # Database connection

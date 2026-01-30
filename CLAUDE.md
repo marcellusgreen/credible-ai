@@ -35,7 +35,7 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 - Live at: `https://credible-ai-production.up.railway.app`
 
 **What's Working**:
-- **Primitives API**: 7 core endpoints optimized for AI agents (field selection, powerful filters)
+- **Primitives API**: 9 core endpoints optimized for AI agents (field selection, powerful filters)
 - **Auth & Credits**: API key auth, tier-based credits, usage tracking
 - **Legacy REST API**: 26 endpoints for detailed company data
 - Iterative extraction with QA feedback loop (5 checks, 85% threshold)
@@ -98,7 +98,7 @@ This separation keeps business logic testable and reusable while scripts handle 
 
 | File | Purpose |
 |------|---------|
-| `app/api/primitives.py` | **Primitives API** - 7 core endpoints for agents |
+| `app/api/primitives.py` | **Primitives API** - 9 core endpoints for agents |
 | `app/api/auth.py` | **Auth API** - signup, user info |
 | `app/api/routes.py` | Legacy FastAPI endpoints (26 routes) |
 | `app/core/auth.py` | API key generation, validation, tier config |
@@ -163,7 +163,7 @@ This separation keeps business logic testable and reusable while scripts handle 
 | `/v1/auth/signup` | POST | Create account, returns API key |
 | `/v1/auth/me` | GET | Get user info and credits (requires API key) |
 
-### Primitives API (7 endpoints - optimized for agents)
+### Primitives API (9 endpoints - optimized for agents)
 
 All require `X-API-Key` header.
 
@@ -172,6 +172,8 @@ All require `X-API-Key` header.
 | `/v1/companies` | GET | 1 | Search companies with field selection |
 | `/v1/bonds` | GET | 1 | Search/screen bonds with pricing (YTM, seniority, maturity filters) |
 | `/v1/bonds/resolve` | GET | 1 | Map bond identifiers - free-text to CUSIP (e.g., "RIG 8% 2027") |
+| `/v1/financials` | GET | 1 | Quarterly financial statements (income, balance sheet, cash flow) |
+| `/v1/collateral` | GET | 1 | Collateral securing debt (types, values, priority) |
 | `/v1/companies/{ticker}/changes` | GET | 2 | Diff against historical snapshots |
 | `/v1/entities/traverse` | POST | 3 | Graph traversal (guarantors, structure) |
 | `/v1/documents/search` | GET | 3 | Full-text search across SEC filings |

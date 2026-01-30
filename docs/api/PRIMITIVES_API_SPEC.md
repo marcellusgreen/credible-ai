@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document specifies the REST API design for DebtStack's 7 core primitives, optimized for AI agents writing code in sandboxes.
+This document specifies the REST API design for DebtStack's 9 core primitives, optimized for AI agents writing code in sandboxes.
 
 **Design Philosophy:**
 - One endpoint per primitive

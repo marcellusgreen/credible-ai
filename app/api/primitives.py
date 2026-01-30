@@ -1,7 +1,7 @@
 """
 Primitives API for DebtStack.ai
 
-7 core primitives optimized for AI agents:
+9 core primitives optimized for AI agents:
 1. GET /v1/companies - Horizontal company search
 2. GET /v1/bonds - Horizontal bond search (includes pricing)
 3. GET /v1/bonds/resolve - Bond identifier resolution
@@ -9,6 +9,8 @@ Primitives API for DebtStack.ai
 5. GET /v1/documents/search - Full-text search across SEC filings
 6. POST /v1/batch - Batch operations
 7. GET /v1/companies/{ticker}/changes - Diff/changelog since date
+8. GET /v1/financials - Quarterly financial statements (income, balance sheet, cash flow)
+9. GET /v1/collateral - Collateral securing debt instruments
 
 DEPRECATED:
 - GET /v1/pricing - Use GET /v1/bonds?has_pricing=true instead
@@ -33,6 +35,7 @@ from app.core.database import get_db
 from app.models import (
     Company, CompanyMetrics, CompanySnapshot, Entity, DebtInstrument,
     Guarantee, BondPricing, DocumentSection, ExtractionMetadata,
+    CompanyFinancials, Collateral,
 )
 
 router = APIRouter()
@@ -160,6 +163,28 @@ PRICING_FIELDS = {
     "ytm", "ytm_bps", "spread", "spread_bps", "treasury_benchmark",
     "price_source", "staleness_days",
     "coupon_rate", "maturity_date", "seniority",
+}
+
+FINANCIALS_FIELDS = {
+    "ticker", "company_name",
+    "fiscal_year", "fiscal_quarter", "period_end_date", "filing_type",
+    # Income Statement
+    "revenue", "cost_of_revenue", "gross_profit", "operating_income", "ebitda",
+    "interest_expense", "net_income", "depreciation_amortization",
+    # Balance Sheet
+    "cash", "total_current_assets", "total_assets",
+    "total_current_liabilities", "total_debt", "total_liabilities", "stockholders_equity",
+    # Cash Flow
+    "operating_cash_flow", "investing_cash_flow", "financing_cash_flow", "capex",
+    # Derived
+    "free_cash_flow", "gross_margin", "operating_margin", "net_margin",
+}
+
+COLLATERAL_FIELDS = {
+    "id", "debt_instrument_id",
+    "bond_name", "bond_cusip", "company_ticker", "company_name",
+    "collateral_type", "description", "estimated_value", "priority",
+    "instrument_seniority", "instrument_security_type",
 }
 
 
@@ -2398,7 +2423,564 @@ async def _batch_search_documents(params: dict, db: AsyncSession) -> dict:
 
 
 # =============================================================================
-# PRIMITIVE 8: changes (diff/changelog)
+# PRIMITIVE 8: search.financials
+# =============================================================================
+
+
+@router.get("/financials", tags=["Primitives"])
+async def search_financials(
+    # Company filters
+    ticker: Optional[str] = Query(None, description="Company ticker(s), comma-separated"),
+    sector: Optional[str] = Query(None, description="Company sector"),
+    # Period filters
+    fiscal_year: Optional[int] = Query(None, description="Fiscal year (e.g., 2025)"),
+    fiscal_quarter: Optional[int] = Query(None, ge=1, le=4, description="Fiscal quarter (1-4)"),
+    period: Optional[str] = Query(None, description="Period shorthand: TTM, latest, or specific (e.g., 2025Q3)"),
+    filing_type: Optional[str] = Query(None, description="Filing type: 10-K, 10-Q"),
+    # Date filters
+    period_after: Optional[date] = Query(None, description="Period end after date"),
+    period_before: Optional[date] = Query(None, description="Period end before date"),
+    # Metric filters
+    min_revenue: Optional[int] = Query(None, description="Minimum revenue (cents)"),
+    min_ebitda: Optional[int] = Query(None, description="Minimum EBITDA (cents)"),
+    min_cash: Optional[int] = Query(None, description="Minimum cash (cents)"),
+    # Field selection
+    fields: Optional[str] = Query(None, description="Comma-separated fields to return"),
+    # Sorting
+    sort: str = Query("-period_end_date", description="Sort field (prefix - for desc)"),
+    # Pagination
+    limit: int = Query(50, ge=1, le=200, description="Results per page"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+    # Export format
+    format: str = Query("json", description="Response format: json or csv"),
+    # ETag support
+    if_none_match: Optional[str] = Header(None, description="ETag for conditional request"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Search quarterly financial statements across all companies.
+
+    Returns income statement, balance sheet, and cash flow data from 10-K/10-Q filings.
+    All amounts are in **cents** (divide by 100 for dollars, by 100_000_000_000 for billions).
+
+    **Example:** Get TTM financials for AAPL:
+    ```
+    GET /v1/financials?ticker=AAPL&period=TTM
+    ```
+
+    **Example:** Get all Q3 2025 financials for Tech sector:
+    ```
+    GET /v1/financials?sector=Technology&fiscal_year=2025&fiscal_quarter=3
+    ```
+
+    **Example:** Export to CSV for analysis:
+    ```
+    GET /v1/financials?ticker=AAPL,MSFT,GOOGL&period=TTM&format=csv
+    ```
+
+    **Period shortcuts:**
+    - `TTM`: Trailing Twelve Months (sums last 4 quarters for 10-Q, or uses 10-K annual)
+    - `latest`: Most recent quarter only
+    - `2025Q3`: Specific quarter
+    """
+    selected_fields = parse_fields(fields, FINANCIALS_FIELDS)
+
+    # Build base query
+    query = select(CompanyFinancials, Company).join(
+        Company, CompanyFinancials.company_id == Company.id
+    )
+    count_query = select(func.count()).select_from(CompanyFinancials).join(
+        Company, CompanyFinancials.company_id == Company.id
+    )
+
+    filters = []
+
+    # Ticker filter
+    ticker_list = parse_comma_list(ticker)
+    if ticker_list:
+        filters.append(Company.ticker.in_(ticker_list))
+
+    # Sector filter
+    if sector:
+        filters.append(Company.sector.ilike(f"%{sector}%"))
+
+    # Period filters
+    if fiscal_year:
+        filters.append(CompanyFinancials.fiscal_year == fiscal_year)
+    if fiscal_quarter:
+        filters.append(CompanyFinancials.fiscal_quarter == fiscal_quarter)
+    if filing_type:
+        filters.append(CompanyFinancials.filing_type == filing_type.upper())
+
+    # Date filters
+    if period_after:
+        filters.append(CompanyFinancials.period_end_date >= period_after)
+    if period_before:
+        filters.append(CompanyFinancials.period_end_date <= period_before)
+
+    # Metric filters
+    if min_revenue is not None:
+        filters.append(CompanyFinancials.revenue >= min_revenue)
+    if min_ebitda is not None:
+        filters.append(CompanyFinancials.ebitda >= min_ebitda)
+    if min_cash is not None:
+        filters.append(CompanyFinancials.cash_and_equivalents >= min_cash)
+
+    # Apply filters
+    if filters:
+        query = query.where(and_(*filters))
+        count_query = count_query.where(and_(*filters))
+
+    # Handle special period shortcuts
+    if period:
+        period_upper = period.upper()
+        if period_upper == "LATEST":
+            # Get only the most recent quarter per company
+            subquery = (
+                select(
+                    CompanyFinancials.company_id,
+                    func.max(CompanyFinancials.period_end_date).label("max_date")
+                )
+                .group_by(CompanyFinancials.company_id)
+                .subquery()
+            )
+            query = query.join(
+                subquery,
+                and_(
+                    CompanyFinancials.company_id == subquery.c.company_id,
+                    CompanyFinancials.period_end_date == subquery.c.max_date
+                )
+            )
+        elif period_upper == "TTM":
+            # TTM will be computed in post-processing
+            pass
+        elif "Q" in period_upper:
+            # Parse specific quarter like "2025Q3"
+            try:
+                year = int(period_upper[:4])
+                quarter = int(period_upper[5])
+                filters.append(CompanyFinancials.fiscal_year == year)
+                filters.append(CompanyFinancials.fiscal_quarter == quarter)
+                query = query.where(and_(
+                    CompanyFinancials.fiscal_year == year,
+                    CompanyFinancials.fiscal_quarter == quarter
+                ))
+            except (ValueError, IndexError):
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "INVALID_PERIOD", "message": f"Invalid period format: {period}. Use TTM, latest, or YYYYQN (e.g., 2025Q3)"}
+                )
+
+    # Sorting
+    sort_column_map = {
+        "period_end_date": CompanyFinancials.period_end_date,
+        "ticker": Company.ticker,
+        "revenue": CompanyFinancials.revenue,
+        "ebitda": CompanyFinancials.ebitda,
+        "total_debt": CompanyFinancials.total_debt,
+        "cash": CompanyFinancials.cash_and_equivalents,
+        "fiscal_year": CompanyFinancials.fiscal_year,
+    }
+    query = apply_sort(query, sort, sort_column_map, CompanyFinancials.period_end_date)
+
+    # Count
+    count_result = await db.execute(count_query)
+    total = count_result.scalar() or 0
+
+    # Pagination
+    query = query.limit(limit).offset(offset)
+
+    # Execute
+    result = await db.execute(query)
+    rows = result.all()
+
+    # Handle TTM aggregation
+    if period and period.upper() == "TTM":
+        # Group by company and compute TTM sums
+        ttm_data = await _compute_ttm_financials(db, ticker_list, selected_fields)
+        if format.lower() == "csv":
+            return to_csv_response(ttm_data, filename="financials_ttm.csv")
+        return etag_response({"data": ttm_data, "meta": {"total": len(ttm_data), "period": "TTM"}}, if_none_match)
+
+    # Build response
+    data = []
+    for row in rows:
+        fin, company = row
+
+        # Compute derived metrics
+        free_cash_flow = None
+        if fin.operating_cash_flow is not None and fin.capex is not None:
+            free_cash_flow = fin.operating_cash_flow - abs(fin.capex)
+
+        gross_margin = None
+        if fin.gross_profit is not None and fin.revenue and fin.revenue > 0:
+            gross_margin = round(fin.gross_profit / fin.revenue * 100, 2)
+
+        operating_margin = None
+        if fin.operating_income is not None and fin.revenue and fin.revenue > 0:
+            operating_margin = round(fin.operating_income / fin.revenue * 100, 2)
+
+        net_margin = None
+        if fin.net_income is not None and fin.revenue and fin.revenue > 0:
+            net_margin = round(fin.net_income / fin.revenue * 100, 2)
+
+        fin_data = {
+            "ticker": company.ticker,
+            "company_name": company.name,
+            "fiscal_year": fin.fiscal_year,
+            "fiscal_quarter": fin.fiscal_quarter,
+            "period_end_date": fin.period_end_date.isoformat() if fin.period_end_date else None,
+            "filing_type": fin.filing_type,
+            # Income Statement
+            "revenue": fin.revenue,
+            "cost_of_revenue": fin.cost_of_revenue,
+            "gross_profit": fin.gross_profit,
+            "operating_income": fin.operating_income,
+            "ebitda": fin.ebitda,
+            "interest_expense": fin.interest_expense,
+            "net_income": fin.net_income,
+            "depreciation_amortization": fin.depreciation_amortization,
+            # Balance Sheet
+            "cash": fin.cash_and_equivalents,
+            "total_current_assets": fin.total_current_assets,
+            "total_assets": fin.total_assets,
+            "total_current_liabilities": fin.total_current_liabilities,
+            "total_debt": fin.total_debt,
+            "total_liabilities": fin.total_liabilities,
+            "stockholders_equity": fin.stockholders_equity,
+            # Cash Flow
+            "operating_cash_flow": fin.operating_cash_flow,
+            "investing_cash_flow": fin.investing_cash_flow,
+            "financing_cash_flow": fin.financing_cash_flow,
+            "capex": fin.capex,
+            # Derived
+            "free_cash_flow": free_cash_flow,
+            "gross_margin": gross_margin,
+            "operating_margin": operating_margin,
+            "net_margin": net_margin,
+        }
+
+        data.append(filter_dict(fin_data, selected_fields))
+
+    # Return CSV if requested
+    if format.lower() == "csv":
+        return to_csv_response(data, filename="financials.csv")
+
+    response_data = {
+        "data": data,
+        "meta": {
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+    }
+    return etag_response(response_data, if_none_match)
+
+
+async def _compute_ttm_financials(db: AsyncSession, ticker_list: List[str], selected_fields: Optional[Set[str]]) -> List[dict]:
+    """Compute TTM (Trailing Twelve Months) financials for companies."""
+    # Get latest 4 quarters for each company
+    if ticker_list:
+        companies_query = select(Company).where(Company.ticker.in_(ticker_list))
+    else:
+        companies_query = select(Company)
+
+    companies_result = await db.execute(companies_query)
+    companies = companies_result.scalars().all()
+
+    ttm_data = []
+    for company in companies:
+        # Get the most recent financial record to check filing type
+        latest_query = select(CompanyFinancials).where(
+            CompanyFinancials.company_id == company.id
+        ).order_by(desc(CompanyFinancials.period_end_date)).limit(1)
+
+        latest_result = await db.execute(latest_query)
+        latest = latest_result.scalar_one_or_none()
+
+        if not latest:
+            continue
+
+        # If latest is 10-K, use it directly (already annual)
+        if latest.filing_type == "10-K":
+            fin_data = {
+                "ticker": company.ticker,
+                "company_name": company.name,
+                "period": "TTM",
+                "ttm_source": "10-K",
+                "period_end_date": latest.period_end_date.isoformat() if latest.period_end_date else None,
+                "revenue": latest.revenue,
+                "ebitda": latest.ebitda,
+                "operating_income": latest.operating_income,
+                "net_income": latest.net_income,
+                "interest_expense": latest.interest_expense,
+                "depreciation_amortization": latest.depreciation_amortization,
+                "cash": latest.cash_and_equivalents,
+                "total_assets": latest.total_assets,
+                "total_debt": latest.total_debt,
+                "total_liabilities": latest.total_liabilities,
+                "stockholders_equity": latest.stockholders_equity,
+                "operating_cash_flow": latest.operating_cash_flow,
+                "capex": latest.capex,
+            }
+            # Compute free cash flow
+            if latest.operating_cash_flow is not None and latest.capex is not None:
+                fin_data["free_cash_flow"] = latest.operating_cash_flow - abs(latest.capex)
+
+            ttm_data.append(filter_dict(fin_data, selected_fields) if selected_fields else fin_data)
+        else:
+            # Sum last 4 quarters of 10-Q data
+            quarters_query = select(CompanyFinancials).where(
+                CompanyFinancials.company_id == company.id
+            ).order_by(desc(CompanyFinancials.period_end_date)).limit(4)
+
+            quarters_result = await db.execute(quarters_query)
+            quarters = quarters_result.scalars().all()
+
+            if not quarters:
+                continue
+
+            # Sum income statement items (flow items)
+            def safe_sum(items):
+                filtered = [x for x in items if x is not None]
+                return sum(filtered) if filtered else None
+
+            revenue = safe_sum([q.revenue for q in quarters])
+            ebitda = safe_sum([q.ebitda for q in quarters])
+            operating_income = safe_sum([q.operating_income for q in quarters])
+            net_income = safe_sum([q.net_income for q in quarters])
+            interest_expense = safe_sum([q.interest_expense for q in quarters])
+            da = safe_sum([q.depreciation_amortization for q in quarters])
+            ocf = safe_sum([q.operating_cash_flow for q in quarters])
+            capex = safe_sum([q.capex for q in quarters])
+
+            # Balance sheet items: use most recent (not summed)
+            most_recent = quarters[0]
+
+            fin_data = {
+                "ticker": company.ticker,
+                "company_name": company.name,
+                "period": "TTM",
+                "ttm_source": f"{len(quarters)}_quarters",
+                "ttm_quarters": len(quarters),
+                "period_end_date": most_recent.period_end_date.isoformat() if most_recent.period_end_date else None,
+                "revenue": revenue,
+                "ebitda": ebitda,
+                "operating_income": operating_income,
+                "net_income": net_income,
+                "interest_expense": interest_expense,
+                "depreciation_amortization": da,
+                "cash": most_recent.cash_and_equivalents,
+                "total_assets": most_recent.total_assets,
+                "total_debt": most_recent.total_debt,
+                "total_liabilities": most_recent.total_liabilities,
+                "stockholders_equity": most_recent.stockholders_equity,
+                "operating_cash_flow": ocf,
+                "capex": capex,
+            }
+            # Compute free cash flow
+            if ocf is not None and capex is not None:
+                fin_data["free_cash_flow"] = ocf - abs(capex)
+
+            ttm_data.append(filter_dict(fin_data, selected_fields) if selected_fields else fin_data)
+
+    return ttm_data
+
+
+# =============================================================================
+# PRIMITIVE 9: search.collateral
+# =============================================================================
+
+
+@router.get("/collateral", tags=["Primitives"])
+async def search_collateral(
+    # Company/instrument filters
+    ticker: Optional[str] = Query(None, description="Company ticker(s), comma-separated"),
+    debt_id: Optional[str] = Query(None, description="Debt instrument ID(s), comma-separated"),
+    cusip: Optional[str] = Query(None, description="Bond CUSIP(s), comma-separated"),
+    # Collateral filters
+    collateral_type: Optional[str] = Query(None, description="Type: real_estate, equipment, receivables, inventory, securities, vehicles, ip, cash, general_lien"),
+    priority: Optional[str] = Query(None, description="Priority: first_lien, second_lien"),
+    has_valuation: Optional[bool] = Query(None, description="Has estimated value"),
+    min_value: Optional[int] = Query(None, description="Minimum estimated value (cents)"),
+    # Instrument filters
+    seniority: Optional[str] = Query(None, description="Bond seniority: senior_secured, senior_unsecured"),
+    security_type: Optional[str] = Query(None, description="Security type: first_lien, second_lien"),
+    # Field selection
+    fields: Optional[str] = Query(None, description="Comma-separated fields to return"),
+    # Sorting
+    sort: str = Query("collateral_type", description="Sort field (prefix - for desc)"),
+    # Pagination
+    limit: int = Query(50, ge=1, le=200, description="Results per page"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+    # Export format
+    format: str = Query("json", description="Response format: json or csv"),
+    # ETag support
+    if_none_match: Optional[str] = Header(None, description="ETag for conditional request"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Search collateral securing debt instruments.
+
+    Returns collateral items with types, descriptions, estimated values, and priority.
+    Use for recovery analysis and LTV calculations.
+
+    **Collateral Types:**
+    - `real_estate`: Property, buildings, land
+    - `equipment`: Machinery, manufacturing equipment
+    - `receivables`: Accounts receivable, trade receivables
+    - `inventory`: Stock, finished goods
+    - `securities`: Stocks, bonds, other securities
+    - `vehicles`: Fleet, aircraft, vessels
+    - `ip`: Patents, trademarks, intellectual property
+    - `cash`: Cash deposits, restricted cash
+    - `general_lien`: Blanket lien on all assets
+
+    **Example:** Find all first-lien collateral for RIG:
+    ```
+    GET /v1/collateral?ticker=RIG&priority=first_lien
+    ```
+
+    **Example:** Find equipment collateral with valuations:
+    ```
+    GET /v1/collateral?collateral_type=equipment&has_valuation=true
+    ```
+
+    **Example:** Get collateral for a specific bond:
+    ```
+    GET /v1/collateral?cusip=893830AK8
+    ```
+    """
+    selected_fields = parse_fields(fields, COLLATERAL_FIELDS)
+
+    # Build query with joins
+    query = select(Collateral, DebtInstrument, Company).join(
+        DebtInstrument, Collateral.debt_instrument_id == DebtInstrument.id
+    ).join(
+        Company, DebtInstrument.company_id == Company.id
+    )
+    count_query = select(func.count()).select_from(Collateral).join(
+        DebtInstrument, Collateral.debt_instrument_id == DebtInstrument.id
+    ).join(
+        Company, DebtInstrument.company_id == Company.id
+    )
+
+    filters = []
+
+    # Company filters
+    ticker_list = parse_comma_list(ticker)
+    if ticker_list:
+        filters.append(Company.ticker.in_(ticker_list))
+
+    # Debt instrument filters
+    if debt_id:
+        debt_ids = [d.strip() for d in debt_id.split(",") if d.strip()]
+        try:
+            debt_uuids = [UUID(d) for d in debt_ids]
+            filters.append(Collateral.debt_instrument_id.in_(debt_uuids))
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "INVALID_UUID", "message": "Invalid debt_id format. Must be UUID."}
+            )
+
+    cusip_list = parse_comma_list(cusip)
+    if cusip_list:
+        filters.append(DebtInstrument.cusip.in_(cusip_list))
+
+    # Collateral filters
+    if collateral_type:
+        type_list = parse_comma_list(collateral_type, uppercase=False)
+        filters.append(Collateral.collateral_type.in_(type_list))
+
+    if priority:
+        filters.append(Collateral.priority == priority)
+
+    if has_valuation is True:
+        filters.append(Collateral.estimated_value.isnot(None))
+    elif has_valuation is False:
+        filters.append(Collateral.estimated_value.is_(None))
+
+    if min_value is not None:
+        filters.append(Collateral.estimated_value >= min_value)
+
+    # Instrument filters
+    if seniority:
+        filters.append(DebtInstrument.seniority == seniority)
+    if security_type:
+        filters.append(DebtInstrument.security_type == security_type)
+
+    # Apply filters
+    if filters:
+        query = query.where(and_(*filters))
+        count_query = count_query.where(and_(*filters))
+
+    # Sorting
+    sort_column_map = {
+        "collateral_type": Collateral.collateral_type,
+        "priority": Collateral.priority,
+        "estimated_value": Collateral.estimated_value,
+        "ticker": Company.ticker,
+        "bond_name": DebtInstrument.name,
+    }
+    query = apply_sort(query, sort, sort_column_map, Collateral.collateral_type)
+
+    # Count
+    count_result = await db.execute(count_query)
+    total = count_result.scalar() or 0
+
+    # Pagination
+    query = query.limit(limit).offset(offset)
+
+    # Execute
+    result = await db.execute(query)
+    rows = result.all()
+
+    # Build response
+    data = []
+    for row in rows:
+        coll, debt, company = row
+
+        coll_data = {
+            "id": str(coll.id),
+            "debt_instrument_id": str(coll.debt_instrument_id),
+            "bond_name": debt.name,
+            "bond_cusip": debt.cusip,
+            "company_ticker": company.ticker,
+            "company_name": company.name,
+            "collateral_type": coll.collateral_type,
+            "description": coll.description,
+            "estimated_value": coll.estimated_value,
+            "priority": coll.priority,
+            "instrument_seniority": debt.seniority,
+            "instrument_security_type": debt.security_type,
+        }
+
+        data.append(filter_dict(coll_data, selected_fields))
+
+    # Return CSV if requested
+    if format.lower() == "csv":
+        return to_csv_response(data, filename="collateral.csv")
+
+    # Compute summary stats
+    total_value = sum(c.get("estimated_value") or 0 for c in data)
+    types_found = list(set(c.get("collateral_type") for c in data if c.get("collateral_type")))
+
+    response_data = {
+        "data": data,
+        "meta": {
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "total_estimated_value": total_value if total_value > 0 else None,
+            "collateral_types": sorted(types_found),
+        }
+    }
+    return etag_response(response_data, if_none_match)
+
+
+# =============================================================================
+# PRIMITIVE 10: changes (diff/changelog)
 # =============================================================================
 
 
