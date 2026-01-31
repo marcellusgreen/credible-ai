@@ -1,10 +1,10 @@
 # DebtStack Work Plan
 
-Last Updated: 2026-01-28
+Last Updated: 2026-01-31
 
 ## Current Status
 
-**Database**: 201 companies | 5,374 entities | 2,485 debt instruments | 591 with CUSIP/ISIN | 30 priced bonds | 7,700+ document sections (4,877 indentures, 2,889 credit agreements) | 600+ financials | 4,881 guarantees | 230 collateral records
+**Database**: 201 companies | 5,374 entities | 2,485 debt instruments | 591 with CUSIP/ISIN | 30 priced bonds | 7,700+ document sections (4,877 indentures, 2,889 credit agreements) | 600+ financials | 4,881 guarantees | 230 collateral records | 1,181 covenants
 **Deployment**: Live at `https://credible-ai-production.up.railway.app`
 **Infrastructure**: Railway + Neon PostgreSQL + Upstash Redis (complete)
 **Leverage Coverage**: 155/189 companies (82%) - good coverage across all sectors
@@ -12,6 +12,7 @@ Last Updated: 2026-01-28
 **Collateral Coverage**: 230/230 senior_secured instruments (100%) with collateral type identified
 **Document Coverage**: 100% (2,560/2,557 linkable instruments)
 **Ownership Coverage**: 199/201 companies have identified root entity; 862 explicit parent-child relationships extracted
+**Covenant Coverage**: 1,181 covenants across 201 companies (100%), 92.5% linked to specific instruments
 **Data Quality**: QC audit passing - 0 critical, 0 errors, 4 warnings (2026-01-26)
 
 ---
@@ -36,6 +37,18 @@ Last Updated: 2026-01-28
 ## Recent Completed Work
 
 ### January 2026
+- [x] **Structured Covenant Extraction & API** (2026-01-31) - Implemented full covenant extraction pipeline:
+  - Created `app/services/covenant_extraction.py` (three-layer architecture: pure functions → prompt building → DB operations)
+  - Created `alembic/versions/020_add_covenants_table.py` migration
+  - Created `alembic/versions/021_expand_threshold_value_precision.py` (fixed overflow for large dollar thresholds)
+  - Added `Covenant` model to `app/models/schema.py`
+  - Added `GET /v1/covenants` endpoint (search/filter structured covenant data)
+  - Added `GET /v1/covenants/compare` endpoint (compare covenants across companies)
+  - Extracted 1,181 covenants across all 201 companies (100% coverage)
+  - Created `scripts/link_covenants_to_instruments.py` to backfill instrument linkage (92.5% linked)
+  - Created `scripts/backfill_covenant_source_docs.py` to backfill source document links (100%)
+  - Updated Mintlify docs (`docs/api-reference/covenants/search.mdx`, `compare.mdx`)
+  - Updated `docs/api/PRIMITIVES_API_SPEC.md` with Primitives 9 & 10
 - [x] **Service Module Refactoring** (2026-01-28) - Moved extraction business logic from scripts to services:
   - Created `app/services/hierarchy_extraction.py` (Exhibit 21 parsing, ownership hierarchy)
   - Created `app/services/guarantee_extraction.py` (guarantee relationships)
@@ -68,17 +81,19 @@ Last Updated: 2026-01-28
 - [x] Collateral table and extraction (real estate, equipment, receivables, etc.)
 - [x] **Document coverage to 100%** - All debt instruments linked to governing documents
 
-### Primitives API Status
+### Primitives API Status (10 endpoints)
 | Endpoint | Status | Notes |
 |----------|--------|-------|
 | `GET /v1/companies` | ✅ Done | Field selection, filtering, sorting, `?include_metadata=true` |
 | `GET /v1/bonds` | ✅ Done | Pricing joins, guarantor counts, collateral array |
 | `GET /v1/bonds/resolve` | ✅ Done | CUSIP/ISIN/fuzzy matching |
 | `POST /v1/entities/traverse` | ✅ Done | Graph traversal for guarantors, structure |
-| `GET /v1/pricing` | ✅ Done | FINRA TRACE data |
+| `GET /v1/pricing` | ⚠️ Deprecated | Use `GET /v1/bonds?has_pricing=true` instead (removal: 2026-06-01) |
 | `GET /v1/documents/search` | ✅ Done | Full-text search across SEC filings |
 | `POST /v1/batch` | ✅ Done | Batch operations (up to 10 parallel) |
 | `GET /v1/companies/{ticker}/changes` | ✅ Done | Diff/changelog against historical snapshots |
+| `GET /v1/covenants` | ✅ Done | Search structured covenant data (1,181 covenants) |
+| `GET /v1/covenants/compare` | ✅ Done | Compare covenants across multiple companies |
 
 ---
 
@@ -2386,7 +2401,13 @@ python scripts/recompute_metrics.py --ticker CHTR
 
 ---
 
-## Planned Work: Structured Covenant Data Extraction & API
+## ✅ COMPLETED: Structured Covenant Data Extraction & API
+
+> **Status**: COMPLETED on 2026-01-31
+> - 1,181 covenants extracted across 201 companies (100% coverage)
+> - 92.5% linked to specific debt instruments
+> - 100% have source document linkage
+> - API endpoints live: `GET /v1/covenants`, `GET /v1/covenants/compare`
 
 ### Objective Assessment
 

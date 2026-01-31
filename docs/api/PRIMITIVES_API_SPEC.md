@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document specifies the REST API design for DebtStack's 9 core primitives, optimized for AI agents writing code in sandboxes.
+This document specifies the REST API design for DebtStack's 10 core primitives, optimized for AI agents writing code in sandboxes.
 
 **Design Philosophy:**
 - One endpoint per primitive
@@ -1344,11 +1344,222 @@ print(bond.cusip)  # "893830AK8"
 
 ---
 
+## Primitive 9: search.covenants
+
+### Endpoint
+```
+GET /v1/covenants
+```
+
+### Purpose
+Search and filter structured covenant data extracted from credit agreements and indentures. Returns financial covenants (leverage ratios, coverage tests), negative covenants (liens, asset sales), and protective covenants (change of control).
+
+### Query Parameters
+
+| Parameter | Type | Description | Example |
+|-----------|------|-------------|---------|
+| `ticker` | string | Filter by company ticker | `CHTR` |
+| `covenant_type` | string | Filter by type: `financial`, `negative`, `incurrence`, `protective` | `financial` |
+| `test_metric` | string | Filter by metric: `leverage_ratio`, `interest_coverage`, `fixed_charge_coverage` | `leverage_ratio` |
+| `min_threshold` | float | Minimum threshold value | `3.0` |
+| `max_threshold` | float | Maximum threshold value | `6.0` |
+| `has_step_down` | bool | Has scheduled covenant tightening | `true` |
+| `fields` | string | Comma-separated fields to return | `covenant_name,threshold_value,threshold_type` |
+| `limit` | int | Results per page (max 100) | `50` |
+| `offset` | int | Pagination offset | `0` |
+
+### Example Request
+```bash
+# Find all financial covenants with leverage thresholds
+curl "https://api.debtstack.ai/v1/covenants?covenant_type=financial&test_metric=leverage_ratio" \
+  -H "Authorization: Bearer ds_live_xxx"
+
+# Find covenants for a specific company
+curl "https://api.debtstack.ai/v1/covenants?ticker=CHTR" \
+  -H "Authorization: Bearer ds_live_xxx"
+```
+
+### Example Response
+```json
+{
+  "data": [
+    {
+      "id": "3be913dd-b4a7-4af6-8333-271caea2283c",
+      "ticker": "CHTR",
+      "company_name": "Charter Communications, Inc.",
+      "instrument_name": "Term A-7 Loan",
+      "cusip": null,
+      "covenant_type": "incurrence",
+      "covenant_name": "Leverage Ratio Incurrence Test",
+      "test_metric": "leverage_ratio",
+      "threshold_value": 6.0,
+      "threshold_type": "maximum",
+      "test_frequency": "incurrence",
+      "description": "The Company may incur Indebtedness if the Leverage Ratio would be not greater than 6.0 to 1.0",
+      "has_step_down": false,
+      "step_down_schedule": null,
+      "cure_period_days": null,
+      "put_price_pct": null,
+      "extraction_confidence": 0.95,
+      "source_document_date": "2024-12-09"
+    }
+  ],
+  "meta": {
+    "total": 1181,
+    "limit": 50,
+    "offset": 0,
+    "covenant_types": ["financial", "negative", "incurrence", "protective"]
+  }
+}
+```
+
+### Covenant Types
+
+| Type | Description | Examples |
+|------|-------------|----------|
+| `financial` | Maintenance or incurrence tests with numerical thresholds | Leverage ratio, interest coverage, fixed charge coverage |
+| `negative` | Restrictions on company actions | Limitations on liens, debt incurrence, asset sales, restricted payments |
+| `incurrence` | Tests that apply when taking specific actions | Debt incurrence ratio, secured debt test |
+| `protective` | Bondholder protection provisions | Change of control, make-whole provisions |
+
+### Test Metrics
+
+| Metric | Description |
+|--------|-------------|
+| `leverage_ratio` | Total Debt / EBITDA |
+| `first_lien_leverage` | First Lien Debt / EBITDA |
+| `secured_leverage` | Secured Debt / EBITDA |
+| `net_leverage_ratio` | Net Debt / EBITDA |
+| `interest_coverage` | EBITDA / Interest Expense |
+| `fixed_charge_coverage` | (EBITDA - CapEx) / Fixed Charges |
+
+---
+
+## Primitive 10: compare.covenants
+
+### Endpoint
+```
+GET /v1/covenants/compare
+```
+
+### Purpose
+Compare covenants across multiple companies or instruments. Useful for relative value analysis and identifying covenant-lite vs. maintenance-heavy issuers.
+
+### Query Parameters
+
+| Parameter | Type | Description | Example |
+|-----------|------|-------------|---------|
+| `ticker` | string | **Required.** Comma-separated tickers to compare | `CHTR,DAL,AMC` |
+| `covenant_type` | string | Filter by covenant type | `financial` |
+| `test_metric` | string | Filter by specific metric | `leverage_ratio` |
+
+### Example Request
+```bash
+# Compare leverage covenants across three companies
+curl "https://api.debtstack.ai/v1/covenants/compare?ticker=CHTR,DAL,AMC&test_metric=leverage_ratio" \
+  -H "Authorization: Bearer ds_live_xxx"
+```
+
+### Example Response
+```json
+{
+  "tickers": ["CHTR", "DAL", "AMC"],
+  "companies": {
+    "CHTR": {
+      "name": "Charter Communications, Inc.",
+      "covenant_count": 1,
+      "covenants": [
+        {
+          "covenant_type": "incurrence",
+          "covenant_name": "Leverage Ratio Incurrence Test",
+          "test_metric": "leverage_ratio",
+          "threshold_value": 6.0,
+          "threshold_type": "maximum",
+          "test_frequency": "incurrence",
+          "has_step_down": false
+        }
+      ]
+    },
+    "DAL": {
+      "name": "Delta Air Lines, Inc.",
+      "covenant_count": 1,
+      "covenants": [
+        {
+          "covenant_type": "incurrence",
+          "covenant_name": "Junior Lien Debt incurrence test",
+          "test_metric": "leverage_ratio",
+          "threshold_value": 1.6,
+          "threshold_type": "maximum",
+          "test_frequency": "incurrence",
+          "has_step_down": false
+        }
+      ]
+    },
+    "AMC": {
+      "name": "AMC Entertainment Holdings, Inc.",
+      "covenant_count": 0,
+      "covenants": []
+    }
+  },
+  "comparison_matrix": [
+    {
+      "metric": "leverage_ratio",
+      "CHTR": {"threshold_value": 6.0, "threshold_type": "maximum", "test_frequency": "incurrence"},
+      "DAL": {"threshold_value": 1.6, "threshold_type": "maximum", "test_frequency": "incurrence"},
+      "AMC": null
+    }
+  ],
+  "presence_matrix": [
+    {"covenant_name": "Leverage Ratio Incurrence Test", "CHTR": true, "DAL": false, "AMC": false},
+    {"covenant_name": "Junior Lien Debt incurrence test", "CHTR": false, "DAL": true, "AMC": false}
+  ],
+  "meta": {
+    "tickers_compared": 3,
+    "total_covenants": 2,
+    "filter_test_metric": "leverage_ratio"
+  }
+}
+```
+
+### Use Cases
+
+**Screen for Covenant-Lite Issuers:**
+```python
+response = requests.get(
+    f"{BASE_URL}/covenants/compare",
+    params={"ticker": "CHTR,ATUS,LUMN", "covenant_type": "financial"},
+    headers={"Authorization": f"Bearer {API_KEY}"}
+)
+
+for ticker, data in response.json()["companies"].items():
+    if data["covenant_count"] == 0:
+        print(f"{ticker}: Covenant-lite (no financial maintenance covenants)")
+    else:
+        for cov in data["covenants"]:
+            print(f"{ticker}: {cov['covenant_name']} - {cov['threshold_type']} {cov['threshold_value']}x")
+```
+
+**Compare Leverage Headroom:**
+```python
+matrix = response.json()["comparison_matrix"]
+leverage_row = next((r for r in matrix if r["metric"] == "leverage_ratio"), None)
+
+if leverage_row:
+    for ticker in ["CHTR", "DAL", "AMC"]:
+        cov = leverage_row.get(ticker)
+        if cov:
+            print(f"{ticker}: Max leverage {cov['threshold_value']}x ({cov['test_frequency']})")
+        else:
+            print(f"{ticker}: No leverage covenant")
+```
+
+---
+
 ## Summary
 
 This API design provides:
 
-1. **8 atomic primitives** that can answer any credit analysis question:
+1. **10 atomic primitives** that can answer any credit analysis question:
    - `search.companies` - Company screening with field selection
    - `search.bonds` - Bond search with yield/spread filters
    - `search.documents` - Full-text search across SEC filings
@@ -1357,6 +1568,8 @@ This API design provides:
    - `resolve.bond` - CUSIP/identifier resolution
    - `batch` - Execute multiple operations in one call
    - `changes` - Track debt structure changes over time
+   - `search.covenants` - Structured covenant data with thresholds
+   - `compare.covenants` - Cross-company covenant comparison
 2. **Simple REST semantics** - GET for reads, POST for complex operations
 3. **Field selection** - Agents request only what they need
 4. **Powerful filtering** - Rich query parameters for precise searches
