@@ -35,7 +35,7 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 - Live at: `https://credible-ai-production.up.railway.app`
 
 **What's Working**:
-- **Primitives API**: 9 core endpoints optimized for AI agents (field selection, powerful filters)
+- **Primitives API**: 11 core endpoints optimized for AI agents (field selection, powerful filters)
 - **Auth & Credits**: API key auth, tier-based credits, usage tracking
 - **Legacy REST API**: 26 endpoints for detailed company data
 - Iterative extraction with QA feedback loop (5 checks, 85% threshold)
@@ -85,6 +85,7 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 | `app/services/financial_extraction.py` | TTM financial statements from 10-K/10-Q |
 | `app/services/guarantee_extraction.py` | Guarantee extraction from indentures |
 | `app/services/collateral_extraction.py` | Collateral for secured debt |
+| `app/services/covenant_extraction.py` | Structured covenant data extraction |
 | `app/services/metrics.py` | Credit metrics (leverage, coverage ratios) |
 | `app/services/qc.py` | Quality control checks |
 
@@ -98,7 +99,7 @@ This separation keeps business logic testable and reusable while scripts handle 
 
 | File | Purpose |
 |------|---------|
-| `app/api/primitives.py` | **Primitives API** - 9 core endpoints for agents |
+| `app/api/primitives.py` | **Primitives API** - 11 core endpoints for agents |
 | `app/api/auth.py` | **Auth API** - signup, user info |
 | `app/api/routes.py` | Legacy FastAPI endpoints (26 routes) |
 | `app/core/auth.py` | API key generation, validation, tier config |
@@ -141,6 +142,7 @@ This separation keeps business logic testable and reusable while scripts handle 
 - `debt_instruments`: All debt with terms, linked via `issuer_id`
 - `guarantees`: Links debt to guarantor entities
 - `collateral`: Asset-backed collateral for secured debt (type, description, priority)
+- `covenants`: Structured covenant data extracted from credit agreements/indentures
 - `company_financials`: Quarterly financial statements (amounts in cents)
 - `bond_pricing`: Pricing data (YTM, spreads in basis points)
 - `document_sections`: SEC filing sections for full-text search (TSVECTOR + GIN index)
@@ -163,7 +165,7 @@ This separation keeps business logic testable and reusable while scripts handle 
 | `/v1/auth/signup` | POST | Create account, returns API key |
 | `/v1/auth/me` | GET | Get user info and credits (requires API key) |
 
-### Primitives API (9 endpoints - optimized for agents)
+### Primitives API (11 endpoints - optimized for agents)
 
 All require `X-API-Key` header.
 
@@ -175,6 +177,8 @@ All require `X-API-Key` header.
 | `/v1/financials` | GET | 1 | Quarterly financial statements (income, balance sheet, cash flow) |
 | `/v1/collateral` | GET | 1 | Collateral securing debt (types, values, priority) |
 | `/v1/companies/{ticker}/changes` | GET | 2 | Diff against historical snapshots |
+| `/v1/covenants` | GET | 1 | Search structured covenant data (financial, negative, protective) |
+| `/v1/covenants/compare` | GET | 2 | Compare covenants across multiple companies |
 | `/v1/entities/traverse` | POST | 3 | Graph traversal (guarantors, structure) |
 | `/v1/documents/search` | GET | 3 | Full-text search across SEC filings |
 | `/v1/batch` | POST | Sum | Execute multiple primitives in parallel |
@@ -304,6 +308,11 @@ python -m app.services.guarantee_extraction --all
 # Collateral
 python -m app.services.collateral_extraction --ticker CHTR
 python -m app.services.collateral_extraction --all
+
+# Covenants (structured covenant data from credit agreements/indentures)
+python -m app.services.covenant_extraction --ticker CHTR
+python -m app.services.covenant_extraction --all --limit 50
+python -m app.services.covenant_extraction --ticker CHTR --force  # Re-extract
 
 # Metrics recompute
 python -m app.services.metrics --ticker CHTR
@@ -673,7 +682,7 @@ alembic upgrade head     # Apply all
 alembic revision -m "description"  # Create new
 ```
 
-Current migrations: 001 (initial) through 017 (extraction_status)
+Current migrations: 001 (initial) through 020 (add_covenants_table)
 
 ## Utilities & Services Architecture
 
@@ -851,6 +860,19 @@ r = requests.get(f"{BASE}/companies", params={
     "ticker": "RIG,VAL,DO,NE",
     "fields": "ticker,name,net_leverage_ratio,total_debt",
     "sort": "-net_leverage_ratio"
+})
+
+# What are CHTR's financial covenants?
+r = requests.get(f"{BASE}/covenants", params={
+    "ticker": "CHTR",
+    "covenant_type": "financial",
+    "fields": "covenant_name,test_metric,threshold_value,threshold_type"
+})
+
+# Compare leverage covenants across cable companies
+r = requests.get(f"{BASE}/covenants/compare", params={
+    "ticker": "CHTR,ATUS,LUMN",
+    "test_metric": "leverage_ratio"
 })
 ```
 

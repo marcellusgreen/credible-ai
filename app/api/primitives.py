@@ -35,7 +35,7 @@ from app.core.database import get_db
 from app.models import (
     Company, CompanyMetrics, CompanySnapshot, Entity, DebtInstrument,
     Guarantee, BondPricing, DocumentSection, ExtractionMetadata,
-    CompanyFinancials, Collateral,
+    CompanyFinancials, Collateral, Covenant,
 )
 
 router = APIRouter()
@@ -185,6 +185,15 @@ COLLATERAL_FIELDS = {
     "bond_name", "bond_cusip", "company_ticker", "company_name",
     "collateral_type", "description", "estimated_value", "priority",
     "instrument_seniority", "instrument_security_type",
+}
+
+COVENANT_FIELDS = {
+    "id", "ticker", "company_name",
+    "instrument_name", "cusip",
+    "covenant_type", "covenant_name",
+    "test_metric", "threshold_value", "threshold_type", "test_frequency",
+    "description", "has_step_down", "step_down_schedule", "cure_period_days",
+    "put_price_pct", "extraction_confidence", "source_document_date",
 }
 
 
@@ -3227,3 +3236,369 @@ async def get_company_changes(
     }
 
     return response
+
+
+# =============================================================================
+# PRIMITIVE 11: search.covenants
+# =============================================================================
+
+
+@router.get("/covenants", tags=["Primitives"])
+async def search_covenants(
+    # Company/instrument filters
+    ticker: Optional[str] = Query(None, description="Company ticker(s), comma-separated"),
+    debt_id: Optional[str] = Query(None, description="Debt instrument ID(s), comma-separated"),
+    cusip: Optional[str] = Query(None, description="Bond CUSIP(s), comma-separated"),
+    # Covenant type filters
+    covenant_type: Optional[str] = Query(None, description="Type: financial, negative, incurrence, protective"),
+    covenant_name: Optional[str] = Query(None, description="Covenant name (partial match)"),
+    test_metric: Optional[str] = Query(None, description="Financial metric: leverage_ratio, first_lien_leverage, interest_coverage, fixed_charge_coverage"),
+    # Threshold filters (for financial covenants)
+    max_threshold: Optional[float] = Query(None, description="Maximum threshold value (e.g., 5.0 for <=5.0x leverage)"),
+    min_threshold: Optional[float] = Query(None, description="Minimum threshold value"),
+    threshold_type: Optional[str] = Query(None, description="Threshold type: maximum, minimum"),
+    # Quality filters
+    min_confidence: Optional[float] = Query(None, ge=0, le=1, description="Minimum extraction confidence (0-1)"),
+    # Field selection
+    fields: Optional[str] = Query(None, description="Comma-separated fields to return"),
+    # Sorting
+    sort: str = Query("covenant_type", description="Sort field (prefix - for desc)"),
+    # Pagination
+    limit: int = Query(50, ge=1, le=200, description="Results per page"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+    # Export format
+    format: str = Query("json", description="Response format: json or csv"),
+    # ETag support
+    if_none_match: Optional[str] = Header(None, description="ETag for conditional request"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Search structured covenant data across companies and instruments.
+
+    Returns extracted covenant information from credit agreements and indentures,
+    including financial maintenance covenants, negative covenants, and change of control provisions.
+
+    **Covenant Types:**
+    - `financial`: Leverage ratios, coverage ratios with numerical thresholds
+    - `negative`: Restrictions on liens, debt, payments, asset sales
+    - `incurrence`: Tests that apply when taking new debt or actions
+    - `protective`: Change of control, make-whole provisions
+
+    **Financial Metrics:**
+    - `leverage_ratio`: Total Debt / EBITDA
+    - `first_lien_leverage`: First Lien Debt / EBITDA
+    - `secured_leverage`: Secured Debt / EBITDA
+    - `net_leverage_ratio`: Net Debt / EBITDA
+    - `interest_coverage`: EBITDA / Interest Expense
+    - `fixed_charge_coverage`: (EBITDA - CapEx) / Fixed Charges
+
+    **Example:** Get all financial covenants for CHTR:
+    ```
+    GET /v1/covenants?ticker=CHTR&covenant_type=financial
+    ```
+
+    **Example:** Find companies with leverage ratio thresholds <=5x:
+    ```
+    GET /v1/covenants?test_metric=leverage_ratio&max_threshold=5.0
+    ```
+
+    **Example:** Find change of control covenants:
+    ```
+    GET /v1/covenants?covenant_name=change_of_control
+    ```
+
+    **Example:** Export to CSV:
+    ```
+    GET /v1/covenants?ticker=CHTR,ATUS&format=csv
+    ```
+    """
+    selected_fields = parse_fields(fields, COVENANT_FIELDS)
+
+    # Build query with optional joins
+    query = select(Covenant, Company, DebtInstrument).join(
+        Company, Covenant.company_id == Company.id
+    ).outerjoin(
+        DebtInstrument, Covenant.debt_instrument_id == DebtInstrument.id
+    )
+    count_query = select(func.count()).select_from(Covenant).join(
+        Company, Covenant.company_id == Company.id
+    ).outerjoin(
+        DebtInstrument, Covenant.debt_instrument_id == DebtInstrument.id
+    )
+
+    filters = []
+
+    # Company filters
+    ticker_list = parse_comma_list(ticker)
+    if ticker_list:
+        filters.append(Company.ticker.in_(ticker_list))
+
+    # Debt instrument filters
+    if debt_id:
+        debt_ids = [d.strip() for d in debt_id.split(",") if d.strip()]
+        try:
+            debt_uuids = [UUID(d) for d in debt_ids]
+            filters.append(Covenant.debt_instrument_id.in_(debt_uuids))
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "INVALID_UUID", "message": "Invalid debt_id format. Must be UUID."}
+            )
+
+    cusip_list = parse_comma_list(cusip)
+    if cusip_list:
+        filters.append(DebtInstrument.cusip.in_(cusip_list))
+
+    # Covenant type filters
+    if covenant_type:
+        type_list = parse_comma_list(covenant_type, uppercase=False)
+        filters.append(Covenant.covenant_type.in_(type_list))
+
+    if covenant_name:
+        filters.append(Covenant.covenant_name.ilike(f"%{covenant_name}%"))
+
+    if test_metric:
+        metric_list = parse_comma_list(test_metric, uppercase=False)
+        filters.append(Covenant.test_metric.in_(metric_list))
+
+    # Threshold filters
+    if max_threshold is not None:
+        filters.append(Covenant.threshold_value <= max_threshold)
+    if min_threshold is not None:
+        filters.append(Covenant.threshold_value >= min_threshold)
+    if threshold_type:
+        filters.append(Covenant.threshold_type == threshold_type)
+
+    # Quality filters
+    if min_confidence is not None:
+        filters.append(Covenant.extraction_confidence >= min_confidence)
+
+    # Apply filters
+    if filters:
+        query = query.where(and_(*filters))
+        count_query = count_query.where(and_(*filters))
+
+    # Sorting
+    sort_column_map = {
+        "covenant_type": Covenant.covenant_type,
+        "covenant_name": Covenant.covenant_name,
+        "test_metric": Covenant.test_metric,
+        "threshold_value": Covenant.threshold_value,
+        "ticker": Company.ticker,
+        "confidence": Covenant.extraction_confidence,
+        "created_at": Covenant.created_at,
+    }
+    query = apply_sort(query, sort, sort_column_map, Covenant.covenant_type)
+
+    # Count
+    count_result = await db.execute(count_query)
+    total = count_result.scalar() or 0
+
+    # Pagination
+    query = query.limit(limit).offset(offset)
+
+    # Execute
+    result = await db.execute(query)
+    rows = result.all()
+
+    # Build response
+    data = []
+    for row in rows:
+        covenant, company, debt_instrument = row
+
+        cov_data = {
+            "id": str(covenant.id),
+            "ticker": company.ticker,
+            "company_name": company.name,
+            "instrument_name": debt_instrument.name if debt_instrument else None,
+            "cusip": debt_instrument.cusip if debt_instrument else None,
+            "covenant_type": covenant.covenant_type,
+            "covenant_name": covenant.covenant_name,
+            "test_metric": covenant.test_metric,
+            "threshold_value": float(covenant.threshold_value) if covenant.threshold_value else None,
+            "threshold_type": covenant.threshold_type,
+            "test_frequency": covenant.test_frequency,
+            "description": covenant.description,
+            "has_step_down": covenant.has_step_down,
+            "step_down_schedule": covenant.step_down_schedule,
+            "cure_period_days": covenant.cure_period_days,
+            "put_price_pct": float(covenant.put_price_pct) if covenant.put_price_pct else None,
+            "extraction_confidence": float(covenant.extraction_confidence) if covenant.extraction_confidence else None,
+            "source_document_date": None,  # Would need to join source_document for this
+        }
+
+        data.append(filter_dict(cov_data, selected_fields))
+
+    # Return CSV if requested
+    if format.lower() == "csv":
+        return to_csv_response(data, filename="covenants.csv")
+
+    # Compute summary stats
+    types_found = list(set(c.get("covenant_type") for c in data if c.get("covenant_type")))
+    metrics_found = list(set(c.get("test_metric") for c in data if c.get("test_metric")))
+
+    response_data = {
+        "data": data,
+        "meta": {
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "covenant_types": sorted(types_found),
+            "test_metrics": sorted(metrics_found) if metrics_found else None,
+        }
+    }
+    return etag_response(response_data, if_none_match)
+
+
+# =============================================================================
+# PRIMITIVE 12: compare.covenants
+# =============================================================================
+
+
+@router.get("/covenants/compare", tags=["Primitives"])
+async def compare_covenants(
+    # Required: tickers to compare
+    ticker: str = Query(..., description="Company tickers to compare, comma-separated (2-10 tickers)"),
+    # Filter by metric
+    test_metric: Optional[str] = Query(None, description="Financial metric to compare: leverage_ratio, first_lien_leverage, interest_coverage"),
+    covenant_type: Optional[str] = Query(None, description="Covenant type: financial, negative, incurrence, protective"),
+    # ETag support
+    if_none_match: Optional[str] = Header(None, description="ETag for conditional request"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Compare covenants across multiple companies.
+
+    Returns a side-by-side comparison of covenant data for the specified companies.
+    Useful for peer analysis and relative value assessment.
+
+    **Example:** Compare leverage ratios across cable companies:
+    ```
+    GET /v1/covenants/compare?ticker=CHTR,ATUS,LUMN&test_metric=leverage_ratio
+    ```
+
+    **Example:** Compare all financial covenants:
+    ```
+    GET /v1/covenants/compare?ticker=CHTR,ATUS&covenant_type=financial
+    ```
+
+    **Response includes:**
+    - Per-company covenant summary
+    - Direct comparison of matching covenants
+    - Covenant presence matrix (which company has which covenant)
+    """
+    ticker_list = parse_comma_list(ticker)
+    if not ticker_list:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "MISSING_TICKERS", "message": "At least one ticker is required"}
+        )
+    if len(ticker_list) > 10:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "TOO_MANY_TICKERS", "message": "Maximum 10 tickers for comparison"}
+        )
+
+    # Get companies
+    companies_result = await db.execute(
+        select(Company).where(Company.ticker.in_(ticker_list))
+    )
+    companies = {c.ticker: c for c in companies_result.scalars().all()}
+
+    missing = set(ticker_list) - set(companies.keys())
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "NOT_FOUND", "message": f"Companies not found: {', '.join(sorted(missing))}"}
+        )
+
+    # Build query for covenants
+    filters = [Company.ticker.in_(ticker_list)]
+
+    if test_metric:
+        metric_list = parse_comma_list(test_metric, uppercase=False)
+        filters.append(Covenant.test_metric.in_(metric_list))
+
+    if covenant_type:
+        type_list = parse_comma_list(covenant_type, uppercase=False)
+        filters.append(Covenant.covenant_type.in_(type_list))
+
+    query = select(Covenant, Company).join(
+        Company, Covenant.company_id == Company.id
+    ).where(and_(*filters)).order_by(
+        Company.ticker, Covenant.covenant_type, Covenant.covenant_name
+    )
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    # Organize by company
+    by_company = {t: [] for t in ticker_list}
+    for covenant, company in rows:
+        cov_data = {
+            "covenant_type": covenant.covenant_type,
+            "covenant_name": covenant.covenant_name,
+            "test_metric": covenant.test_metric,
+            "threshold_value": float(covenant.threshold_value) if covenant.threshold_value else None,
+            "threshold_type": covenant.threshold_type,
+            "test_frequency": covenant.test_frequency,
+            "has_step_down": covenant.has_step_down,
+            "put_price_pct": float(covenant.put_price_pct) if covenant.put_price_pct else None,
+        }
+        by_company[company.ticker].append(cov_data)
+
+    # Build comparison matrix for specific metrics
+    comparison_matrix = []
+    if test_metric:
+        # For each metric, create a row comparing all companies
+        metric_list = parse_comma_list(test_metric, uppercase=False)
+        for metric in metric_list:
+            row = {"metric": metric}
+            for t in ticker_list:
+                # Find the covenant for this metric in this company
+                matching = [c for c in by_company[t] if c.get("test_metric") == metric]
+                if matching:
+                    cov = matching[0]
+                    row[t] = {
+                        "threshold_value": cov.get("threshold_value"),
+                        "threshold_type": cov.get("threshold_type"),
+                        "test_frequency": cov.get("test_frequency"),
+                    }
+                else:
+                    row[t] = None
+            comparison_matrix.append(row)
+
+    # Build presence matrix (which companies have which covenants)
+    all_covenant_names = set()
+    for covenants in by_company.values():
+        for c in covenants:
+            all_covenant_names.add(c.get("covenant_name"))
+
+    presence_matrix = []
+    for name in sorted(all_covenant_names):
+        row = {"covenant_name": name}
+        for t in ticker_list:
+            row[t] = any(c.get("covenant_name") == name for c in by_company[t])
+        presence_matrix.append(row)
+
+    response_data = {
+        "tickers": ticker_list,
+        "companies": {
+            t: {
+                "name": companies[t].name,
+                "covenant_count": len(by_company[t]),
+                "covenants": by_company[t],
+            }
+            for t in ticker_list
+        },
+        "comparison_matrix": comparison_matrix if comparison_matrix else None,
+        "presence_matrix": presence_matrix,
+        "meta": {
+            "tickers_compared": len(ticker_list),
+            "total_covenants": sum(len(v) for v in by_company.values()),
+            "filter_test_metric": test_metric,
+            "filter_covenant_type": covenant_type,
+        }
+    }
+
+    return etag_response(response_data, if_none_match)

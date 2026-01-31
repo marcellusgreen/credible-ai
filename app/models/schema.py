@@ -1241,3 +1241,95 @@ class CompanyMetrics(Base):
             "has_unrestricted_subs",
         ),
     )
+
+
+class Covenant(Base):
+    """
+    Structured covenant data extracted from credit agreements and indentures.
+
+    Stores both financial covenants (with numerical thresholds) and negative/protective
+    covenants. Data is extracted via LLM from the governing document for each instrument.
+
+    Covenant types:
+    - financial: Leverage ratios, coverage ratios, etc. with numerical thresholds
+    - negative: Restrictions on liens, debt, payments, asset sales
+    - incurrence: Tests that apply when taking new debt/actions
+    - protective: Change of control, make-whole provisions
+    """
+
+    __tablename__ = "covenants"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    debt_instrument_id: Mapped[Optional[UUID]] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("debt_instruments.id", ondelete="CASCADE"), nullable=True
+    )
+    company_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    source_document_id: Mapped[Optional[UUID]] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("document_sections.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # Covenant identification
+    covenant_type: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )  # 'financial', 'negative', 'incurrence', 'protective'
+    covenant_name: Mapped[str] = mapped_column(
+        String(200), nullable=False
+    )  # e.g., 'Maximum Leverage Ratio', 'Restricted Payments'
+
+    # Financial covenant specifics (nullable for non-financial covenants)
+    test_metric: Mapped[Optional[str]] = mapped_column(
+        String(50)
+    )  # 'leverage_ratio', 'first_lien_leverage', 'interest_coverage', 'fixed_charge'
+    threshold_value: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(18, 4)
+    )  # e.g., 4.50 for 4.50x leverage, or large dollar amounts like $6B
+    threshold_type: Mapped[Optional[str]] = mapped_column(
+        String(20)
+    )  # 'maximum', 'minimum'
+    test_frequency: Mapped[Optional[str]] = mapped_column(
+        String(20)
+    )  # 'quarterly', 'annual', 'incurrence'
+
+    # Covenant details
+    description: Mapped[Optional[str]] = mapped_column(Text)  # Brief description
+    has_step_down: Mapped[bool] = mapped_column(Boolean, default=False)  # Has scheduled tightening
+    step_down_schedule: Mapped[Optional[dict]] = mapped_column(JSONB)  # Schedule details if applicable
+    cure_period_days: Mapped[Optional[int]] = mapped_column(Integer)  # Grace period before default
+
+    # For change of control covenants
+    put_price_pct: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(5, 2)
+    )  # e.g., 101.00 for 101% put price
+
+    # Extraction metadata
+    extraction_confidence: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(3, 2)
+    )  # 0.00-1.00
+    extracted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    source_text: Mapped[Optional[str]] = mapped_column(Text)  # Verbatim text from document
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    # Relationships
+    company: Mapped["Company"] = relationship(backref="covenants")
+    debt_instrument: Mapped[Optional["DebtInstrument"]] = relationship(backref="covenants")
+    source_document: Mapped[Optional["DocumentSection"]] = relationship(backref="covenants")
+
+    __table_args__ = (
+        Index("idx_covenants_company", "company_id"),
+        Index("idx_covenants_instrument", "debt_instrument_id"),
+        Index("idx_covenants_type", "covenant_type"),
+        Index("idx_covenants_name", "covenant_name"),
+        Index("idx_covenants_metric", "test_metric"),
+        Index("idx_covenants_company_type", "company_id", "covenant_type"),
+    )

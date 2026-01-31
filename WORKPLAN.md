@@ -2383,3 +2383,369 @@ python scripts/recompute_metrics.py --ticker CHTR
 - Reviewed Primitives API implementation (`primitives.py`)
 - Analyzed gaps between API fields and extraction data
 - Created this work plan document
+
+---
+
+## Planned Work: Structured Covenant Data Extraction & API
+
+### Objective Assessment
+
+#### What We Have (Current State)
+
+| Asset | Count | Description |
+|-------|-------|-------------|
+| Indentures | 4,862 | Full legal documents, avg 79KB |
+| Credit Agreements | 2,929 | Full legal documents, avg 90KB |
+| Covenant Sections | 1,515 | Pre-extracted covenant text, avg 38KB |
+| Filing Dates | 100% | All documents have filing dates for amendment tracking |
+| Debt-Document Links | 2,831 instruments | 70% have "governs" relationship identified |
+
+**Key Finding**: We have filing dates on all documents, which allows us to identify the **most recent governing document** for each instrument - solving the amendment problem.
+
+#### Covenant Coverage in Documents
+
+| Covenant Type | Companies | Coverage | Extraction Difficulty |
+|---------------|-----------|----------|----------------------|
+| Merger restrictions | 198 | 99% | Easy (boolean) |
+| Lien restrictions | 196 | 97% | Easy (boolean) |
+| Indebtedness incurrence | 193 | 96% | Medium (thresholds) |
+| Dividend restrictions | 192 | 95% | Medium (conditions) |
+| Change of control | 158 | 79% | Easy (boolean + trigger) |
+| Leverage ratio | 100 | 50% | **Hard** (number extraction) |
+| Asset sale restrictions | 99 | 49% | Medium (thresholds) |
+| Restricted payments | 66 | 33% | Hard (baskets) |
+| Fixed charge coverage | 57 | 28% | **Hard** (number extraction) |
+| Interest coverage | 46 | 23% | **Hard** (number extraction) |
+
+#### The Amendment Problem - SOLVED
+
+**Problem**: Multiple documents exist per instrument (base + amendments). How do we know which has current covenants?
+
+**Solution**: We have `filing_date` on all `document_sections` + `relationship_type='governs'` in `debt_instrument_documents`.
+
+Strategy: For each instrument, use the **most recent document with relationship_type='governs'**.
+
+Example for CHTR:
+- Term A-7 Loan → 2024-12-09 credit_agreement (most recent)
+- 6.550% Senior Secured Notes → 2026-01-14 indenture (most recent)
+
+#### Accuracy Assessment
+
+**High Confidence (80%+ accuracy achievable):**
+- Negative covenants: Liens, mergers, asset sales, restricted payments
+- Protective covenants: Change of control, make-whole provisions
+- Incurrence tests: Debt incurrence ratios
+- Classification: Covenant-lite vs. maintenance
+
+**Medium Confidence (60-80% accuracy):**
+- Financial covenant thresholds (e.g., "leverage shall not exceed 4.50x")
+- Step-down schedules
+- Cure periods and grace periods
+
+**Lower Confidence (needs human review):**
+- Basket calculations and exceptions
+- Complex carve-outs
+- Cross-default threshold amounts
+
+#### Recommendation
+
+Implement a **two-tier approach**:
+
+1. **Tier 1 - Structured Extraction (stored in DB)**: Extract high-confidence covenant data via LLM once, store in new `covenants` table
+2. **Tier 2 - API Primitives**: Serve structured data via new endpoints + enhanced search for deep-dive
+
+---
+
+### Implementation Plan
+
+#### Phase 1: Database Schema
+
+Create new `covenants` table:
+
+```sql
+CREATE TABLE covenants (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    debt_instrument_id UUID REFERENCES debt_instruments(id),
+    company_id UUID REFERENCES companies(id),
+    source_document_id UUID REFERENCES document_sections(id),
+
+    -- Covenant identification
+    covenant_type VARCHAR(50) NOT NULL,  -- 'financial', 'negative', 'incurrence', 'protective'
+    covenant_name VARCHAR(200) NOT NULL, -- 'Maximum Leverage Ratio', 'Restricted Payments', etc.
+
+    -- Financial covenant specifics (nullable for non-financial)
+    test_metric VARCHAR(50),      -- 'leverage_ratio', 'interest_coverage', 'fixed_charge'
+    threshold_value DECIMAL(10,4), -- e.g., 4.50 for 4.50x leverage
+    threshold_type VARCHAR(20),   -- 'maximum', 'minimum'
+    test_frequency VARCHAR(20),   -- 'quarterly', 'annual', 'incurrence'
+
+    -- Covenant details
+    description TEXT,             -- Brief description
+    has_step_down BOOLEAN,        -- Has scheduled tightening
+    cure_period_days INT,         -- Grace period before default
+
+    -- Extraction metadata
+    extraction_confidence DECIMAL(3,2), -- 0.00-1.00
+    extracted_at TIMESTAMP WITH TIME ZONE,
+    source_text TEXT,             -- Verbatim text from document
+
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_covenants_company ON covenants(company_id);
+CREATE INDEX idx_covenants_instrument ON covenants(debt_instrument_id);
+CREATE INDEX idx_covenants_type ON covenants(covenant_type);
+```
+
+#### Phase 2: Extraction Service
+
+Create `app/services/covenant_extraction.py`:
+
+1. **get_governing_document(instrument_id)**: Returns most recent document with `relationship_type='governs'`
+
+2. **extract_covenants_from_document(document_id)**: LLM-based extraction
+   - Prompt includes covenant taxonomy
+   - Returns structured JSON with confidence scores
+   - Cost: ~$0.02-0.05 per document (Gemini)
+
+3. **extract_covenants_for_company(ticker)**: Orchestrates extraction for all instruments
+
+**LLM Prompt Strategy**:
+```
+Given this credit agreement/indenture, extract the following covenants:
+
+FINANCIAL COVENANTS (with numerical thresholds):
+- Maximum Leverage Ratio (Total Debt / EBITDA)
+- Maximum First Lien Leverage Ratio
+- Minimum Interest Coverage Ratio
+- Minimum Fixed Charge Coverage Ratio
+
+NEGATIVE COVENANTS (yes/no + brief description):
+- Limitations on Liens
+- Limitations on Indebtedness
+- Limitations on Restricted Payments
+- Limitations on Asset Sales
+- Limitations on Affiliate Transactions
+
+INCURRENCE TESTS:
+- Debt incurrence ratio threshold
+- Secured debt incurrence ratio
+
+PROTECTIVE COVENANTS:
+- Change of Control provisions (put price, e.g., 101%)
+- Make-whole provisions
+
+Return JSON with confidence scores (0.0-1.0) for each extraction.
+```
+
+#### Phase 3: API Endpoints
+
+##### Endpoint 1: `GET /v1/covenants`
+
+Search and filter structured covenant data.
+
+```
+GET /v1/covenants?ticker=CHTR&covenant_type=financial
+GET /v1/covenants?test_metric=leverage_ratio&max_threshold=5.0
+GET /v1/covenants?covenant_name=change_of_control
+```
+
+**Response:**
+```json
+{
+  "data": [
+    {
+      "id": "uuid",
+      "ticker": "CHTR",
+      "instrument_name": "Term B-5 Loan",
+      "cusip": null,
+      "covenant_type": "financial",
+      "covenant_name": "Maximum First Lien Leverage Ratio",
+      "test_metric": "first_lien_leverage",
+      "threshold_value": 4.50,
+      "threshold_type": "maximum",
+      "test_frequency": "quarterly",
+      "has_step_down": false,
+      "cure_period_days": 30,
+      "extraction_confidence": 0.92,
+      "source_document_date": "2024-12-09"
+    }
+  ],
+  "meta": {
+    "total": 15,
+    "covenant_types": ["financial", "negative", "protective"]
+  }
+}
+```
+
+##### Endpoint 2: `GET /v1/covenants/compare`
+
+Compare covenants across multiple instruments/companies.
+
+```
+GET /v1/covenants/compare?ticker=CHTR,ATUS,LUMN&test_metric=leverage_ratio
+```
+
+##### Endpoint 3: `GET /v1/covenants/headroom` (Future)
+
+Calculate covenant headroom based on current financials.
+
+```
+GET /v1/covenants/headroom?ticker=CHTR
+```
+
+**Response:**
+```json
+{
+  "ticker": "CHTR",
+  "financial_covenants": [
+    {
+      "covenant_name": "Maximum First Lien Leverage Ratio",
+      "threshold": 4.50,
+      "current_ratio": 3.82,
+      "headroom": 0.68,
+      "headroom_pct": 15.1,
+      "cushion_ebitda_drop": 850000000000
+    }
+  ]
+}
+```
+
+#### Phase 4: Extraction Pipeline
+
+```bash
+# Extract covenants for single company
+python -m app.services.covenant_extraction --ticker CHTR --save-db
+
+# Batch extraction (prioritize companies with credit facilities)
+python -m app.services.covenant_extraction --all --save-db --limit 50
+
+# Re-extract after new filings
+python -m app.services.covenant_extraction --ticker CHTR --force
+```
+
+**Estimated costs:**
+- Per company: ~$0.05-0.15 (depending on # of instruments)
+- All 201 companies: ~$15-30
+
+#### Phase 5: Data Quality
+
+1. **Confidence thresholds**: Only store covenants with confidence >= 0.7
+2. **Human review queue**: Flag low-confidence extractions for review
+3. **Source linking**: Always store `source_text` verbatim for verification
+4. **Amendment tracking**: When new filings arrive, flag existing covenants as potentially stale
+
+---
+
+### Files to Create/Modify
+
+#### New Files
+- `app/models/schema.py` - Add `Covenant` model
+- `app/services/covenant_extraction.py` - Extraction service
+- `alembic/versions/XXX_add_covenants_table.py` - Migration
+
+#### Modified Files
+- `app/api/primitives.py` - Add `/v1/covenants` endpoint
+- `app/models/__init__.py` - Export new model
+- `README.md`, `CLAUDE.md` - Document new primitive
+
+---
+
+### Verification Plan
+
+1. **Unit test**: Extract covenants from known document, verify thresholds match
+2. **Spot check**: Compare extracted leverage ratio to what analyst would read
+3. **Coverage test**: Run on 20 companies, measure extraction success rate
+4. **API test**: Query `/v1/covenants?ticker=CHTR`, verify response structure
+
+---
+
+### Risk Assessment
+
+| Risk | Mitigation |
+|------|------------|
+| LLM hallucination | Store source_text, require confidence threshold |
+| Amendment not captured | Use filing_date to get most recent governing doc |
+| Complex covenant language | Start with financial covenants (most structured) |
+| Cost overrun | Use Gemini (cheap), batch efficiently |
+
+---
+
+### Estimated Effort
+
+- Schema + migration: 1 hour
+- Extraction service: 3-4 hours
+- API endpoint: 2 hours
+- Initial extraction (50 companies): 1 hour runtime, ~$5 cost
+- Testing + refinement: 2 hours
+
+**Total: ~8-10 hours of development**
+
+---
+
+### Open Questions
+
+1. Should we extract covenants at the **company level** (credit agreements often cover multiple facilities) or **instrument level**?
+   - Recommendation: Company level for credit agreements, instrument level for indentures
+
+2. How do we handle covenant-lite loans (no maintenance covenants)?
+   - Flag as `is_covenant_lite: true` at instrument level
+
+3. Should headroom calculation be real-time or pre-computed?
+   - Start with pre-computed in `company_metrics`, add real-time later
+
+---
+
+### Final Architecture
+
+The extraction service (`app/services/covenant_extraction.py`) uses a three-layer architecture for modularity and testability:
+
+#### Layer 1: Pure Functions (for unit testing, no dependencies)
+
+| Function | Description |
+|----------|-------------|
+| `extract_covenant_sections(text)` | Regex extraction of covenant-relevant text from documents |
+| `parse_covenant_response(data)` | Parse LLM JSON response → `ParsedCovenant` objects |
+| `fuzzy_match_debt_name(name1, name2)` | Match extracted debt names to known instruments |
+
+#### Layer 2: Prompt Building (no DB, can test with mocked LLM)
+
+| Function | Description |
+|----------|-------------|
+| `build_covenant_prompt(content, ticker, instruments)` | Builds structured LLM prompt with covenant taxonomy, metric definitions, and JSON schema |
+
+#### Layer 3: Database Operations (production use)
+
+| Function | Description |
+|----------|-------------|
+| `get_governing_document(session, instrument_id)` | Get most recent document with `relationship_type='governs'` |
+| `get_company_covenant_documents(session, company_id)` | Get covenant-related documents (credit agreements, indentures, covenant sections) |
+| `get_document_instrument_map(session, company_id)` | Get document → instrument mappings for linkage |
+| `CovenantExtractor` class | Full extraction pipeline using `BaseExtractor` pattern |
+| `extract_covenants(session, company_id, ticker)` | Convenience function for extraction |
+
+#### CLI Usage
+
+```bash
+# Single company
+python -m app.services.covenant_extraction --ticker CHTR
+
+# Batch extraction
+python -m app.services.covenant_extraction --all --limit 50
+
+# Force re-extraction
+python -m app.services.covenant_extraction --ticker CHTR --force
+
+# Post-process to link existing covenants to instruments
+python scripts/link_covenants_to_instruments.py --all
+```
+
+#### Instrument Linkage
+
+Covenants are linked to debt instruments via:
+1. **Explicit matching**: LLM extracts `debt_name` field, fuzzy-matched to instruments
+2. **Document-based**: Uses `debt_instrument_documents` (governs relationships) to link covenants from credit agreements → loans, indentures → bonds
+3. **Post-processing**: `scripts/link_covenants_to_instruments.py` can backfill linkage for existing covenants
+
+Current linkage: **92.5%** of covenants linked to specific instruments.
