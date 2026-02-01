@@ -50,10 +50,12 @@ class Issue:
 
 
 class QCMaster:
-    def __init__(self, db: AsyncSession, verbose: bool = False):
+    def __init__(self, db: AsyncSession, verbose: bool = False, fix: bool = False):
         self.db = db
         self.verbose = verbose
+        self.fix = fix
         self.issues: list[Issue] = []
+        self.fixes_applied: list[str] = []
 
     def add_issue(self, **kwargs):
         issue = Issue(**kwargs)
@@ -910,6 +912,464 @@ class QCMaster:
                 )
 
     # =========================================================================
+    # CATEGORY 6: COVENANT DATA QUALITY
+    # =========================================================================
+
+    async def check_covenants(self):
+        """Check covenant data quality and consistency."""
+        print("\n" + "=" * 70)
+        print("CATEGORY 6: COVENANT DATA QUALITY")
+        print("=" * 70)
+
+        # 6.1 Orphan covenants (reference non-existent company)
+        result = await self.db.execute(text('''
+            SELECT cov.id, cov.covenant_name, cov.company_id
+            FROM covenants cov
+            LEFT JOIN companies c ON c.id = cov.company_id
+            WHERE c.id IS NULL
+        '''))
+        rows = result.fetchall()
+        if rows:
+            self.add_issue(
+                severity='critical',
+                category='covenants',
+                table='covenants',
+                check_name='orphan_covenant_company',
+                description='Covenants reference non-existent companies',
+                affected_count=len(rows),
+                sample_ids=[str(r[0]) for r in rows[:5]]
+            )
+
+        # 6.2 Covenants with invalid debt_instrument_id
+        result = await self.db.execute(text('''
+            SELECT cov.id, cov.covenant_name, cov.debt_instrument_id
+            FROM covenants cov
+            LEFT JOIN debt_instruments di ON di.id = cov.debt_instrument_id
+            WHERE cov.debt_instrument_id IS NOT NULL AND di.id IS NULL
+        '''))
+        rows = result.fetchall()
+        if rows:
+            self.add_issue(
+                severity='error',
+                category='covenants',
+                table='covenants',
+                check_name='orphan_covenant_instrument',
+                description='Covenants reference non-existent debt instruments',
+                affected_count=len(rows),
+                sample_ids=[str(r[0]) for r in rows[:5]]
+            )
+
+        # 6.3 Financial covenants without test_metric
+        result = await self.db.execute(text('''
+            SELECT c.ticker, cov.covenant_name
+            FROM covenants cov
+            JOIN companies c ON c.id = cov.company_id
+            WHERE cov.covenant_type = 'financial'
+            AND (cov.test_metric IS NULL OR cov.test_metric = '')
+            AND cov.covenant_name NOT ILIKE '%covenant-lite%'
+        '''))
+        rows = result.fetchall()
+        if rows:
+            self.add_issue(
+                severity='warning',
+                category='covenants',
+                table='covenants',
+                check_name='financial_no_metric',
+                description='Financial covenants without test_metric specified',
+                affected_count=len(rows),
+                sample_ids=[f"{r[0]}: {r[1]}" for r in rows[:5]]
+            )
+
+        # 6.4 Leverage ratio thresholds outside reasonable range (0.5 - 20x)
+        result = await self.db.execute(text('''
+            SELECT c.ticker, cov.covenant_name, cov.threshold_value
+            FROM covenants cov
+            JOIN companies c ON c.id = cov.company_id
+            WHERE cov.test_metric IN ('leverage_ratio', 'first_lien_leverage', 'secured_leverage', 'net_leverage_ratio')
+            AND cov.threshold_value IS NOT NULL
+            AND (cov.threshold_value < 0.5 OR cov.threshold_value > 20)
+        '''))
+        rows = result.fetchall()
+        if rows:
+            self.add_issue(
+                severity='error',
+                category='covenants',
+                table='covenants',
+                check_name='leverage_threshold_outlier',
+                description='Leverage ratio thresholds outside reasonable range (0.5-20x)',
+                affected_count=len(rows),
+                sample_ids=[f"{r[0]}: {r[1]} = {r[2]}x" for r in rows[:5]]
+            )
+
+        # 6.5 Coverage ratio thresholds outside reasonable range (0.5 - 10x)
+        result = await self.db.execute(text('''
+            SELECT c.ticker, cov.covenant_name, cov.threshold_value
+            FROM covenants cov
+            JOIN companies c ON c.id = cov.company_id
+            WHERE cov.test_metric IN ('interest_coverage', 'fixed_charge_coverage')
+            AND cov.threshold_value IS NOT NULL
+            AND (cov.threshold_value < 0.5 OR cov.threshold_value > 10)
+        '''))
+        rows = result.fetchall()
+        if rows:
+            self.add_issue(
+                severity='warning',
+                category='covenants',
+                table='covenants',
+                check_name='coverage_threshold_outlier',
+                description='Coverage ratio thresholds outside typical range (0.5-10x)',
+                affected_count=len(rows),
+                sample_ids=[f"{r[0]}: {r[1]} = {r[2]}x" for r in rows[:5]]
+            )
+
+        # 6.6 Put price percentages outside reasonable range (95-115%)
+        result = await self.db.execute(text('''
+            SELECT c.ticker, cov.covenant_name, cov.put_price_pct
+            FROM covenants cov
+            JOIN companies c ON c.id = cov.company_id
+            WHERE cov.put_price_pct IS NOT NULL
+            AND (cov.put_price_pct < 95 OR cov.put_price_pct > 115)
+        '''))
+        rows = result.fetchall()
+        if rows:
+            self.add_issue(
+                severity='warning',
+                category='covenants',
+                table='covenants',
+                check_name='put_price_outlier',
+                description='Put price percentages outside typical range (95-115%)',
+                affected_count=len(rows),
+                sample_ids=[f"{r[0]}: {r[1]} = {r[2]}%" for r in rows[:5]]
+            )
+
+        # 6.7 Invalid covenant_type
+        result = await self.db.execute(text('''
+            SELECT c.ticker, cov.covenant_name, cov.covenant_type
+            FROM covenants cov
+            JOIN companies c ON c.id = cov.company_id
+            WHERE cov.covenant_type NOT IN ('financial', 'negative', 'incurrence', 'protective')
+        '''))
+        rows = result.fetchall()
+        if rows:
+            self.add_issue(
+                severity='error',
+                category='covenants',
+                table='covenants',
+                check_name='invalid_covenant_type',
+                description='Covenants with invalid covenant_type',
+                affected_count=len(rows),
+                sample_ids=[f"{r[0]}: {r[1]} type='{r[2]}'" for r in rows[:5]]
+            )
+
+        # 6.8 Invalid threshold_type
+        result = await self.db.execute(text('''
+            SELECT c.ticker, cov.covenant_name, cov.threshold_type
+            FROM covenants cov
+            JOIN companies c ON c.id = cov.company_id
+            WHERE cov.threshold_type IS NOT NULL
+            AND cov.threshold_type NOT IN ('maximum', 'minimum')
+        '''))
+        rows = result.fetchall()
+        if rows:
+            self.add_issue(
+                severity='error',
+                category='covenants',
+                table='covenants',
+                check_name='invalid_threshold_type',
+                description='Covenants with invalid threshold_type (should be maximum/minimum)',
+                affected_count=len(rows),
+                sample_ids=[f"{r[0]}: {r[1]} type='{r[2]}'" for r in rows[:5]]
+            )
+
+        # 6.9 Leverage covenants with threshold_type='minimum' (should be maximum)
+        result = await self.db.execute(text('''
+            SELECT c.ticker, cov.covenant_name, cov.threshold_value
+            FROM covenants cov
+            JOIN companies c ON c.id = cov.company_id
+            WHERE cov.test_metric IN ('leverage_ratio', 'first_lien_leverage', 'secured_leverage', 'net_leverage_ratio')
+            AND cov.threshold_type = 'minimum'
+        '''))
+        rows = result.fetchall()
+        if rows:
+            self.add_issue(
+                severity='error',
+                category='covenants',
+                table='covenants',
+                check_name='leverage_wrong_direction',
+                description='Leverage covenants with threshold_type=minimum (should be maximum)',
+                affected_count=len(rows),
+                sample_ids=[f"{r[0]}: {r[1]} min={r[2]}x" for r in rows[:5]]
+            )
+
+        # 6.10 Coverage covenants with threshold_type='maximum' (should be minimum)
+        result = await self.db.execute(text('''
+            SELECT c.ticker, cov.covenant_name, cov.threshold_value
+            FROM covenants cov
+            JOIN companies c ON c.id = cov.company_id
+            WHERE cov.test_metric IN ('interest_coverage', 'fixed_charge_coverage')
+            AND cov.threshold_type = 'maximum'
+        '''))
+        rows = result.fetchall()
+        if rows:
+            self.add_issue(
+                severity='error',
+                category='covenants',
+                table='covenants',
+                check_name='coverage_wrong_direction',
+                description='Coverage covenants with threshold_type=maximum (should be minimum)',
+                affected_count=len(rows),
+                sample_ids=[f"{r[0]}: {r[1]} max={r[2]}x" for r in rows[:5]]
+            )
+
+        # 6.11 Duplicate covenants (same company + name + instrument)
+        result = await self.db.execute(text('''
+            SELECT c.ticker, cov.covenant_name, COUNT(*) as cnt
+            FROM covenants cov
+            JOIN companies c ON c.id = cov.company_id
+            GROUP BY c.ticker, cov.company_id, cov.covenant_name, cov.debt_instrument_id
+            HAVING COUNT(*) > 1
+        '''))
+        rows = result.fetchall()
+        if rows:
+            self.add_issue(
+                severity='warning',
+                category='covenants',
+                table='covenants',
+                check_name='duplicate_covenants',
+                description='Duplicate covenants (same company + name + instrument)',
+                affected_count=sum(r[2] - 1 for r in rows),
+                sample_ids=[f"{r[0]}: {r[1]} ({r[2]}x)" for r in rows[:5]]
+            )
+
+        # 6.12 Low confidence covenants (< 0.7)
+        result = await self.db.execute(text('''
+            SELECT c.ticker, cov.covenant_name, cov.extraction_confidence
+            FROM covenants cov
+            JOIN companies c ON c.id = cov.company_id
+            WHERE cov.extraction_confidence < 0.7
+        '''))
+        rows = result.fetchall()
+        if rows:
+            self.add_issue(
+                severity='info',
+                category='covenants',
+                table='covenants',
+                check_name='low_confidence_covenants',
+                description='Covenants with extraction_confidence < 0.7 (review recommended)',
+                affected_count=len(rows),
+                sample_ids=[f"{r[0]}: {r[1]} ({r[2]:.0%})" for r in rows[:5]]
+            )
+
+        # 6.13 Covenants without source_document_id
+        result = await self.db.execute(text('''
+            SELECT c.ticker, COUNT(*) as cnt
+            FROM covenants cov
+            JOIN companies c ON c.id = cov.company_id
+            WHERE cov.source_document_id IS NULL
+            GROUP BY c.ticker
+        '''))
+        rows = result.fetchall()
+        if rows:
+            total = sum(r[1] for r in rows)
+            self.add_issue(
+                severity='info',
+                category='covenants',
+                table='covenants',
+                check_name='missing_source_document',
+                description='Covenants without source_document_id linkage',
+                affected_count=total,
+                sample_ids=[f"{r[0]}: {r[1]} covenants" for r in rows[:5]]
+            )
+
+        # 6.14 Companies with covenants but no financial covenants (unusual)
+        result = await self.db.execute(text('''
+            SELECT c.ticker, COUNT(*) as total,
+                   COUNT(*) FILTER (WHERE cov.covenant_type = 'financial') as financial
+            FROM covenants cov
+            JOIN companies c ON c.id = cov.company_id
+            GROUP BY c.ticker, cov.company_id
+            HAVING COUNT(*) >= 3
+            AND COUNT(*) FILTER (WHERE cov.covenant_type = 'financial') = 0
+        '''))
+        rows = result.fetchall()
+        if rows:
+            self.add_issue(
+                severity='info',
+                category='covenants',
+                table='covenants',
+                check_name='no_financial_covenants',
+                description='Companies with 3+ covenants but no financial covenants (may be covenant-lite)',
+                affected_count=len(rows),
+                sample_ids=[f"{r[0]}: {r[1]} covenants, 0 financial" for r in rows[:5]]
+            )
+
+        # 6.15 Covenant instrument linkage rate
+        result = await self.db.execute(text('''
+            SELECT
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE debt_instrument_id IS NOT NULL) as linked
+            FROM covenants
+        '''))
+        row = result.fetchone()
+        if row and row.total > 0:
+            linkage_pct = row.linked / row.total * 100
+            if linkage_pct < 80:
+                self.add_issue(
+                    severity='warning',
+                    category='covenants',
+                    table='covenants',
+                    check_name='low_instrument_linkage',
+                    description=f'Covenant-to-instrument linkage is {linkage_pct:.1f}% (target: >80%)',
+                    affected_count=row.total - row.linked,
+                    sample_ids=[f"Linked: {row.linked}/{row.total}"]
+                )
+
+    # =========================================================================
+    # COVENANT FIXES
+    # =========================================================================
+
+    async def fix_covenants(self):
+        """Apply fixes for covenant data quality issues."""
+        if not self.fix:
+            return
+
+        print("\n" + "=" * 70)
+        print("APPLYING COVENANT FIXES")
+        print("=" * 70)
+
+        # Fix 1: Misclassified test_metrics (debt-to-capital ratios labeled as leverage)
+        # These are percentage-based covenants, not leverage multiples
+        misclassified_fixes = [
+            # AEP: Debt-to-Capital Ratio - 400 means 0.40 (40%)
+            ('88d12273-5344-4cf2-a482-5620767609a6', 'AEP', 'Debt-to-Capital Ratio',
+             'debt_to_capitalization', 0.40, 'Debt-to-capital (40%), not leverage multiple'),
+            # BA: Maximum Leverage Ratio - 60 means 60% debt-to-capital
+            ('d4ecf34c-da53-47dd-92a4-9912e14d6b0d', 'BA', 'Maximum Leverage Ratio',
+             'debt_to_capitalization', 0.60, '60% debt-to-capital, not leverage multiple'),
+            # VNO: Three debt-to-capitalization ratios
+            ('2bb5231c-7e38-4c54-ad17-cec23324347c', 'VNO', 'Ratio of Total Outstanding Indebtedness to Capitalization Value',
+             'debt_to_capitalization', 0.60, '60% debt-to-capitalization'),
+            ('49fae537-09e9-49d1-b4aa-5555b0d564b4', 'VNO', 'Ratio of Secured Indebtedness to Capitalization Value',
+             'debt_to_capitalization', 0.50, '50% secured debt-to-capitalization'),
+            ('de035abf-117f-4031-b42a-ca2484869cbd', 'VNO', 'Ratio of Unsecured Indebtedness to Capitalization Value of Unencumbered Assets',
+             'debt_to_capitalization', 0.60, '60% debt-to-capitalization'),
+        ]
+
+        for cov_id, ticker, name, new_metric, new_threshold, reason in misclassified_fixes:
+            result = await self.db.execute(text(
+                "SELECT id FROM covenants WHERE id = :id"
+            ), {'id': cov_id})
+            if result.fetchone():
+                await self.db.execute(text("""
+                    UPDATE covenants
+                    SET test_metric = :metric, threshold_value = :threshold
+                    WHERE id = :id
+                """), {'id': cov_id, 'metric': new_metric, 'threshold': new_threshold})
+                self.fixes_applied.append(f"[{ticker}] {name}: {reason}")
+                if self.verbose:
+                    print(f"  Fixed [{ticker}] {name}: test_metric -> {new_metric}, threshold -> {new_threshold}")
+
+        # Fix 2: CAT Minimum Consolidated Net Worth - dollar amount, not a ratio
+        # Set test_metric to NULL (not a ratio metric) but keep threshold as dollar amount
+        result = await self.db.execute(text(
+            "SELECT id FROM covenants WHERE id = 'f374062e-8df4-4afe-a0fc-435dddeaf40b'"
+        ))
+        if result.fetchone():
+            await self.db.execute(text("""
+                UPDATE covenants
+                SET test_metric = NULL
+                WHERE id = 'f374062e-8df4-4afe-a0fc-435dddeaf40b'
+            """))
+            self.fixes_applied.append("[CAT] Minimum Consolidated Net Worth: test_metric -> NULL (dollar amount, not ratio)")
+            if self.verbose:
+                print("  Fixed [CAT] Minimum Consolidated Net Worth: test_metric -> NULL")
+
+        # Fix 3: FUN - 0.30 is already correct as decimal, just fix metric type
+        result = await self.db.execute(text(
+            "SELECT id FROM covenants WHERE id = '52a93d80-9511-4f6b-8c05-e092295e52b0'"
+        ))
+        if result.fetchone():
+            await self.db.execute(text("""
+                UPDATE covenants
+                SET test_metric = 'debt_to_capitalization'
+                WHERE id = '52a93d80-9511-4f6b-8c05-e092295e52b0'
+            """))
+            self.fixes_applied.append("[FUN] Restricted Subsidiary Indebtedness: test_metric -> debt_to_capitalization")
+            if self.verbose:
+                print("  Fixed [FUN] Restricted Subsidiary Indebtedness: test_metric -> debt_to_capitalization")
+
+        # Fix 4: Invalid threshold_type values (e.g., "N/A" should be NULL)
+        result = await self.db.execute(text("""
+            UPDATE covenants
+            SET threshold_type = NULL
+            WHERE threshold_type IS NOT NULL
+            AND threshold_type NOT IN ('maximum', 'minimum')
+            RETURNING id
+        """))
+        fixed_ids = result.fetchall()
+        if fixed_ids:
+            self.fixes_applied.append(f"Cleared {len(fixed_ids)} invalid threshold_type values (e.g., 'N/A' -> NULL)")
+            if self.verbose:
+                print(f"  Fixed {len(fixed_ids)} covenants with invalid threshold_type")
+
+        # Fix 5: Leverage covenants with threshold_type='minimum' (should be 'maximum')
+        # But skip CAT since we already set its test_metric to NULL
+        result = await self.db.execute(text("""
+            UPDATE covenants
+            SET threshold_type = 'maximum'
+            WHERE test_metric IN ('leverage_ratio', 'first_lien_leverage', 'secured_leverage', 'net_leverage_ratio')
+            AND threshold_type = 'minimum'
+            RETURNING id
+        """))
+        fixed_ids = result.fetchall()
+        if fixed_ids:
+            self.fixes_applied.append(f"Fixed {len(fixed_ids)} leverage covenants: threshold_type 'minimum' -> 'maximum'")
+            if self.verbose:
+                print(f"  Fixed {len(fixed_ids)} leverage covenants with wrong direction")
+
+        # Fix 6: Coverage covenants with threshold_type='maximum' (should be 'minimum')
+        result = await self.db.execute(text("""
+            UPDATE covenants
+            SET threshold_type = 'minimum'
+            WHERE test_metric IN ('interest_coverage', 'fixed_charge_coverage')
+            AND threshold_type = 'maximum'
+            RETURNING id
+        """))
+        fixed_ids = result.fetchall()
+        if fixed_ids:
+            self.fixes_applied.append(f"Fixed {len(fixed_ids)} coverage covenants: threshold_type 'maximum' -> 'minimum'")
+            if self.verbose:
+                print(f"  Fixed {len(fixed_ids)} coverage covenants with wrong direction")
+
+        # Fix 7: Remove duplicate covenants (keep oldest)
+        result = await self.db.execute(text("""
+            DELETE FROM covenants
+            WHERE id IN (
+                SELECT id FROM (
+                    SELECT id,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY company_id, covenant_name, COALESCE(debt_instrument_id::text, '')
+                               ORDER BY created_at ASC
+                           ) as rn
+                    FROM covenants
+                ) ranked
+                WHERE rn > 1
+            )
+            RETURNING id
+        """))
+        deleted_ids = result.fetchall()
+        if deleted_ids:
+            self.fixes_applied.append(f"Deleted {len(deleted_ids)} duplicate covenants (kept oldest)")
+            if self.verbose:
+                print(f"  Deleted {len(deleted_ids)} duplicate covenants")
+
+        await self.db.commit()
+
+        print(f"\n  Applied {len(self.fixes_applied)} fixes")
+        for fix_desc in self.fixes_applied:
+            print(f"    - {fix_desc}")
+
+    # =========================================================================
     # RUN ALL CHECKS
     # =========================================================================
 
@@ -921,6 +1381,7 @@ class QCMaster:
             'consistency': self.check_consistency,
             'business': self.check_business,
             'completeness': self.check_completeness,
+            'covenants': self.check_covenants,
         }
 
         if categories:
@@ -930,6 +1391,11 @@ class QCMaster:
 
         for name, check_func in checks.items():
             await check_func()
+
+        # Apply fixes if requested
+        if self.fix:
+            if not categories or 'covenants' in categories:
+                await self.fix_covenants()
 
         return self.summarize()
 
@@ -975,7 +1441,7 @@ class QCMaster:
 async def main():
     parser = argparse.ArgumentParser(description="Master Data Quality Control Suite")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show all details")
-    parser.add_argument("--category", "-c", type=str, help="Run specific category (integrity, impossible, consistency, business, completeness)")
+    parser.add_argument("--category", "-c", type=str, help="Run specific category (integrity, impossible, consistency, business, completeness, covenants)")
     parser.add_argument("--fix", action="store_true", help="Auto-fix where safe")
     args = parser.parse_args()
 
@@ -998,7 +1464,7 @@ async def main():
     print(f"\nRun time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     async with async_session() as db:
-        qc = QCMaster(db, verbose=args.verbose)
+        qc = QCMaster(db, verbose=args.verbose, fix=args.fix)
         categories = [args.category] if args.category else None
         result = await qc.run_all(categories)
 
