@@ -467,7 +467,7 @@ python scripts/fix_qc_financials.py --save-db    # Apply fixes
 
 ## Testing
 
-DebtStack has a comprehensive testing infrastructure with 4 layers:
+DebtStack has a comprehensive testing infrastructure with 5 layers:
 
 ### Test Structure
 
@@ -480,12 +480,27 @@ tests/                          # pytest test suite
 │   ├── test_maturity_parsing.py      # Date extraction
 │   └── test_document_classification.py
 ├── integration/                # Service tests (mocked)
-└── api/                        # API contract tests
-    └── test_companies_endpoint.py
+├── api/                        # API contract tests
+│   └── test_companies_endpoint.py
+└── eval/                       # API accuracy evaluation suite
+    ├── conftest.py             # API client, DB fixtures
+    ├── ground_truth.py         # Ground truth data management
+    ├── scoring.py              # Accuracy calculation, regression detection
+    ├── test_companies.py       # 8 use cases
+    ├── test_bonds.py           # 7 use cases
+    ├── test_bonds_resolve.py   # 6 use cases
+    ├── test_financials.py      # 8 use cases
+    ├── test_collateral.py      # 5 use cases
+    ├── test_covenants.py       # 6 use cases
+    ├── test_covenants_compare.py  # 4 use cases
+    ├── test_entities_traverse.py  # 7 use cases
+    ├── test_documents_search.py   # 6 use cases
+    ├── test_workflows.py       # 8 E2E scenarios
+    └── baseline/               # Regression detection baselines
 
 scripts/                        # Standalone test scripts
 ├── run_all_tests.py           # Unified test runner
-├── test_demo_scenarios.py     # 8 E2E scenarios
+├── run_evals.py               # Eval framework runner
 ├── test_api_edge_cases.py     # Security/robustness tests
 ├── qc_master.py               # Data quality checks
 └── qc_financials.py           # Financial validation
@@ -505,13 +520,14 @@ python scripts/run_all_tests.py              # All suites
 python scripts/run_all_tests.py --quick      # Unit only
 python scripts/run_all_tests.py --unit       # Unit only
 python scripts/run_all_tests.py --api        # API contract tests
-python scripts/run_all_tests.py --e2e        # E2E scripts
 python scripts/run_all_tests.py --qc         # Include QC checks
 python scripts/run_all_tests.py --json       # JSON output
 
-# Individual E2E scripts
-python scripts/test_demo_scenarios.py        # 8 demo scenarios
-python scripts/test_api_edge_cases.py        # API robustness
+# API Evaluation Framework (replaces test_demo_scenarios.py)
+python scripts/run_evals.py                  # Run all evals
+python scripts/run_evals.py --primitive companies  # Single primitive
+python scripts/run_evals.py --update-baseline      # Update baseline
+python scripts/run_evals.py --json           # JSON output for CI
 
 # Data quality
 python scripts/qc_master.py                  # Full QC audit
@@ -519,13 +535,32 @@ python scripts/qc_master.py --category integrity  # Specific category
 python scripts/qc_financials.py --verbose    # Financial validation
 ```
 
+### Eval Framework
+
+The eval framework validates API correctness against ground truth from database/SEC filings:
+
+| Primitive | Use Cases | Description |
+|-----------|-----------|-------------|
+| `/v1/companies` | 8 | Leverage accuracy, debt totals, sorting, filtering |
+| `/v1/bonds` | 7 | Coupon rates, maturity dates, pricing, seniority |
+| `/v1/bonds/resolve` | 6 | Free-text parsing, CUSIP lookup, fuzzy matching |
+| `/v1/financials` | 8 | Revenue, EBITDA, cash, quarterly filtering |
+| `/v1/collateral` | 5 | Collateral types, debt linking, priority |
+| `/v1/covenants` | 6 | Covenant types, thresholds, metrics |
+| `/v1/covenants/compare` | 4 | Multi-company comparison |
+| `/v1/entities/traverse` | 7 | Guarantor counts, parent-child links |
+| `/v1/documents/search` | 6 | Term presence, relevance, snippets |
+| **Workflows** | 8 | End-to-end multi-step scenarios |
+
+**Target accuracy**: 95%+. See `docs/EVAL_FRAMEWORK.md` for details.
+
 ### Test Coverage
 
 | Category | Tests | Purpose |
 |----------|-------|---------|
 | Unit | 73 | Pure functions: name normalization, fuzzy matching, parsing |
 | API Contract | 15+ | Endpoint schemas, response types |
-| E2E Scenarios | 8 | Full user journeys against production API |
+| Eval Suite | ~65 | Ground-truth validation per endpoint |
 | API Edge Cases | 50+ | Security, error handling, edge cases |
 | QC Checks | 30+ | Data integrity, business logic, completeness |
 
@@ -533,8 +568,9 @@ python scripts/qc_financials.py --verbose    # Financial validation
 
 1. **Unit tests** go in `tests/unit/test_*.py` - no DB, no API, no mocks
 2. **API tests** go in `tests/api/test_*.py` - require `DEBTSTACK_API_KEY`
-3. Use `@pytest.mark.unit` or `@pytest.mark.api` markers
-4. Install dev deps: `pip install -r requirements-dev.txt`
+3. **Eval tests** go in `tests/eval/test_*.py` - use `@pytest.mark.eval`
+4. Use `@pytest.mark.unit` or `@pytest.mark.api` markers
+5. Install dev deps: `pip install -r requirements-dev.txt`
 
 ### Covenant Relationship Extraction
 
