@@ -6,7 +6,7 @@ Context for AI assistants working on the DebtStack.ai codebase.
 
 ## What's Next
 
-**Immediate**: Stripe billing integration - connect payment processing so users can upgrade to Pro tier.
+**Immediate**: Create Stripe products for new pricing tiers in Stripe Dashboard and update environment variables with actual price IDs.
 
 **Then**:
 1. Finnhub pricing expansion (30 → 200+ bonds)
@@ -19,7 +19,7 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 **Target users**: AI agents that need credit analysis data (corporate structure, debt details, structural subordination).
 
-## Current Status (January 2026)
+## Current Status (February 2026)
 
 **Database**: 201 companies | 5,374 entities | 3,056 active debt instruments | 30 priced bonds | 13,862 document sections | 3,831 guarantees | 626 collateral records
 
@@ -35,8 +35,10 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 - Live at: `https://credible-ai-production.up.railway.app`
 
 **What's Working**:
+- **Three-Tier Pricing**: Pay-as-You-Go ($0 + per-call), Pro ($199/mo), Business ($499/mo)
 - **Primitives API**: 11 core endpoints optimized for AI agents (field selection, powerful filters)
-- **Auth & Credits**: API key auth, tier-based credits, usage tracking
+- **Business-Only Endpoints**: Historical pricing, covenant compare, bulk export, usage analytics
+- **Auth & Credits**: API key auth, tier-based access control, usage tracking with cost
 - **Legacy REST API**: 26 endpoints for detailed company data
 - Iterative extraction with QA feedback loop (5 checks, 85% threshold)
 - Gemini for extraction (~$0.008), Claude for escalation
@@ -148,9 +150,14 @@ This separation keeps business logic testable and reusable while scripts handle 
 - `document_sections`: SEC filing sections for full-text search (TSVECTOR + GIN index)
 
 **Auth Tables**:
-- `users`: User accounts (email, api_key_hash, tier, stripe IDs)
-- `user_credits`: Credit balance and billing cycle
-- `usage_log`: API usage tracking
+- `users`: User accounts (email, api_key_hash, tier, stripe IDs, rate_limit_per_minute, team_seats)
+- `user_credits`: Credit balance and billing cycle (credits_remaining, credits_purchased, credits_used)
+- `usage_log`: API usage tracking (endpoint, cost_usd, tier_at_time_of_request)
+
+**Pricing Tables** (Three-Tier System):
+- `bond_pricing_history`: Historical bond pricing snapshots (Business tier only)
+- `team_members`: Business tier multi-seat team management
+- `coverage_requests`: Business tier custom company coverage requests
 
 **Cache Tables**:
 - `company_cache`: Pre-computed JSON responses + `extraction_status` (JSONB tracking step attempts)
@@ -165,23 +172,57 @@ This separation keeps business logic testable and reusable while scripts handle 
 | `/v1/auth/signup` | POST | Create account, returns API key |
 | `/v1/auth/me` | GET | Get user info and credits (requires API key) |
 
+### Three-Tier Pricing
+
+| Tier | Price | Rate Limit | Features |
+|------|-------|------------|----------|
+| Pay-as-You-Go | $0/mo + per-call | 60/min | All basic endpoints, pay $0.05-$0.15/call |
+| Pro | $199/mo | 100/min | Unlimited queries to basic endpoints |
+| Business | $499/mo | 500/min | All endpoints + historical pricing + bulk export + 5 team seats |
+
+**Endpoint Costs (Pay-as-You-Go)**:
+- Simple ($0.05): `/companies`, `/bonds`, `/bonds/resolve`, `/financials`, `/collateral`, `/covenants`
+- Complex ($0.10): `/companies/{ticker}/changes`
+- Advanced ($0.15): `/entities/traverse`, `/documents/search`, `/batch`
+
+**Business-Only Endpoints**: `/covenants/compare`, `/bonds/{cusip}/pricing/history`, `/export`, `/usage/analytics`
+
 ### Primitives API (11 endpoints - optimized for agents)
 
 All require `X-API-Key` header.
 
-| Endpoint | Method | Credits | Purpose |
-|----------|--------|---------|---------|
-| `/v1/companies` | GET | 1 | Search companies with field selection |
-| `/v1/bonds` | GET | 1 | Search/screen bonds with pricing (YTM, seniority, maturity filters) |
-| `/v1/bonds/resolve` | GET | 1 | Map bond identifiers - free-text to CUSIP (e.g., "RIG 8% 2027") |
-| `/v1/financials` | GET | 1 | Quarterly financial statements (income, balance sheet, cash flow) |
-| `/v1/collateral` | GET | 1 | Collateral securing debt (types, values, priority) |
-| `/v1/companies/{ticker}/changes` | GET | 2 | Diff against historical snapshots |
-| `/v1/covenants` | GET | 1 | Search structured covenant data (financial, negative, protective) |
-| `/v1/covenants/compare` | GET | 2 | Compare covenants across multiple companies |
-| `/v1/entities/traverse` | POST | 3 | Graph traversal (guarantors, structure) |
-| `/v1/documents/search` | GET | 3 | Full-text search across SEC filings |
-| `/v1/batch` | POST | Sum | Execute multiple primitives in parallel |
+| Endpoint | Method | Pay-as-You-Go Cost | Purpose |
+|----------|--------|-------------------|---------|
+| `/v1/companies` | GET | $0.05 | Search companies with field selection |
+| `/v1/bonds` | GET | $0.05 | Search/screen bonds with pricing (YTM, seniority, maturity filters) |
+| `/v1/bonds/resolve` | GET | $0.05 | Map bond identifiers - free-text to CUSIP (e.g., "RIG 8% 2027") |
+| `/v1/financials` | GET | $0.05 | Quarterly financial statements (income, balance sheet, cash flow) |
+| `/v1/collateral` | GET | $0.05 | Collateral securing debt (types, values, priority) |
+| `/v1/companies/{ticker}/changes` | GET | $0.10 | Diff against historical snapshots |
+| `/v1/covenants` | GET | $0.05 | Search structured covenant data (financial, negative, protective) |
+| `/v1/covenants/compare` | GET | Business only | Compare covenants across multiple companies |
+| `/v1/entities/traverse` | POST | $0.15 | Graph traversal (guarantors, structure) |
+| `/v1/documents/search` | GET | $0.15 | Full-text search across SEC filings |
+| `/v1/batch` | POST | Sum of ops | Execute multiple primitives in parallel |
+
+### Business-Only Endpoints
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/v1/bonds/{cusip}/pricing/history` | GET | Historical bond pricing (up to 2 years) |
+| `/v1/export` | GET | Bulk data export (CSV/JSON, up to 50K records) |
+| `/v1/usage/analytics` | GET | Usage analytics dashboard |
+| `/v1/usage/trends` | GET | Usage trends over time |
+
+### Pricing API (Public + Authenticated)
+
+| Endpoint | Method | Auth | Purpose |
+|----------|--------|------|---------|
+| `/v1/pricing/tiers` | GET | No | Public tier info |
+| `/v1/pricing/calculate` | POST | No | Cost calculator |
+| `/v1/pricing/my-usage` | GET | Yes | User's usage stats |
+| `/v1/pricing/purchase-credits` | POST | Yes | Buy credit packages |
+| `/v1/pricing/upgrade` | POST | Yes | Upgrade subscription |
 
 **Field selection**: `?fields=ticker,name,net_leverage_ratio`
 **Sorting**: `?sort=-net_leverage_ratio` (prefix `-` for descending)

@@ -74,6 +74,16 @@ class Settings(BaseSettings):
     stripe_api_key: Optional[str] = None
     stripe_webhook_secret: Optional[str] = None
 
+    # Stripe Price IDs for subscriptions (set in Stripe Dashboard)
+    stripe_pro_price_id: str = "price_pro_199"  # $199/month Pro tier
+    stripe_business_price_id: str = "price_business_499"  # $499/month Business tier
+
+    # Stripe Price IDs for credit packages (Pay-as-You-Go)
+    stripe_credits_10_price_id: str = "price_credits_10"  # $10 credit package
+    stripe_credits_25_price_id: str = "price_credits_25"  # $25 credit package
+    stripe_credits_50_price_id: str = "price_credits_50"  # $50 credit package
+    stripe_credits_100_price_id: str = "price_credits_100"  # $100 credit package
+
     # API Key settings
     api_key_prefix: str = "ds_"  # All API keys start with "ds_"
 
@@ -87,14 +97,15 @@ class Settings(BaseSettings):
     rate_limit_window: int = 60  # seconds
 
     # Per-tier rate limits (requests per minute)
-    rate_limit_free: int = 10
-    rate_limit_pro: int = 120
-    rate_limit_business: int = 1000  # Business tier ($499/month)
-    rate_limit_enterprise: int = 1000  # Legacy alias for business
-    # Legacy tiers
+    rate_limit_pay_as_you_go: int = 60  # Pay-as-You-Go tier
+    rate_limit_pro: int = 100  # Pro tier ($199/month)
+    rate_limit_business: int = 500  # Business tier ($499/month)
+    # Legacy tier aliases (for backwards compatibility)
+    rate_limit_free: int = 60  # Maps to pay_as_you_go
+    rate_limit_enterprise: int = 500  # Maps to business
     rate_limit_starter: int = 60
-    rate_limit_growth: int = 120
-    rate_limit_scale: int = 300
+    rate_limit_growth: int = 100
+    rate_limit_scale: int = 500
 
     class Config:
         env_file = ".env"

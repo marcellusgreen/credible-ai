@@ -1,6 +1,6 @@
 # DebtStack Work Plan
 
-Last Updated: 2026-01-31
+Last Updated: 2026-02-01
 
 ## Current Status
 
@@ -17,18 +17,382 @@ Last Updated: 2026-01-31
 
 ---
 
-## What's Next
+## What's Next: Stripe Products & Daily Pricing
 
-### Immediate Priority: Stripe Billing Integration
-**Why**: Auth system is complete but billing is not connected. Users can sign up but can't upgrade to Pro tier.
+### Immediate Priority: Configure Production Stripe
+**Why**: Three-tier pricing code is complete. Need to create actual Stripe products and configure environment variables.
 
-**Steps:**
-1. Create Stripe products (Free, Pro tiers)
-2. Add webhook handler for subscription events
-3. Implement checkout flow for tier upgrades
-4. Gate pricing endpoints behind Pro tier
+**Tasks**:
+1. Create Stripe Products in Dashboard:
+   - Pro subscription: $199/month → get `price_xxx` ID
+   - Business subscription: $499/month → get `price_xxx` ID
+   - Credit packages: $10, $25, $50, $100 (one-time) → get 4 price IDs
+2. Update Railway environment variables with actual price IDs
+3. Test checkout flows end-to-end
 
-### Secondary Priorities (in order):
+### Then: Daily Pricing Collection
+Set up Railway cron job for `scripts/collect_daily_pricing.py` to populate `bond_pricing_history` for Business tier.
+
+---
+
+## NEW PRICING STRUCTURE
+
+### Tier 1: Pay-as-You-Go ($0/month)
+- **Pricing**: Pay per API primitive based on complexity
+  - Simple queries ($0.05): `/v1/companies`, `/v1/bonds`, `/v1/bonds/resolve`, `/v1/financials`, `/v1/collateral`, `/v1/covenants`
+  - Complex queries ($0.10): `/v1/companies/{ticker}/changes`, `/v1/covenants/compare`
+  - Advanced queries ($0.15): `/v1/entities/traverse`, `/v1/documents/search`
+  - Batch endpoint: Sum of included primitives
+- **Rate Limit**: 60 requests/minute
+- **API Keys**: 1
+- **Support**: Community only
+- **Excluded**: `/v1/covenants/compare`, `/v1/bonds/{cusip}/pricing/history`, `/v1/export`, `/v1/usage/analytics`
+
+### Tier 2: Pro ($199/month)
+- **Pricing**: Unlimited API queries (all primitives except Business-only endpoints)
+- **Features**:
+  - Current pricing on all bonds
+  - Current debt structure & covenant data
+  - Basic covenant viewing (`/v1/covenants` - single company only)
+- **Rate Limit**: 100 requests/minute
+- **API Keys**: 1
+- **Support**: Email (48hr response SLA)
+- **Excluded**: `/v1/covenants/compare`, `/v1/bonds/{cusip}/pricing/history`, `/v1/export`
+
+### Tier 3: Business ($499/month)
+- **Pricing**: Everything in Pro, PLUS:
+  - Historical bond pricing (1 year of daily data via `/v1/bonds/{cusip}/pricing/history`)
+  - Advanced covenant analysis (access to `/v1/covenants/compare` endpoint)
+  - Early access to expanding bond coverage (2 weeks before Pro tier via `bond_early_access` table)
+  - Bulk data export (CSV/Excel via `/v1/export` endpoint)
+  - Team collaboration (5 API keys/seats per account)
+  - Usage analytics dashboard (new endpoint: `/v1/usage/analytics`)
+- **Rate Limit**: 500 requests/minute
+- **API Keys**: 5 (team seats)
+- **Support**: Priority (24hr response SLA)
+- **Extras**: Custom company coverage requests, dedicated onboarding, 99.9% uptime SLA
+
+---
+
+## Implementation Phases
+
+### Phase 1: Database Schema Changes (Week 1)
+**Status**: ✅ COMPLETED (2026-02-01)
+
+#### 1.1 Update `users` table
+```python
+# Add fields to User model in app/models/schema.py:
+tier: Enum['pay_as_you_go', 'pro', 'business'] (default: 'pay_as_you_go')
+rate_limit_per_minute: Integer (default based on tier: 60/100/500)
+team_seats: Integer (default: 1, Business gets 5)
+```
+
+#### 1.2 Update `user_credits` table for Pay-as-You-Go
+```python
+# Modify for dollar-based credit tracking:
+credits_purchased: Decimal (total bought in dollars)
+credits_used: Decimal (total consumed in dollars)
+credits_remaining: Decimal (calculated: purchased - used)
+last_credit_purchase: DateTime
+last_credit_usage: DateTime
+```
+
+#### 1.3 Update `usage_log` table
+```python
+# Add fields:
+cost_usd: Decimal (for Pay-as-You-Go: $0.05, $0.10, or $0.15)
+tier_at_time_of_request: String (capture tier when request made)
+response_time_ms: Integer (for analytics)
+```
+
+#### 1.4 Create new `coverage_requests` table
+```python
+class CoverageRequest(Base):
+    __tablename__ = 'coverage_requests'
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    ticker = Column(String(10), nullable=False)
+    company_name = Column(String(255))
+    reason = Column(Text)
+    status = Column(Enum('pending', 'in_progress', 'completed', 'declined'), default='pending')
+    requested_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+    notes = Column(Text, nullable=True)
+```
+
+#### 1.5 Create `bond_pricing_history` table
+```python
+class BondPricingHistory(Base):
+    __tablename__ = 'bond_pricing_history'
+
+    id = Column(Integer, primary_key=True)
+    cusip = Column(String(9), nullable=False, index=True)
+    price_date = Column(Date, nullable=False, index=True)
+    price = Column(Numeric(10, 4))
+    ytm_bps = Column(Integer)  # basis points
+    spread_bps = Column(Integer)  # spread to treasury in bps
+    volume = Column(BigInteger, nullable=True)
+    source = Column(String(50), default='finnhub')
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index('ix_cusip_date', 'cusip', 'price_date'),
+        UniqueConstraint('cusip', 'price_date', name='uq_cusip_date'),
+    )
+```
+
+#### 1.6 Create `bond_early_access` table
+```python
+class BondEarlyAccess(Base):
+    __tablename__ = 'bond_early_access'
+
+    id = Column(Integer, primary_key=True)
+    cusip = Column(String(9), nullable=False, unique=True, index=True)
+    company_ticker = Column(String(10), index=True)
+    business_release_date = Column(Date, nullable=False)
+    pro_release_date = Column(Date, nullable=False)  # 2 weeks after business
+    created_at = Column(DateTime, default=datetime.utcnow)
+```
+
+#### 1.7 Create `team_members` table (for Business tier multi-seat)
+```python
+class TeamMember(Base):
+    __tablename__ = 'team_members'
+
+    id = Column(Integer, primary_key=True)
+    account_owner_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    email = Column(String(255), nullable=False)
+    api_key_hash = Column(String(255), nullable=False, unique=True)
+    role = Column(Enum('member', 'admin'), default='member')
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_used_at = Column(DateTime, nullable=True)
+```
+
+**Migration file**: `alembic/versions/022_three_tier_pricing.py`
+
+---
+
+### Phase 2: Auth & Tier Middleware (Week 1)
+**Status**: ✅ COMPLETED (2026-02-01)
+
+#### 2.1 Update `app/core/auth.py`
+
+Add tier-based configuration:
+```python
+TIER_CONFIG = {
+    'pay_as_you_go': {
+        'rate_limit_per_minute': 60,
+        'monthly_price': 0,
+        'excluded_endpoints': [
+            '/v1/covenants/compare',
+            '/v1/bonds/{cusip}/pricing/history',
+            '/v1/export',
+            '/v1/usage/analytics',
+        ],
+        'endpoint_costs': {
+            '/v1/companies': Decimal('0.05'),
+            '/v1/bonds': Decimal('0.05'),
+            '/v1/bonds/resolve': Decimal('0.05'),
+            '/v1/financials': Decimal('0.05'),
+            '/v1/collateral': Decimal('0.05'),
+            '/v1/covenants': Decimal('0.05'),
+            '/v1/companies/{ticker}/changes': Decimal('0.10'),
+            '/v1/covenants/compare': Decimal('0.10'),
+            '/v1/entities/traverse': Decimal('0.15'),
+            '/v1/documents/search': Decimal('0.15'),
+        }
+    },
+    'pro': {
+        'rate_limit_per_minute': 100,
+        'monthly_price': 199,
+        'excluded_endpoints': [
+            '/v1/covenants/compare',
+            '/v1/bonds/{cusip}/pricing/history',
+            '/v1/export',
+            '/v1/usage/analytics',
+        ],
+        'endpoint_costs': {}  # Unlimited
+    },
+    'business': {
+        'rate_limit_per_minute': 500,
+        'monthly_price': 499,
+        'excluded_endpoints': [],  # Full access
+        'endpoint_costs': {}  # Unlimited
+    }
+}
+```
+
+Add functions:
+- `get_endpoint_cost(endpoint_path: str, tier: str) -> Decimal`
+- `check_tier_access(request, user, endpoint, db) -> Tuple[bool, Optional[str]]`
+- `deduct_credits(db, user_id, amount, endpoint)`
+
+---
+
+### Phase 3: New API Endpoints (Week 1-2)
+**Status**: ✅ COMPLETED (2026-02-01)
+
+#### 3.1 Create `app/api/pricing.py`
+- `GET /v1/pricing/tiers` - Return pricing tier information for website
+- `POST /v1/pricing/calculate` - Calculate cost comparison between tiers
+- `GET /v1/pricing/my-usage` - Get current user's usage and costs
+
+#### 3.2 Create `app/api/historical_pricing.py`
+- `GET /v1/bonds/{cusip}/pricing/history` - Business tier only, 1 year of daily data
+- `GET /v1/bonds/{cusip}/pricing/latest` - Available to all tiers
+
+#### 3.3 Create `app/api/export.py`
+- `GET /v1/export` - Business tier only, bulk CSV/Excel export
+
+#### 3.4 Add `GET /v1/usage/analytics` - Business tier usage dashboard
+
+#### 3.5 Update `app/api/primitives.py`
+- Add tier checking to `/v1/covenants/compare` (Business only)
+- Add credit deduction for Pay-as-You-Go users on all endpoints
+
+---
+
+### Phase 4: Stripe Integration Update (Week 2)
+**Status**: ✅ COMPLETED (2026-02-01)
+
+#### 4.1 Update `app/core/billing.py`
+- Add new price IDs for Pro ($199) and Business ($499)
+- Update checkout session creation to support both tiers
+- Handle tier parameter in checkout flow
+
+#### 4.2 Update `app/services/stripe_service.py` (create new)
+- `create_checkout_session(user_id, tier, success_url, cancel_url)`
+- `create_customer_portal_session(stripe_customer_id, return_url)`
+- `handle_checkout_completed(session, db)`
+- `handle_subscription_deleted(subscription, db)`
+- `handle_subscription_updated(subscription, db)`
+
+#### 4.3 Update webhook handling
+- Handle tier changes (pro -> business, business -> pro)
+- Handle downgrades to pay_as_you_go
+
+---
+
+### Phase 5: Frontend Updates (Week 2-3)
+**Status**: ✅ COMPLETED (2026-02-01)
+
+#### 5.1 Update `debtstack-website/app/pricing/page.tsx`
+- Three-tier pricing cards with new prices
+- Feature comparison table
+- Pay-as-You-Go cost breakdown
+- FAQ section updates
+
+#### 5.2 Update `debtstack-website/lib/stripe.ts`
+- New STRIPE_PRICES for Pro ($199) and Business ($499)
+- Updated TIER_CONFIG with new features
+
+#### 5.3 Update `debtstack-website/app/api/stripe/checkout/route.ts`
+- Support tier parameter (pro/business)
+- Pass correct price ID based on tier
+
+---
+
+### Phase 6: Daily Pricing Collection (Week 2)
+**Status**: ⬜ TODO (requires historical data collection script)
+
+#### 6.1 Create `scripts/collect_daily_pricing.py`
+- Run daily to collect current pricing for all bonds with CUSIPs
+- Store in `bond_pricing_history` table
+- Track source (finnhub/trace)
+
+#### 6.2 Set up Railway cron job
+- Run daily at 6 PM ET (after market close)
+- `0 23 * * * cd /app && python scripts/collect_daily_pricing.py`
+
+---
+
+### Phase 7: Documentation Updates (Week 3)
+**Status**: ⬜ TODO
+
+#### 7.1 Update README.md with new pricing tiers
+#### 7.2 Update `docs/PRIMITIVES_API_SPEC.md` with tier requirements per endpoint
+#### 7.3 Update Mintlify docs with tier gating info
+
+---
+
+## Environment Variables to Add
+
+```bash
+# Stripe Configuration (update existing)
+STRIPE_PRO_PRICE_ID=price_...      # $199/month
+STRIPE_BUSINESS_PRICE_ID=price_... # $499/month
+
+# Pricing Configuration
+PRO_MONTHLY_PRICE=199
+BUSINESS_MONTHLY_PRICE=499
+
+# Rate Limits by Tier (update existing)
+PAYG_RATE_LIMIT=60
+PRO_RATE_LIMIT=100
+BUSINESS_RATE_LIMIT=500
+```
+
+---
+
+## Testing Requirements
+
+Create `tests/test_pricing_tiers.py`:
+- Test correct cost assignment for different endpoints
+- Test tier access for Business-only endpoints
+- Test credit deduction for Pay-as-You-Go users
+- Test historical pricing access restrictions
+- Test rate limiting per tier
+- Test Stripe webhook handling
+
+---
+
+## Deployment Checklist
+
+- [ ] Run database migrations (`alembic upgrade head`)
+- [ ] Deploy updated API code to Railway
+- [ ] Create new Stripe products and prices ($199 Pro, $499 Business)
+- [ ] Set Stripe webhook endpoint: `https://yourdomain.com/webhooks/stripe`
+- [ ] Add all Stripe environment variables to Railway
+- [ ] Update website with new pricing page
+- [ ] Test tier enforcement on staging environment
+- [ ] Test Stripe checkout flow end-to-end
+- [ ] Set up daily pricing collection cron job
+- [ ] Update API documentation with tier requirements
+- [ ] Test historical pricing endpoint with Business user
+- [ ] Announce new pricing to existing users (grandfather free users)
+- [ ] Monitor error logs for tier-related issues
+
+---
+
+## Open Questions
+
+1. **Free trial length**: 7 days or 14 days for Pro/Business?
+2. **Grandfather existing free users**: Give them bonus Pay-as-You-Go credits? How much?
+3. **Historical pricing backfill**: Start from launch date only, or backfill recent data?
+4. **Custom coverage request workflow**: Email notification or Slack integration?
+5. **Team member invitations**: Self-service or admin-approved?
+6. **Annual billing discount**: Offer 2 months free for annual plans?
+
+---
+
+## Success Criteria
+
+- [ ] Pay-as-You-Go users can query API and see credits deducted in real-time
+- [ ] Pro users have unlimited access to basic endpoints (no covenant comparison)
+- [ ] Business users can access historical pricing and covenant comparison
+- [ ] Stripe subscriptions correctly create/update user tiers
+- [ ] Rate limiting enforces tier limits (60/100/500 rpm)
+- [ ] Website clearly displays three tiers with correct pricing
+- [ ] Webhook handling upgrades/downgrades users automatically
+- [ ] Historical pricing data accumulates daily for Business customers
+- [ ] Early access bond filtering works (Business gets bonds 2 weeks early)
+
+---
+
+### Secondary Priorities (after pricing implementation):
 1. **Finnhub Pricing Expansion** - Expand from 30 to 200+ bonds with pricing data
 2. **SDK Publication** - Publish `debtstack-ai` to PyPI for easy Python integration
 3. **Mintlify Docs Deployment** - Deploy docs to `docs.debtstack.ai`

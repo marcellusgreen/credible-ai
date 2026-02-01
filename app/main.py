@@ -17,6 +17,10 @@ import structlog
 from app.api.routes import router as api_router
 from app.api.primitives import router as primitives_router
 from app.api.auth import router as auth_router
+from app.api.pricing_api import router as pricing_router
+from app.api.historical_pricing import router as historical_pricing_router
+from app.api.export import router as export_router
+from app.api.usage import router as usage_router
 from app.core.config import get_settings
 from app.core.cache import check_rate_limit, DEFAULT_RATE_LIMIT, DEFAULT_RATE_WINDOW
 from app.core.monitoring import record_request, record_rate_limit_hit
@@ -197,8 +201,16 @@ async def rate_limit_middleware(request: Request, call_next):
 # Include Auth API
 app.include_router(auth_router, prefix="/v1")
 
-# Include Primitives API first (takes precedence for /companies, /bonds, /pricing)
+# Include Pricing API (public and authenticated endpoints)
+app.include_router(pricing_router, prefix="/v1")
+
+# Include Primitives API (takes precedence for /companies, /bonds, /pricing)
 app.include_router(primitives_router, prefix="/v1")
+
+# Include Business-only APIs
+app.include_router(historical_pricing_router, prefix="/v1")
+app.include_router(export_router, prefix="/v1")
+app.include_router(usage_router, prefix="/v1")
 
 # Include legacy API routes (company-specific endpoints like /companies/{ticker}/debt)
 app.include_router(api_router, prefix="/v1")

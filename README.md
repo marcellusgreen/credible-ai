@@ -37,7 +37,7 @@ Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
 
 ## Features
 
-- **Primitives API**: 9 core endpoints optimized for AI agents with field selection
+- **Primitives API**: 11 core endpoints optimized for AI agents with field selection
 - **Authentication**: API key auth with credit-based usage tracking
 - **Iterative QA Extraction**: 5 automated verification checks with targeted fixes until 85%+ quality threshold
 - **Individual Debt Instruments**: Each bond, note, and credit facility extracted separately (not just totals)
@@ -139,7 +139,10 @@ uvicorn app.main:app --reload
 
 ### 5. Get Your API Key
 
-Sign up at [debtstack.ai](https://debtstack.ai) to get your API key. Free tier includes 1,000 credits/month.
+Sign up at [debtstack.ai](https://debtstack.ai) to get your API key. Three pricing tiers available:
+- **Pay-as-You-Go**: $0/month, pay per API call ($0.05-$0.15)
+- **Pro**: $199/month, unlimited queries
+- **Business**: $499/month, full access + historical pricing + bulk export
 
 ### 6. Query
 

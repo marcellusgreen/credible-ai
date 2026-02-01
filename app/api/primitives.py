@@ -32,10 +32,14 @@ from sqlalchemy import select, func, or_, and_, desc, asc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.auth import (
+    require_auth, check_tier_access, get_endpoint_cost,
+    check_and_deduct_credits, normalize_tier,
+)
 from app.models import (
     Company, CompanyMetrics, CompanySnapshot, Entity, DebtInstrument,
     Guarantee, BondPricing, DocumentSection, ExtractionMetadata,
-    CompanyFinancials, Collateral, Covenant,
+    CompanyFinancials, Collateral, Covenant, User, UsageLog,
 )
 
 router = APIRouter()
@@ -3464,10 +3468,13 @@ async def compare_covenants(
     covenant_type: Optional[str] = Query(None, description="Covenant type: financial, negative, incurrence, protective"),
     # ETag support
     if_none_match: Optional[str] = Header(None, description="ETag for conditional request"),
+    user: User = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Compare covenants across multiple companies.
+
+    **Business tier only** - Returns 403 for Pay-as-You-Go and Pro users.
 
     Returns a side-by-side comparison of covenant data for the specified companies.
     Useful for peer analysis and relative value assessment.
@@ -3487,6 +3494,10 @@ async def compare_covenants(
     - Direct comparison of matching covenants
     - Covenant presence matrix (which company has which covenant)
     """
+    # Check Business tier access
+    allowed, error_msg = check_tier_access(user, "/v1/covenants/compare")
+    if not allowed:
+        raise HTTPException(status_code=403, detail=error_msg)
     ticker_list = parse_comma_list(ticker)
     if not ticker_list:
         raise HTTPException(

@@ -1017,8 +1017,12 @@ class User(Base):
     api_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)  # SHA-256 hash
     api_key_prefix: Mapped[str] = mapped_column(String(16), nullable=False)  # "ds_" + 8 hex chars for display
 
-    # Subscription tier: free, starter, growth, scale, enterprise
-    tier: Mapped[str] = mapped_column(String(20), default="free", nullable=False)
+    # Subscription tier: pay_as_you_go, pro, business
+    tier: Mapped[str] = mapped_column(String(20), default="pay_as_you_go", nullable=False)
+
+    # Tier-specific settings (can be overridden per-user)
+    rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
+    team_seats: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
     # Stripe billing
     stripe_customer_id: Mapped[Optional[str]] = mapped_column(String(255))
@@ -1042,16 +1046,35 @@ class User(Base):
     usage_logs: Mapped[list["UsageLog"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
+    team_members: Mapped[list["TeamMember"]] = relationship(
+        back_populates="owner", cascade="all, delete-orphan",
+        foreign_keys="TeamMember.owner_id"
+    )
+    coverage_requests: Mapped[list["CoverageRequest"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("ix_users_email", "email"),
         Index("ix_users_api_key_hash", "api_key_hash"),
         Index("ix_users_stripe_customer_id", "stripe_customer_id"),
+        Index("ix_users_tier", "tier"),
     )
 
 
 class UserCredits(Base):
-    """Credit balance and billing cycle tracking."""
+    """
+    Credit balance and billing cycle tracking.
+
+    For Pay-as-You-Go users:
+    - credits_remaining: Dollar balance available for API calls
+    - credits_purchased: Total dollars ever purchased
+    - credits_used: Total dollars ever consumed
+
+    For Pro/Business users:
+    - credits_remaining is effectively unlimited (set to large number)
+    - credits_monthly_limit is -1 (unlimited)
+    """
 
     __tablename__ = "user_credits"
 
@@ -1061,14 +1084,26 @@ class UserCredits(Base):
         primary_key=True,
     )
 
-    # Credit balance
+    # Credit balance (in dollars for Pay-as-You-Go, effectively unlimited for Pro/Business)
     credits_remaining: Mapped[Decimal] = mapped_column(
-        Numeric(12, 2), default=Decimal("1000"), nullable=False
+        Numeric(12, 2), default=Decimal("0"), nullable=False
     )
-    credits_monthly_limit: Mapped[int] = mapped_column(Integer, default=1000, nullable=False)
+    credits_monthly_limit: Mapped[int] = mapped_column(Integer, default=0, nullable=False)  # -1 = unlimited
     overage_credits_used: Mapped[Decimal] = mapped_column(
         Numeric(12, 2), default=Decimal("0"), nullable=False
     )
+
+    # Pay-as-You-Go tracking (in dollars)
+    credits_purchased: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), default=Decimal("0"), nullable=False
+    )
+    credits_used: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), default=Decimal("0"), nullable=False
+    )
+
+    # Purchase timestamps
+    last_credit_purchase: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_credit_usage: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     # Billing cycle
     billing_cycle_start: Mapped[date] = mapped_column(Date, nullable=False)
@@ -1104,6 +1139,10 @@ class UsageLog(Base):
     method: Mapped[str] = mapped_column(String(10), nullable=False)  # GET, POST
     credits_used: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
 
+    # Cost tracking for Pay-as-You-Go
+    cost_usd: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 4))  # Actual dollar cost
+    tier_at_time_of_request: Mapped[Optional[str]] = mapped_column(String(20))  # User's tier when request was made
+
     # Response
     response_status: Mapped[Optional[int]] = mapped_column(Integer)
     response_time_ms: Mapped[Optional[int]] = mapped_column(Integer)
@@ -1125,6 +1164,7 @@ class UsageLog(Base):
         Index("ix_usage_log_user_date", "user_id", "created_at"),
         Index("ix_usage_log_created_at", "created_at"),
         Index("ix_usage_log_endpoint", "endpoint"),
+        Index("ix_usage_log_tier", "tier_at_time_of_request"),
     )
 
 
@@ -1332,4 +1372,166 @@ class Covenant(Base):
         Index("idx_covenants_name", "covenant_name"),
         Index("idx_covenants_metric", "test_metric"),
         Index("idx_covenants_company_type", "company_id", "covenant_type"),
+    )
+
+
+# =============================================================================
+# THREE-TIER PRICING TABLES
+# =============================================================================
+
+
+class BondPricingHistory(Base):
+    """
+    Historical bond pricing snapshots (Business tier only).
+
+    Stores daily price snapshots for all bonds with CUSIPs.
+    Used for historical analysis and trend visualization.
+    """
+
+    __tablename__ = "bond_pricing_history"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    debt_instrument_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("debt_instruments.id", ondelete="CASCADE"), nullable=False
+    )
+    cusip: Mapped[Optional[str]] = mapped_column(String(9))
+
+    # Snapshot date
+    price_date: Mapped[date] = mapped_column(Date, nullable=False)
+
+    # Pricing (same format as bond_pricing)
+    price: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 4))  # Clean price as % of par
+    ytm_bps: Mapped[Optional[int]] = mapped_column(Integer)  # Yield to maturity in bps
+    spread_bps: Mapped[Optional[int]] = mapped_column(Integer)  # Spread over treasury
+    volume: Mapped[Optional[int]] = mapped_column(BigInteger)  # Daily volume in cents
+
+    # Source tracking
+    price_source: Mapped[str] = mapped_column(String(20), default="TRACE")
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    # Relationships
+    debt_instrument: Mapped["DebtInstrument"] = relationship(
+        backref="pricing_history"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("debt_instrument_id", "price_date", name="uq_bond_pricing_history_instrument_date"),
+        Index("idx_bond_pricing_history_instrument", "debt_instrument_id"),
+        Index("idx_bond_pricing_history_cusip", "cusip"),
+        Index("idx_bond_pricing_history_date", "price_date"),
+        Index("idx_bond_pricing_history_cusip_date", "cusip", "price_date"),
+    )
+
+
+class TeamMember(Base):
+    """
+    Team member accounts for Business tier multi-seat feature.
+
+    Business tier includes 5 seats. Team owner invites members who get
+    their own API keys but share the team's credit pool.
+    """
+
+    __tablename__ = "team_members"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    owner_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    member_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+
+    # Member role: admin (can invite/remove), member (API access only)
+    role: Mapped[str] = mapped_column(String(20), default="member", nullable=False)
+
+    # Status
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # Invitation tracking
+    invited_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    accepted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    # Relationships
+    owner: Mapped["User"] = relationship(
+        back_populates="team_members",
+        foreign_keys=[owner_id]
+    )
+    member: Mapped["User"] = relationship(
+        foreign_keys=[member_id]
+    )
+
+    __table_args__ = (
+        UniqueConstraint("owner_id", "member_id", name="uq_team_members_owner_member"),
+        Index("idx_team_members_owner", "owner_id"),
+        Index("idx_team_members_member", "member_id"),
+    )
+
+
+class CoverageRequest(Base):
+    """
+    Custom company coverage requests (Business tier only).
+
+    Business users can request coverage for specific companies
+    not currently in the database.
+    """
+
+    __tablename__ = "coverage_requests"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+
+    # Company details
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    ticker: Mapped[Optional[str]] = mapped_column(String(20))
+    cik: Mapped[Optional[str]] = mapped_column(String(20))
+
+    # Request details
+    priority: Mapped[str] = mapped_column(String(20), default="normal")  # urgent, high, normal, low
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+
+    # Status: pending, in_progress, completed, rejected
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    status_notes: Mapped[Optional[str]] = mapped_column(Text)
+
+    # Completion tracking
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    completed_company_id: Mapped[Optional[UUID]] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("companies.id", ondelete="SET NULL")
+    )
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    # Relationships
+    user: Mapped["User"] = relationship(back_populates="coverage_requests")
+    completed_company: Mapped[Optional["Company"]] = relationship()
+
+    __table_args__ = (
+        Index("idx_coverage_requests_user", "user_id"),
+        Index("idx_coverage_requests_status", "status"),
+        Index("idx_coverage_requests_priority", "priority"),
     )
