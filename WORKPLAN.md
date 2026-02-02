@@ -1659,6 +1659,58 @@ When starting a new session, read this file first, then:
 
 ## Session Log
 
+### 2026-02-02 (Session 28) - SEC URL Backfill & URL Mismatch Prevention
+
+**Objective:** Backfill missing SEC filing URLs and fix extraction code to prevent URL mismatches.
+
+**Part 1: SEC URL Coverage Analysis**
+- ✅ Audited `document_sections` table for `sec_filing_url` coverage
+- ✅ Initial coverage: 12,677 / 13,769 sections (92.1%)
+- ✅ 1,092 sections missing URLs
+
+**Part 2: URL Backfill**
+- ✅ Found existing `scripts/backfill_sec_urls.py` script
+- ✅ Initial run showed 0 matches - matching logic wasn't working
+- ✅ Fixed `match_section_to_url()` to use simpler doc_type + date matching
+- ✅ Ran backfill on all companies with missing URLs
+- ✅ Final coverage: 13,717 / 13,769 sections (99.6%)
+
+**Part 3: URL Quality Verification**
+- ✅ Created spot check script to verify 20 random URLs
+- ✅ Initial check showed ~35% success - content matching was too strict
+- ✅ Discovered content IS in URLs but wrapped in XBRL/XML tags
+- ✅ Improved phrase matching showed ~65% match rate
+- ✅ Root cause analysis revealed exhibit sections getting parent filing URLs:
+  - `exhibit_21`: 93% correct
+  - `exhibit_22`: 71% correct (29% pointing to wrong doc)
+  - `indenture`: 87% correct (13% wrong)
+  - `credit_agreement`: 72% correct (28% wrong)
+
+**Part 4: Prevention Code Updates**
+- ✅ Updated `CLAUDE.md` with new "SEC Filing URL Issues" troubleshooting section
+- ✅ Documented SEC URL Architecture (filing key patterns, section-to-URL mapping)
+- ✅ Added `_find_best_url_for_section()` helper to `section_extraction.py`
+- ✅ Updated `backfill_sec_urls.py` with Strategy 0 to prioritize exhibit URLs
+
+**Key Fix:** Exhibit-based sections (exhibit_21, indenture, credit_agreement) were getting the parent filing URL (10-K, 8-K) instead of the exhibit-specific URL. Fixed by:
+1. Looking for exhibit-specific URLs first (keys like `indenture_{date}_EX-4_1`)
+2. Only falling back to parent filing URL if no exhibit URL found
+
+**Files Modified:**
+| File | Changes |
+|------|---------|
+| `CLAUDE.md` | Added SEC Filing URL Issues section, SEC URL Architecture documentation |
+| `app/services/section_extraction.py` | Added `_find_best_url_for_section()` helper function |
+| `scripts/backfill_sec_urls.py` | Added Strategy 0 for exhibit URL priority, fuzzy date matching |
+
+**Coverage Change:**
+| Metric | Before | After |
+|--------|--------|-------|
+| Sections with URL | 12,677 (92.1%) | 13,717 (99.6%) |
+| Sections missing URL | 1,092 | 52 |
+
+---
+
 ### 2026-01-28 (Session 27) - Service Module Refactoring & Website Demo Planning
 
 **Objective:** Refactor extraction logic into service modules, plan website demos.

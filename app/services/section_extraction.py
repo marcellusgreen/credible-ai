@@ -500,12 +500,67 @@ async def extract_and_store_sections(
             sec_filing_url=sec_url,
         )
 
+        # Post-process: Match section types to their specific exhibit URLs
+        # When extracting from main filings (10-K, 10-Q), some sections should
+        # use exhibit-specific URLs if available
+        if sections and filing_urls:
+            for section in sections:
+                better_url = _find_best_url_for_section(
+                    section.section_type, date_str, filing_urls, sec_url
+                )
+                if better_url:
+                    section.sec_filing_url = better_url
+
         # Store sections
         if sections:
             count = await store_sections(db, company_id, sections)
             total_stored += count
 
     return total_stored
+
+
+def _find_best_url_for_section(
+    section_type: str,
+    date_str: str,
+    filing_urls: dict[str, str],
+    fallback_url: Optional[str],
+) -> Optional[str]:
+    """
+    Find the best URL for a section based on its type.
+
+    For exhibit-based sections (exhibit_21, indenture, credit_agreement),
+    prefer the exhibit-specific URL over the parent filing URL.
+
+    Args:
+        section_type: Type of section (e.g., "exhibit_21", "indenture")
+        date_str: Filing date string (YYYY-MM-DD)
+        filing_urls: Dict of all available URLs keyed by filing key
+        fallback_url: Default URL to use if no better match found
+
+    Returns:
+        Best URL for this section type, or fallback_url
+    """
+    # Map section types to their preferred URL key prefixes
+    section_to_prefix = {
+        "exhibit_21": "exhibit_21_",
+        "exhibit_22": "exhibit_22_",
+        "indenture": "indenture_",
+        "credit_agreement": "credit_agreement_",
+    }
+
+    prefix = section_to_prefix.get(section_type)
+    if not prefix:
+        # For other section types (debt_footnote, mda_liquidity, etc.),
+        # the main filing URL is correct
+        return fallback_url
+
+    # Look for exhibit-specific URL matching this date
+    for key, url in filing_urls.items():
+        if key.startswith(prefix) and date_str in key:
+            return url
+
+    # No exhibit-specific URL found, use fallback
+    return fallback_url
 
 
 async def get_company_sections(

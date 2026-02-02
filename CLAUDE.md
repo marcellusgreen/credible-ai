@@ -901,6 +901,42 @@ See `docs/operations/QA_TROUBLESHOOTING.md` for detailed debugging guides.
 2. Verify the extraction matches the source document
 3. Consider that comparison data (financials) may be stale or from different period
 
+### SEC Filing URL Issues
+
+| Symptom | Root Cause | Solution |
+|---------|------------|----------|
+| `sec_filing_url` points to main 10-K/10-Q instead of exhibit | Section extracted from exhibit content but got parent filing URL | Use exhibit-specific URL from `filing_urls` dict with keys like `exhibit_21_{date}`, `indenture_{date}_EX-4_1` |
+| URL returns empty page or directory listing | URL is iXBRL wrapper requiring JS, or accession number format wrong | Fetch the filing's `index.json` to find actual exhibit filenames |
+| Content doesn't match fetched URL | URL is correct but content is XBRL-wrapped; phrase matching fails on XML tags | Content IS in the page - search for distinctive phrases, not single words |
+
+**SEC URL Architecture:**
+
+The SEC client (`app/services/sec_client.py`) returns two dicts from `get_all_relevant_filings()`:
+- `filings_content`: Dict of filing key → content (cleaned text)
+- `filing_urls`: Dict of filing key → SEC EDGAR URL
+
+**Filing keys follow these patterns:**
+| Key Pattern | Document Type | Example |
+|-------------|---------------|---------|
+| `10-K_{date}` | Main 10-K filing | `10-K_2024-02-15` |
+| `10-Q_{date}` | Main 10-Q filing | `10-Q_2024-11-05` |
+| `8-K_{date}` | Main 8-K filing | `8-K_2024-01-10` |
+| `exhibit_21_{date}` | Exhibit 21 (subsidiaries) | `exhibit_21_2024-02-15` |
+| `indenture_{date}_{exhibit}` | Indenture (EX-4.x) | `indenture_2024-01-10_EX-4_2` |
+| `credit_agreement_{date}_{exhibit}` | Credit agreement (EX-10.x) | `credit_agreement_2024-01-10_EX-10_1` |
+
+**Critical Rule for URL Assignment:**
+When extracting sections, ALWAYS match the section type to the appropriate URL:
+- `exhibit_21` sections → use `exhibit_21_{date}` URL (not `10-K_{date}`)
+- `indenture` sections → use `indenture_{date}_*` URL (not `8-K_{date}`)
+- `credit_agreement` sections → use `credit_agreement_{date}_*` URL
+- `debt_footnote`, `mda_liquidity`, `covenants` from 10-K/10-Q → use main filing URL (correct)
+
+**Backfill Script (`scripts/backfill_sec_urls.py`):**
+- Looks up SEC EDGAR API to find filing URLs for documents missing `sec_filing_url`
+- Falls back to main filing URL if exhibit URL not found (acceptable but not ideal)
+- Run with `--dry-run` first, then `--all` to backfill
+
 ## Cost
 
 | Stage | Cost |
