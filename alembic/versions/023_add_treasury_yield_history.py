@@ -1,7 +1,7 @@
 """Add treasury_yield_history table
 
 Revision ID: 023_add_treasury_yield_history
-Revises: 022_three_tier_pricing
+Revises: 022
 Create Date: 2026-02-02
 
 """
@@ -11,7 +11,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision = '023_add_treasury_yield_history'
-down_revision = '022_three_tier_pricing'
+down_revision = '022'
 branch_labels = None
 depends_on = None
 
