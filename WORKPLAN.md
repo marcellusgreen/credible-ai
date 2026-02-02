@@ -1,10 +1,10 @@
 # DebtStack Work Plan
 
-Last Updated: 2026-02-01
+Last Updated: 2026-02-02
 
 ## Current Status
 
-**Database**: 201 companies | 5,374 entities | 2,485 debt instruments | 591 with CUSIP/ISIN | 30 priced bonds | 7,700+ document sections (4,877 indentures, 2,889 credit agreements) | 600+ financials | 4,881 guarantees | 230 collateral records | 1,181 covenants
+**Database**: 201 companies | 5,374 entities | 3,056 debt instruments | 591 with CUSIP/ISIN | 30 priced bonds | 13,862 document sections | 600+ financials | 3,831 guarantees | 626 collateral records | 1,181 covenants | 13,970 treasury yields
 **Deployment**: Live at `https://credible-ai-production.up.railway.app`
 **Infrastructure**: Railway + Neon PostgreSQL + Upstash Redis (complete)
 **Leverage Coverage**: 155/189 companies (82%) - good coverage across all sectors
@@ -30,8 +30,11 @@ Last Updated: 2026-02-01
 2. Update Railway environment variables with actual price IDs
 3. Test checkout flows end-to-end
 
-### Then: Daily Pricing Collection
-Set up Railway cron job for `scripts/collect_daily_pricing.py` to populate `bond_pricing_history` for Business tier.
+### Then: Historical Pricing Backfill
+Once Finnhub premium is configured:
+1. Backfill bond pricing history: `python scripts/backfill_pricing_history.py --all --days 1095`
+2. With spreads (using treasury yields): `python scripts/backfill_pricing_history.py --all --with-spreads`
+3. Set up Railway cron job for `scripts/collect_daily_pricing.py`
 
 ---
 
@@ -295,17 +298,25 @@ Add functions:
 
 ---
 
-### Phase 6: Daily Pricing Collection (Week 2)
-**Status**: ⬜ TODO (requires historical data collection script)
+### Phase 6: Historical Pricing Infrastructure (Week 2)
+**Status**: ✅ COMPLETED (2026-02-02)
 
-#### 6.1 Create `scripts/collect_daily_pricing.py`
-- Run daily to collect current pricing for all bonds with CUSIPs
-- Store in `bond_pricing_history` table
-- Track source (finnhub/trace)
+#### 6.1 Treasury Yield History
+- ✅ Created `TreasuryYieldHistory` model in `app/models/schema.py`
+- ✅ Created `app/services/treasury_yields.py` service (fetches from Treasury.gov)
+- ✅ Created migration `023_add_treasury_yield_history.py`
+- ✅ Created `scripts/backfill_treasury_yields.py` CLI script
+- ✅ Backfilled 13,970 treasury yield records (2021-01-04 to 2026-02-02)
+- ✅ All 11 benchmarks covered: 1M, 3M, 6M, 1Y, 2Y, 3Y, 5Y, 7Y, 10Y, 20Y, 30Y
 
-#### 6.2 Set up Railway cron job
-- Run daily at 6 PM ET (after market close)
-- `0 23 * * * cd /app && python scripts/collect_daily_pricing.py`
+#### 6.2 Bond Pricing History Service
+- ✅ Created `app/services/pricing_history.py` service (modular, efficient)
+- ✅ Created `scripts/backfill_pricing_history.py` CLI script
+- ✅ Created `scripts/collect_daily_pricing.py` for daily snapshots
+- ✅ Added `--with-spreads` flag to use historical treasury yields for accurate spread calculations
+- ⬜ TODO: Configure Finnhub premium API key
+- ⬜ TODO: Run bond pricing backfill once API key available
+- ⬜ TODO: Set up Railway cron job (daily at 6 PM ET)
 
 ---
 
@@ -1658,6 +1669,80 @@ When starting a new session, read this file first, then:
 ---
 
 ## Session Log
+
+### 2026-02-02 (Session 29) - Treasury Yield History & Bond Pricing Infrastructure
+
+**Objective:** Build infrastructure for historical bond pricing with accurate spread calculations.
+
+**Part 1: Treasury Yield History**
+- ✅ Created `TreasuryYieldHistory` model in `app/models/schema.py`
+- ✅ Created `app/services/treasury_yields.py` service:
+  - `parse_treasury_gov_csv()` - Parse Treasury.gov CSV format
+  - `fetch_treasury_gov_yields()` - Fetch by year from Treasury.gov (free, public data)
+  - `fetch_finnhub_yield_curve()` - Alternative Finnhub source
+  - `bulk_insert_yields()` - Batch upsert for efficiency
+  - `backfill_treasury_yields()` - Multi-year backfill
+  - `get_treasury_yield_for_date()` - Single date/benchmark lookup
+  - `get_treasury_curve_for_date()` - Full curve for a date
+- ✅ Created migration `023_add_treasury_yield_history.py`
+- ✅ Created `scripts/backfill_treasury_yields.py` CLI script
+- ✅ Ran migration and backfilled 13,970 records (2021-2026)
+
+**Part 2: Bond Pricing History Service**
+- ✅ Refactored `app/services/pricing_history.py` into modular service:
+  - Dataclasses: `PricePoint`, `FetchResult`, `BackfillResult`, `SnapshotStats`, `HistoryStats`
+  - `parse_finnhub_candles()` - Parse Finnhub API response
+  - `fetch_historical_candles()` - Fetch from Finnhub bond/price endpoint
+  - `calculate_ytm_for_price()` - Sync YTM calculation (moved from async)
+  - `calculate_spread_for_price()` - NEW: Spread using historical treasury yields
+  - `bulk_insert_history()` - Batch upsert (100 records at a time)
+  - `save_historical_prices()` - Orchestrates filtering, YTM calc, spread calc, bulk insert
+  - `backfill_bond_history()` - Single bond backfill with optional treasury_curves param
+  - `copy_current_to_history()` - Daily snapshot for cron job
+- ✅ Created `scripts/backfill_pricing_history.py` CLI with options:
+  - `--all` / `--ticker` - Process all or single company
+  - `--days` - History period (default: 1095 = 3 years)
+  - `--skip-yields` - Faster backfill without YTM calculation
+  - `--with-spreads` - Calculate spreads using historical treasury yields
+  - `--resume-from` - Resume from specific ISIN
+  - `--dry-run` - Preview without saving
+- ✅ Created `scripts/collect_daily_pricing.py` for daily cron job
+
+**Part 3: Spread Calculation Enhancement**
+- ✅ Added `calculate_spread_for_price()` function using historical treasury yields
+- ✅ Uses `select_treasury_benchmark()` to match bond maturity to appropriate treasury
+- ✅ Historical spreads now accurate (not using current yields for old prices)
+
+**Files Created:**
+| File | Purpose |
+|------|---------|
+| `app/services/treasury_yields.py` | Treasury yield fetching and storage service |
+| `alembic/versions/023_add_treasury_yield_history.py` | Migration for treasury_yield_history table |
+| `scripts/backfill_treasury_yields.py` | CLI for treasury yield backfill |
+| `scripts/collect_daily_pricing.py` | Daily cron job for pricing snapshots |
+
+**Files Modified:**
+| File | Changes |
+|------|---------|
+| `app/models/schema.py` | Added `TreasuryYieldHistory` model |
+| `app/models/__init__.py` | Added `TreasuryYieldHistory` export |
+| `app/services/pricing_history.py` | Added `calculate_spread_for_price()`, treasury_curves param |
+| `scripts/backfill_pricing_history.py` | Added `--with-spreads` flag, treasury curve loading |
+
+**Treasury Yield Coverage:**
+| Metric | Value |
+|--------|-------|
+| Total records | 13,970 |
+| Unique dates | 1,270 trading days |
+| Date range | 2021-01-04 to 2026-02-02 |
+| Benchmarks | 1M, 3M, 6M, 1Y, 2Y, 3Y, 5Y, 7Y, 10Y, 20Y, 30Y (all 11) |
+
+**Next Steps:**
+1. Configure Finnhub premium API key in Railway
+2. Run bond pricing backfill: `python scripts/backfill_pricing_history.py --all --with-spreads`
+3. Set up Railway cron job for daily pricing collection
+
+---
 
 ### 2026-02-02 (Session 28) - SEC URL Backfill & URL Mismatch Prevention
 

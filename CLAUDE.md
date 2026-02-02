@@ -124,6 +124,8 @@ This separation keeps business logic testable and reusable while scripts handle 
 | `app/services/qa_agent.py` | 5-check QA verification |
 | `app/services/tiered_extraction.py` | LLM clients and prompts |
 | `app/services/financial_extraction.py` | Financial statements with TTM support |
+| `app/services/pricing_history.py` | Bond pricing history backfill and daily snapshots |
+| `app/services/treasury_yields.py` | Treasury yield curve history from Treasury.gov |
 | `scripts/extract_iterative.py` | Complete extraction pipeline CLI (thin wrapper) |
 | `scripts/recompute_metrics.py` | Metrics recomputation CLI (thin wrapper) |
 | `scripts/script_utils.py` | Shared CLI utilities (DB sessions, parsers, progress) |
@@ -156,6 +158,7 @@ This separation keeps business logic testable and reusable while scripts handle 
 
 **Pricing Tables** (Three-Tier System):
 - `bond_pricing_history`: Historical bond pricing snapshots (Business tier only)
+- `treasury_yield_history`: Historical US Treasury yield curves for spread calculations (1M-30Y tenors, 2021-present)
 - `team_members`: Business tier multi-seat team management
 - `coverage_requests`: Business tier custom company coverage requests
 
@@ -644,11 +647,13 @@ Bond pricing data comes from Finnhub, which sources from FINRA TRACE (same data 
 ### Data Flow
 
 ```
-Finnhub API (FINRA TRACE)
-    ↓
-scripts/update_pricing.py (daily batch)
-    ↓
-bond_pricing table (current prices)
+Finnhub API (FINRA TRACE)           Treasury.gov
+    ↓                                    ↓
+scripts/update_pricing.py           scripts/backfill_treasury_yields.py
+    ↓                                    ↓
+bond_pricing table (current)        treasury_yield_history table
+    ↓                                    ↓
+scripts/collect_daily_pricing.py ←──────┘ (for spread calc)
     ↓
 bond_pricing_history table (daily snapshots)
 ```
@@ -685,6 +690,13 @@ bond_pricing_history table (daily snapshots)
 - `price_date`: Date of snapshot
 - `price`, `ytm_bps`, `spread_bps`, `volume`
 - Unique constraint on (debt_instrument_id, price_date)
+
+**`treasury_yield_history`** - Historical treasury yield curves:
+- `yield_date`: Date of yield curve
+- `benchmark`: Tenor (1M, 3M, 6M, 1Y, 2Y, 3Y, 5Y, 7Y, 10Y, 20Y, 30Y)
+- `yield_pct`: Yield as percentage (e.g., 4.25 for 4.25%)
+- `source`: "treasury.gov" or "finnhub"
+- Coverage: 13,970 records from 2021-01-04 to present
 
 ### API Exposure
 
@@ -724,9 +736,33 @@ python scripts/update_pricing.py --all
 # Update single company
 python scripts/update_pricing.py --ticker CHTR
 
-# Backfill historical data (optional)
-python scripts/backfill_pricing_history.py --days 365
+# Backfill treasury yields (free from Treasury.gov)
+python scripts/backfill_treasury_yields.py --from-year 2021 --to-year 2026
+python scripts/backfill_treasury_yields.py --stats  # Check coverage
+
+# Backfill historical bond pricing (requires Finnhub premium)
+python scripts/backfill_pricing_history.py --all --days 1095  # 3 years
+python scripts/backfill_pricing_history.py --all --with-spreads  # Use historical treasury yields
+python scripts/backfill_pricing_history.py --ticker CHTR --skip-yields  # Faster, no YTM calc
+
+# Daily pricing collection (for cron job)
+python scripts/collect_daily_pricing.py --all
 ```
+
+### Services
+
+**`app/services/pricing_history.py`** - Bond pricing history service:
+- `fetch_historical_candles()` - Fetch from Finnhub
+- `calculate_ytm_for_price()` - Sync YTM calculation
+- `calculate_spread_for_price()` - Spread using historical treasury yields
+- `backfill_bond_history()` - Single bond backfill
+- `copy_current_to_history()` - Daily snapshot
+
+**`app/services/treasury_yields.py`** - Treasury yield service:
+- `fetch_treasury_gov_yields()` - Fetch from Treasury.gov by year (free)
+- `backfill_treasury_yields()` - Multi-year backfill
+- `get_treasury_yield_for_date()` - Single date/benchmark lookup
+- `get_treasury_curve_for_date()` - Full curve for a date
 
 ## Environment Variables
 

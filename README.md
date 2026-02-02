@@ -19,7 +19,7 @@ Corporate structure and debt analysis is complex. Even with AI, achieving accura
 
 ## Current Database
 
-**201 companies | 5,374 entities | 3,056 debt instruments | 591 with CUSIP/ISIN | 13,862 document sections | 3,831 guarantees | 626 collateral records**
+**201 companies | 5,374 entities | 3,056 debt instruments | 591 with CUSIP/ISIN | 13,862 document sections | 3,831 guarantees | 626 collateral records | 13,970 treasury yields**
 
 Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
 
@@ -49,6 +49,7 @@ Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
 - **Financial Statements**: Quarterly income statement, balance sheet, cash flow from 10-Q/10-K
 - **Credit Ratios**: Leverage, interest coverage, margins, liquidity metrics
 - **Bond Pricing**: YTM and spread-to-treasury calculations (Finnhub/FINRA TRACE)
+- **Treasury Yield History**: 5+ years of daily US Treasury yields (1M-30Y tenors) for accurate historical spread analysis
 - **Document Search**: Full-text search across 4,957 indentures and 2,946 credit agreements
 - **Pre-computed Responses**: Sub-second API serving via cached JSON with ETag support
 
@@ -458,6 +459,12 @@ python scripts/recompute_metrics.py
 
 # Extract ownership hierarchy from Exhibit 21 HTML indentation
 python scripts/extract_exhibit21_hierarchy.py --ticker CHTR --save-db
+
+# Backfill treasury yields (free from Treasury.gov, needed for spread calculations)
+python scripts/backfill_treasury_yields.py --from-year 2021 --to-year 2026
+
+# Backfill historical bond pricing (requires Finnhub premium)
+python scripts/backfill_pricing_history.py --all --days 1095 --with-spreads
 ```
 
 The extraction pipeline is **idempotent** - safe to re-run on existing companies:
@@ -511,7 +518,9 @@ credible/
 │       ├── collateral_extraction.py # Collateral for secured debt
 │       ├── qa_agent.py              # 5-check verification system
 │       ├── financial_extraction.py  # Quarterly financials
-│       └── bond_pricing.py          # Pricing calculations
+│       ├── bond_pricing.py          # Pricing calculations
+│       ├── pricing_history.py       # Historical pricing backfill
+│       └── treasury_yields.py       # Treasury yield curves
 ├── scripts/                       # CLI tools
 ├── alembic/                       # Database migrations
 ├── docs/                          # Documentation
