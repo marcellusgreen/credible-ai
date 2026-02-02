@@ -1429,6 +1429,46 @@ class BondPricingHistory(Base):
     )
 
 
+class TreasuryYieldHistory(Base):
+    """
+    Historical US Treasury yield curve data.
+
+    Stores daily treasury yields for spread calculations on historical
+    bond prices. Benchmarks: 1M, 3M, 6M, 1Y, 2Y, 3Y, 5Y, 7Y, 10Y, 20Y, 30Y.
+
+    Data sources: Treasury.gov or Finnhub bond yield curve API.
+    """
+
+    __tablename__ = "treasury_yield_history"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+
+    # Date of the yield curve
+    yield_date: Mapped[date] = mapped_column(Date, nullable=False)
+
+    # Benchmark tenor (e.g., "1M", "3M", "6M", "1Y", "2Y", "5Y", "10Y", "30Y")
+    benchmark: Mapped[str] = mapped_column(String(5), nullable=False)
+
+    # Yield as percentage (e.g., 4.25 for 4.25%)
+    yield_pct: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=False)
+
+    # Source tracking
+    source: Mapped[str] = mapped_column(String(20), default="treasury.gov")
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("yield_date", "benchmark", name="uq_treasury_yield_date_benchmark"),
+        Index("idx_treasury_yield_date", "yield_date"),
+        Index("idx_treasury_yield_benchmark", "benchmark"),
+    )
+
+
 class TeamMember(Base):
     """
     Team member accounts for Business tier multi-seat feature.

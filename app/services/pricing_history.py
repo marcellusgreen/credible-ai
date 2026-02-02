@@ -24,7 +24,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from app.models import DebtInstrument, Company, BondPricing, BondPricingHistory
 from app.services.bond_pricing import FINNHUB_API_KEY, FINNHUB_BASE_URL
-from app.services.yield_calculation import calculate_ytm
+from app.services.yield_calculation import calculate_ytm, select_treasury_benchmark
 
 
 # Default backfill period (3 years - limit of FINRA TRACE intraday data)
@@ -186,6 +186,48 @@ def calculate_ytm_for_price(
         return None
 
 
+def calculate_spread_for_price(
+    ytm_bps: int,
+    maturity_date: date,
+    price_date: date,
+    treasury_curve: dict[str, Decimal],
+) -> Optional[int]:
+    """
+    Calculate spread to treasury in basis points using historical treasury yields.
+
+    Args:
+        ytm_bps: Bond yield to maturity in basis points
+        maturity_date: Bond maturity date
+        price_date: Date of the price observation
+        treasury_curve: Dict of benchmark -> yield_pct for the price date
+
+    Returns:
+        Spread in basis points, or None if calculation fails
+    """
+    if not ytm_bps or not maturity_date or not treasury_curve:
+        return None
+
+    try:
+        # Calculate years to maturity from price date
+        years_to_maturity = (maturity_date - price_date).days / 365.25
+
+        # Select appropriate benchmark
+        benchmark = select_treasury_benchmark(years_to_maturity)
+
+        # Get treasury yield for that benchmark
+        treasury_yield = treasury_curve.get(benchmark)
+        if treasury_yield is None:
+            return None
+
+        # Calculate spread: bond yield - treasury yield (both in bps)
+        ytm_pct = ytm_bps / 100  # convert to percentage
+        spread_bps = int((ytm_pct - float(treasury_yield)) * 100)
+
+        return spread_bps
+    except Exception:
+        return None
+
+
 async def get_bonds_with_isin(
     session: AsyncSession,
     ticker: str = None,
@@ -286,6 +328,7 @@ async def save_historical_prices(
     maturity_date: date = None,
     existing_dates: set[date] = None,
     calculate_yields: bool = True,
+    treasury_curves: dict[date, dict[str, Decimal]] = None,
 ) -> int:
     """
     Save historical prices to bond_pricing_history table.
@@ -301,6 +344,7 @@ async def save_historical_prices(
         maturity_date: Maturity date for YTM calculation
         existing_dates: Set of dates to skip (already in DB)
         calculate_yields: Whether to calculate YTM (slower but more complete)
+        treasury_curves: Dict of date -> {benchmark -> yield_pct} for spread calculation
 
     Returns:
         Count of records inserted/updated
@@ -310,6 +354,9 @@ async def save_historical_prices(
 
     if existing_dates is None:
         existing_dates = set()
+
+    if treasury_curves is None:
+        treasury_curves = {}
 
     # Filter out dates we already have
     new_prices = [p for p in prices if p.price_date not in existing_dates]
@@ -321,8 +368,16 @@ async def save_historical_prices(
     records = []
     for p in new_prices:
         ytm_bps = None
+        spread_bps = None
+
         if calculate_yields and coupon_rate and maturity_date:
             ytm_bps = calculate_ytm_for_price(p.price, coupon_rate, maturity_date, p.price_date)
+
+            # Calculate spread if we have treasury curve for this date
+            if ytm_bps is not None and p.price_date in treasury_curves:
+                spread_bps = calculate_spread_for_price(
+                    ytm_bps, maturity_date, p.price_date, treasury_curves[p.price_date]
+                )
 
         records.append({
             "debt_instrument_id": debt_instrument_id,
@@ -330,7 +385,7 @@ async def save_historical_prices(
             "price_date": p.price_date,
             "price": p.price,
             "ytm_bps": ytm_bps,
-            "spread_bps": None,  # Would need historical treasury yields
+            "spread_bps": spread_bps,
             "volume": p.volume,
             "price_source": "Finnhub",
         })
@@ -352,6 +407,7 @@ async def backfill_bond_history(
     client: httpx.AsyncClient,
     dry_run: bool = False,
     calculate_yields: bool = True,
+    treasury_curves: dict[date, dict[str, Decimal]] = None,
 ) -> BackfillResult:
     """
     Backfill historical prices for a single bond.
@@ -364,6 +420,7 @@ async def backfill_bond_history(
         client: httpx client for API calls
         dry_run: If True, don't save to database
         calculate_yields: Whether to calculate YTM for each price
+        treasury_curves: Dict of date -> {benchmark -> yield_pct} for spread calculation
 
     Returns:
         BackfillResult with statistics
@@ -408,6 +465,7 @@ async def backfill_bond_history(
         maturity_date=bond.maturity_date,
         existing_dates=existing_dates,
         calculate_yields=calculate_yields,
+        treasury_curves=treasury_curves,
     )
 
     await session.commit()

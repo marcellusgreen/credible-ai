@@ -39,6 +39,7 @@ from app.services.pricing_history import (
     DEFAULT_BACKFILL_DAYS,
 )
 from app.services.bond_pricing import FINNHUB_API_KEY, REQUEST_DELAY
+from app.services.treasury_yields import get_treasury_yield_stats
 
 load_dotenv()
 
@@ -56,6 +57,8 @@ async def main():
     parser.add_argument("--resume-from", help="Resume from specific ISIN")
     parser.add_argument("--skip-yields", action="store_true",
                         help="Skip YTM calculation (faster backfill)")
+    parser.add_argument("--with-spreads", action="store_true",
+                        help="Calculate spreads using historical treasury yields (requires treasury data)")
     parser.add_argument("--stats", action="store_true", help="Show current statistics only")
 
     args = parser.parse_args()
@@ -112,9 +115,36 @@ async def main():
     print(f"Date range: {from_date} to {to_date} ({args.days} days)")
     print(f"Dry run: {args.dry_run}")
     print(f"Calculate YTM: {not args.skip_yields}")
+    print(f"Calculate spreads: {args.with_spreads}")
     if args.resume_from:
         print(f"Resuming from: {args.resume_from}")
     print()
+
+    # Load treasury curves if requested
+    treasury_curves = {}
+    if args.with_spreads and not args.skip_yields:
+        print("Loading historical treasury yields...")
+        async with async_session() as session:
+            treasury_stats = await get_treasury_yield_stats(session)
+            if treasury_stats.total_records == 0:
+                print("  WARNING: No treasury yield data found!")
+                print("  Run: python scripts/backfill_treasury_yields.py --from-year 2021")
+                print("  Continuing without spread calculations...")
+            else:
+                # Load all treasury curves for the date range
+                from app.models import TreasuryYieldHistory
+                from sqlalchemy import select
+                result = await session.execute(
+                    select(TreasuryYieldHistory)
+                    .where(TreasuryYieldHistory.yield_date >= from_date)
+                    .where(TreasuryYieldHistory.yield_date <= to_date)
+                )
+                for row in result.scalars().all():
+                    if row.yield_date not in treasury_curves:
+                        treasury_curves[row.yield_date] = {}
+                    treasury_curves[row.yield_date][row.benchmark] = row.yield_pct
+                print(f"  Loaded {len(treasury_curves)} days of treasury data")
+        print()
 
     # Get bonds to process
     async with async_session() as session:
@@ -153,6 +183,7 @@ async def main():
                     client=client,
                     dry_run=args.dry_run,
                     calculate_yields=not args.skip_yields,
+                    treasury_curves=treasury_curves if args.with_spreads else None,
                 )
 
             totals["processed"] += 1
