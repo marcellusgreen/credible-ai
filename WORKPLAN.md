@@ -1,6 +1,6 @@
 # DebtStack Work Plan
 
-Last Updated: 2026-02-02
+Last Updated: 2026-02-03
 
 ## Current Status
 
@@ -17,20 +17,17 @@ Last Updated: 2026-02-02
 
 ---
 
-## What's Next: Stripe Products & Daily Pricing
+## What's Next: Historical Pricing & SDK
 
-### Immediate Priority: Configure Production Stripe
-**Why**: Three-tier pricing code is complete. Need to create actual Stripe products and configure environment variables.
+### Immediate Priority: Finnhub Pricing Expansion
+**Why**: Currently only 30 bonds have pricing data. Need to expand to 200+ bonds.
 
 **Tasks**:
-1. Create Stripe Products in Dashboard:
-   - Pro subscription: $199/month → get `price_xxx` ID
-   - Business subscription: $499/month → get `price_xxx` ID
-   - Credit packages: $10, $25, $50, $100 (one-time) → get 4 price IDs
-2. Update Railway environment variables with actual price IDs
-3. Test checkout flows end-to-end
+1. Configure Finnhub premium API key
+2. Run bond pricing backfill: `python scripts/backfill_pricing_history.py --all --days 1095`
+3. Set up Railway cron job for `scripts/collect_daily_pricing.py`
 
-### Then: Historical Pricing Backfill
+### Then: SDK & Documentation
 Once Finnhub premium is configured:
 1. Backfill bond pricing history: `python scripts/backfill_pricing_history.py --all --days 1095`
 2. With spreads (using treasury yields): `python scripts/backfill_pricing_history.py --all --with-spreads`
@@ -362,14 +359,14 @@ Create `tests/test_pricing_tiers.py`:
 
 ## Deployment Checklist
 
-- [ ] Run database migrations (`alembic upgrade head`)
-- [ ] Deploy updated API code to Railway
-- [ ] Create new Stripe products and prices ($199 Pro, $499 Business)
-- [ ] Set Stripe webhook endpoint: `https://yourdomain.com/webhooks/stripe`
-- [ ] Add all Stripe environment variables to Railway
-- [ ] Update website with new pricing page
-- [ ] Test tier enforcement on staging environment
-- [ ] Test Stripe checkout flow end-to-end
+- [x] Run database migrations (`alembic upgrade head`)
+- [x] Deploy updated API code to Railway
+- [x] Create new Stripe products and prices ($199 Pro, $499 Business)
+- [x] Set Stripe webhook endpoint: `https://credible-ai-production.up.railway.app/v1/auth/webhook`
+- [x] Add all Stripe environment variables to Railway
+- [x] Update website with new pricing page
+- [x] Test tier enforcement on staging environment
+- [x] Test Stripe checkout flow end-to-end (14/14 tests passing)
 - [ ] Set up daily pricing collection cron job
 - [ ] Update API documentation with tier requirements
 - [ ] Test historical pricing endpoint with Business user
@@ -410,6 +407,16 @@ Create `tests/test_pricing_tiers.py`:
 4. **Scale Error Investigation** - Verify INTU/META/etc. scale issues against source SEC filings (don't auto-fix)
 
 ## Recent Completed Work
+
+### February 2026
+- [x] **Stripe Integration Complete** (2026-02-03) - Full Stripe billing system operational:
+  - Created Stripe products: Pro ($199/mo), Business ($499/mo), Credit packages ($10-$100)
+  - Configured price IDs in Railway environment variables
+  - Fixed webhook handlers to use dict access (Stripe sends dicts, not objects)
+  - Added `checkout.session.completed` event handling for credit purchases
+  - All 14 E2E checkout tests passing
+  - Webhook endpoint verified working on production
+  - Test files: `tests/api/test_stripe_billing.py` (26 tests), `scripts/test_stripe_checkout_e2e.py`
 
 ### January 2026
 - [x] **Structured Covenant Extraction & API** (2026-01-31) - Implemented full covenant extraction pipeline:

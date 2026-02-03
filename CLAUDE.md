@@ -6,12 +6,12 @@ Context for AI assistants working on the DebtStack.ai codebase.
 
 ## What's Next
 
-**Immediate**: Create Stripe products for new pricing tiers in Stripe Dashboard and update environment variables with actual price IDs.
+**Immediate**: Finnhub pricing expansion (30 → 200+ bonds)
 
 **Then**:
-1. Finnhub pricing expansion (30 → 200+ bonds)
-2. SDK publication to PyPI
-3. Mintlify docs deployment to docs.debtstack.ai
+1. SDK publication to PyPI
+2. Mintlify docs deployment to docs.debtstack.ai
+3. Set up Railway cron job for daily pricing collection
 
 ## Project Overview
 
