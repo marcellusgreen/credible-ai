@@ -275,17 +275,24 @@ async def stripe_webhook(
     event_type = event["type"]
     data = event["data"]["object"]
 
-    if event_type == "checkout.session.completed":
-        await handle_credit_purchase(data, db)
-    elif event_type == "customer.subscription.created":
-        await handle_subscription_created(data, db)
-    elif event_type == "customer.subscription.updated":
-        await handle_subscription_updated(data, db)
-    elif event_type == "customer.subscription.deleted":
-        await handle_subscription_deleted(data, db)
-    elif event_type == "invoice.paid":
-        await handle_invoice_paid(data, db)
-    else:
-        print(f"Unhandled event type: {event_type}")
+    try:
+        if event_type == "checkout.session.completed":
+            await handle_credit_purchase(data, db)
+        elif event_type == "customer.subscription.created":
+            await handle_subscription_created(data, db)
+        elif event_type == "customer.subscription.updated":
+            await handle_subscription_updated(data, db)
+        elif event_type == "customer.subscription.deleted":
+            await handle_subscription_deleted(data, db)
+        elif event_type == "invoice.paid":
+            await handle_invoice_paid(data, db)
+        else:
+            print(f"Unhandled event type: {event_type}")
+    except Exception as e:
+        # Log the error but return 200 to prevent Stripe from retrying
+        # (Stripe will retry on non-2xx responses)
+        print(f"Error handling webhook event {event_type}: {e}")
+        # Re-raise to return 500 and see the error
+        raise
 
     return {"status": "ok"}

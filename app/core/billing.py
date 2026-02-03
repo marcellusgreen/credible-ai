@@ -252,11 +252,11 @@ async def create_portal_session(user: User) -> str:
 
 
 async def handle_subscription_created(
-    subscription: stripe.Subscription,
+    subscription: dict,
     db: AsyncSession,
 ) -> None:
     """Handle subscription.created webhook event."""
-    customer_id = subscription.customer
+    customer_id = subscription.get("customer")
 
     # Find user by Stripe customer ID
     result = await db.execute(
@@ -279,10 +279,12 @@ async def handle_subscription_created(
         return
 
     # Determine tier from subscription metadata or price
-    tier = subscription.metadata.get("tier", "pro")
+    metadata = subscription.get("metadata", {})
+    tier = metadata.get("tier", "pro")
     if tier not in ("pro", "business"):
         # Check price ID to determine tier
-        price_id = subscription.items.data[0].price.id if subscription.items.data else None
+        items = subscription.get("items", {}).get("data", [])
+        price_id = items[0].get("price", {}).get("id") if items else None
         if price_id == STRIPE_PRICES.get("business"):
             tier = "business"
         else:
@@ -290,7 +292,7 @@ async def handle_subscription_created(
 
     # Update user tier
     user.tier = tier
-    user.stripe_subscription_id = subscription.id
+    user.stripe_subscription_id = subscription.get("id")
 
     # Set rate limit and team seats based on tier
     tier_config = TIER_CONFIG.get(tier, TIER_CONFIG["pro"])
@@ -312,23 +314,24 @@ async def handle_subscription_created(
 
 
 async def handle_subscription_updated(
-    subscription: stripe.Subscription,
+    subscription: dict,
     db: AsyncSession,
 ) -> None:
     """Handle subscription.updated webhook event."""
     # Check if subscription is still active
-    if subscription.status in ["active", "trialing"]:
+    status = subscription.get("status")
+    if status in ["active", "trialing"]:
         await handle_subscription_created(subscription, db)
-    elif subscription.status in ["canceled", "unpaid", "past_due"]:
+    elif status in ["canceled", "unpaid", "past_due"]:
         await handle_subscription_deleted(subscription, db)
 
 
 async def handle_subscription_deleted(
-    subscription: stripe.Subscription,
+    subscription: dict,
     db: AsyncSession,
 ) -> None:
     """Handle subscription.deleted webhook event (downgrade to Pay-as-You-Go)."""
-    customer_id = subscription.customer
+    customer_id = subscription.get("customer")
 
     # Find user by Stripe customer ID
     result = await db.execute(
@@ -421,11 +424,11 @@ async def handle_credit_purchase(
 
 
 async def handle_invoice_paid(
-    invoice: stripe.Invoice,
+    invoice: dict,
     db: AsyncSession,
 ) -> None:
     """Handle invoice.paid webhook event (subscription renewed)."""
-    customer_id = invoice.customer
+    customer_id = invoice.get("customer")
 
     # Find user by Stripe customer ID
     result = await db.execute(
