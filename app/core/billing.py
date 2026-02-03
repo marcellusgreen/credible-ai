@@ -364,18 +364,22 @@ async def handle_subscription_deleted(
 
 
 async def handle_credit_purchase(
-    session: stripe.checkout.Session,
+    session: dict,
     db: AsyncSession,
 ) -> None:
     """Handle checkout.session.completed webhook for credit purchases."""
-    if session.metadata.get("type") != "credit_purchase":
+    # Session is a dict from the webhook event
+    metadata = session.get("metadata", {})
+
+    if metadata.get("type") != "credit_purchase":
         return
 
-    user_id = session.metadata.get("user_id")
-    credit_amount = session.metadata.get("credit_amount")
+    user_id = metadata.get("user_id")
+    credit_amount = metadata.get("credit_amount")
+    session_id = session.get("id", "unknown")
 
     if not user_id or not credit_amount:
-        print(f"Warning: Missing metadata in credit purchase session {session.id}")
+        print(f"Warning: Missing metadata in credit purchase session {session_id}")
         return
 
     # Find user
@@ -385,7 +389,7 @@ async def handle_credit_purchase(
     user = result.scalar_one_or_none()
 
     if not user:
-        print(f"Warning: No user found for credit purchase {session.id}")
+        print(f"Warning: No user found for credit purchase {session_id}")
         return
 
     amount = Decimal(credit_amount)
