@@ -36,6 +36,7 @@ from app.core.billing import (
     handle_subscription_updated,
     handle_subscription_deleted,
     handle_invoice_paid,
+    handle_credit_purchase,
 )
 from app.core.database import get_db
 from app.models import User, UserCredits
@@ -274,7 +275,9 @@ async def stripe_webhook(
     event_type = event["type"]
     data = event["data"]["object"]
 
-    if event_type == "customer.subscription.created":
+    if event_type == "checkout.session.completed":
+        await handle_credit_purchase(data, db)
+    elif event_type == "customer.subscription.created":
         await handle_subscription_created(data, db)
     elif event_type == "customer.subscription.updated":
         await handle_subscription_updated(data, db)
