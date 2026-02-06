@@ -38,38 +38,34 @@ from app.core.config import get_settings
 
 async def get_stats(session: AsyncSession, ticker: str = None) -> dict:
     """Get current ownership statistics."""
-
     ticker_filter = "AND c.ticker = :ticker" if ticker else ""
     params = {"ticker": ticker} if ticker else {}
 
-    # Total entities
-    result = await session.execute(text(f'''
+    async def count_query(query: str) -> int:
+        result = await session.execute(text(query), params)
+        return result.scalar() or 0
+
+    total = await count_query(f'''
         SELECT COUNT(*) FROM entities e
         JOIN companies c ON e.company_id = c.id
         WHERE e.is_root = false {ticker_filter}
-    '''), params)
-    total = result.scalar()
+    ''')
 
-    # Entities where parent is root (potentially false)
-    result = await session.execute(text(f'''
+    parent_is_root = await count_query(f'''
         SELECT COUNT(*) FROM entities e
         JOIN companies c ON e.company_id = c.id
         JOIN entities p ON e.parent_id = p.id
         WHERE p.is_root = true {ticker_filter}
-    '''), params)
-    parent_is_root = result.scalar()
+    ''')
 
-    # Entities where parent is intermediate (TRUE relationships)
-    result = await session.execute(text(f'''
+    parent_intermediate = await count_query(f'''
         SELECT COUNT(*) FROM entities e
         JOIN companies c ON e.company_id = c.id
         JOIN entities p ON e.parent_id = p.id
         WHERE p.is_root = false {ticker_filter}
-    '''), params)
-    parent_intermediate = result.scalar()
+    ''')
 
-    # Key entities (issuers or guarantors)
-    result = await session.execute(text(f'''
+    key_entities = await count_query(f'''
         SELECT COUNT(DISTINCT e.id)
         FROM entities e
         JOIN companies c ON e.company_id = c.id
@@ -77,11 +73,9 @@ async def get_stats(session: AsyncSession, ticker: str = None) -> dict:
             e.id IN (SELECT issuer_id FROM debt_instruments WHERE issuer_id IS NOT NULL)
             OR e.id IN (SELECT guarantor_id FROM guarantees WHERE guarantor_id IS NOT NULL)
         ) {ticker_filter}
-    '''), params)
-    key_entities = result.scalar()
+    ''')
 
-    # Entities to fix (parent is root AND not a key entity)
-    result = await session.execute(text(f'''
+    to_fix = await count_query(f'''
         SELECT COUNT(*) FROM entities e
         JOIN companies c ON e.company_id = c.id
         JOIN entities p ON e.parent_id = p.id
@@ -89,8 +83,7 @@ async def get_stats(session: AsyncSession, ticker: str = None) -> dict:
         AND e.id NOT IN (SELECT issuer_id FROM debt_instruments WHERE issuer_id IS NOT NULL)
         AND e.id NOT IN (SELECT guarantor_id FROM guarantees WHERE guarantor_id IS NOT NULL)
         {ticker_filter}
-    '''), params)
-    to_fix = result.scalar()
+    ''')
 
     return {
         "total": total,
@@ -144,11 +137,8 @@ async def fix_false_ownership(session: AsyncSession, ticker: str = None, save_db
         return stats
 
     # Group by company for reporting
-    for row in entities_to_fix:
-        entity_id, entity_name, company_ticker, parent_id = row
-        if company_ticker not in stats["by_company"]:
-            stats["by_company"][company_ticker] = 0
-        stats["by_company"][company_ticker] += 1
+    for _, _, company_ticker, _ in entities_to_fix:
+        stats["by_company"][company_ticker] = stats["by_company"].get(company_ticker, 0) + 1
 
     if save_db:
         # Update entities - set parent_id to NULL

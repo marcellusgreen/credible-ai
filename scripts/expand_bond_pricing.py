@@ -70,18 +70,18 @@ async def fetch_and_validate_isin(
     if not FINNHUB_API_KEY:
         return False, None
 
-    url = f"{FINNHUB_BASE_URL}/bond/profile"
-    params = {"isin": isin, "token": FINNHUB_API_KEY}
-
     try:
-        resp = await client.get(url, params=params)
+        resp = await client.get(
+            f"{FINNHUB_BASE_URL}/bond/profile",
+            params={"isin": isin, "token": FINNHUB_API_KEY},
+        )
         if resp.status_code == 200:
             data = resp.json()
             if data and data.get("isin"):
                 return True, data
-        return False, None
     except Exception:
-        return False, None
+        pass
+    return False, None
 
 
 async def fetch_pricing_for_isin(
@@ -100,31 +100,30 @@ async def fetch_pricing_for_isin(
     to_date = datetime.now()
     from_date = to_date - timedelta(days=days_back)
 
-    url = f"{FINNHUB_BASE_URL}/bond/price"
-    params = {
-        "isin": isin,
-        "from": int(from_date.timestamp()),
-        "to": int(to_date.timestamp()),
-        "token": FINNHUB_API_KEY,
-    }
-
     try:
-        resp = await client.get(url, params=params)
+        resp = await client.get(
+            f"{FINNHUB_BASE_URL}/bond/price",
+            params={
+                "isin": isin,
+                "from": int(from_date.timestamp()),
+                "to": int(to_date.timestamp()),
+                "token": FINNHUB_API_KEY,
+            },
+        )
         if resp.status_code == 200:
             data = resp.json()
-            if data and "c" in data and data["c"]:
-                closes = data.get("c", [])
+            if data and data.get("c"):
+                closes = data["c"]
                 timestamps = data.get("t", [])
                 volumes = data.get("v", [])
-
                 return {
                     "last_price": Decimal(str(closes[-1])) if closes else None,
                     "last_trade_date": datetime.fromtimestamp(timestamps[-1]) if timestamps else None,
                     "volume": sum(volumes) if volumes else None,
                 }
-        return None
     except Exception:
-        return None
+        pass
+    return None
 
 
 async def phase1_price_existing_isins(

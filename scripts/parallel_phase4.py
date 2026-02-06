@@ -40,25 +40,19 @@ async def run_phase4(ticker: str, semaphore: asyncio.Semaphore) -> dict:
         stdout, stderr = await proc.communicate()
         elapsed = (datetime.now() - start).total_seconds()
 
-        # Parse output for summary (handle encoding issues)
-        try:
-            output = stdout.decode('utf-8', errors='replace')
-        except:
-            output = ""
+        # Parse output for summary
+        output = stdout.decode('utf-8', errors='replace')
         new_bonds = 0
         discovered = 0
 
         for line in output.split('\n'):
-            if 'New bonds added:' in line:
-                try:
+            try:
+                if 'New bonds added:' in line:
                     new_bonds = int(line.split(':')[1].strip())
-                except:
-                    pass
-            if 'Bonds discovered:' in line:
-                try:
+                elif 'Bonds discovered:' in line:
                     discovered = int(line.split(':')[1].strip())
-                except:
-                    pass
+            except (ValueError, IndexError):
+                pass
 
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Finished {ticker}: {discovered} discovered, {new_bonds} new ({elapsed:.0f}s)")
 

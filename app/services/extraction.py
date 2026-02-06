@@ -1436,14 +1436,9 @@ async def refresh_company_cache(
             "children": [build_entity_tree(c) for c in children],
         }
 
-    # Find root entities (is_root=True or no parent for backwards compatibility)
-    root_entities = [e for e in entities if e.is_root or (e.parent_id is None and not any(
-        other.parent_id == e.id for other in entities
-    ) == False and e.is_root)]
-    # Simpler: just use is_root
+    # Find root entities (is_root=True, fallback to entities with no parent)
     root_entities = [e for e in entities if e.is_root]
     if not root_entities:
-        # Fallback: entities with no parent
         root_entities = [e for e in entities if e.parent_id is None]
 
     structure_tree = [build_entity_tree(e) for e in root_entities]
