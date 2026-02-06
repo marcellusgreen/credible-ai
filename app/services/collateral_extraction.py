@@ -13,7 +13,6 @@ USAGE
 
 import re
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 from typing import Any, Optional
 from uuid import UUID, uuid4
 
@@ -22,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import DebtInstrument, Collateral, DocumentSection, DebtInstrumentDocument
 from app.services.base_extractor import BaseExtractor, ExtractionContext
+from app.services.identifier_utils import fuzzy_match_debt_name
 from app.services.llm_utils import LLMResponse
 
 
@@ -65,36 +65,6 @@ def _extract_collateral_sections(content: str) -> str:
     return ""
 
 
-def _fuzzy_match_debt_name(name1: str, name2: str, threshold: float = 0.6) -> bool:
-    """
-    Check if two debt names are similar enough to match.
-
-    PARAMETERS
-    ----------
-    name1 : str
-        First debt name
-    name2 : str
-        Second debt name
-    threshold : float
-        Minimum similarity ratio (default: 0.6)
-
-    RETURNS
-    -------
-    bool
-        True if names match
-    """
-    if not name1 or not name2:
-        return False
-    name1 = name1.lower().strip()
-    name2 = name2.lower().strip()
-
-    if name1 == name2:
-        return True
-    if name1 in name2 or name2 in name1:
-        return True
-
-    ratio = SequenceMatcher(None, name1, name2).ratio()
-    return ratio >= threshold
 
 
 @dataclass
@@ -357,7 +327,7 @@ Return ONLY valid JSON."""
             else:
                 # Fuzzy name match
                 for inst in instruments:
-                    if _fuzzy_match_debt_name(parsed.debt_name, inst.name):
+                    if fuzzy_match_debt_name(parsed.debt_name, inst.name):
                         instrument = inst
                         break
 

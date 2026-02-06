@@ -352,17 +352,20 @@ def build_hierarchy(entries: list[SubsidiaryEntry], root_name: str) -> list[Hier
 # NAME MATCHING
 # =============================================================================
 
+# Import centralized name normalization
+from app.services.identifier_utils import normalize_entity_name
+
+
 def normalize_name(name: str) -> str:
-    """Normalize entity name for matching."""
-    name = name.lower()
-    for suffix in [', inc.', ', inc', ' inc.', ' inc', ', llc', ' llc',
-                   ', ltd.', ', ltd', ' ltd.', ' ltd', ', corp.', ', corp',
-                   ' corp.', ' corp', ', corporation', ' corporation',
-                   ', l.l.c.', ' l.l.c.', ', limited', ' limited',
-                   ', l.p.', ' l.p.', ', lp', ' lp']:
-        if name.endswith(suffix):
-            name = name[:-len(suffix)]
-    return ' '.join(re.sub(r'[^\w\s]', ' ', name).split()).strip()
+    """
+    Normalize entity name for matching.
+
+    Note: This is a wrapper around normalize_entity_name that also
+    strips extra whitespace for hierarchy matching compatibility.
+    """
+    normalized = normalize_entity_name(name)
+    # Additional whitespace normalization for hierarchy matching
+    return ' '.join(re.sub(r'[^\w\s]', ' ', normalized).split()).strip()
 
 
 # =============================================================================

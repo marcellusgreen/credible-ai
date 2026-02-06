@@ -1,7 +1,8 @@
 """
 Bond Identifier Utilities
 
-Utilities for working with bond identifiers (CUSIP, ISIN, FIGI).
+Utilities for working with bond identifiers (CUSIP, ISIN, FIGI) and
+entity/debt name matching.
 
 CUSIP: Committee on Uniform Securities Identification Procedures
 - 9 characters: 6-char issuer + 2-char issue + 1 check digit
@@ -12,7 +13,9 @@ ISIN: International Securities Identification Number
 - For US bonds: US + 9-digit CUSIP + check digit
 """
 
+from difflib import SequenceMatcher
 from typing import Optional
+from uuid import UUID
 
 
 def calculate_cusip_check_digit(base: str) -> str:
@@ -287,6 +290,160 @@ def normalize_isin(isin: str) -> Optional[str]:
         return isin
 
     return None
+
+
+# =============================================================================
+# ENTITY AND DEBT NAME MATCHING
+# =============================================================================
+
+# Common corporate suffixes to strip for matching
+CORPORATE_SUFFIXES = [
+    ', inc.', ', inc', ' inc.', ' inc',
+    ', llc', ' llc', ', l.l.c.', ' l.l.c.',
+    ', l.p.', ' l.p.', ', lp', ' lp',
+    ', ltd.', ', ltd', ' ltd.', ' ltd',
+    ', corp.', ', corp', ' corp.', ' corp',
+    ', co.', ', co', ' co.', ' co',
+    ', n.v.', ' n.v.', ', nv', ' nv',
+    ', b.v.', ' b.v.', ', bv', ' bv',
+    ', s.a.', ' s.a.', ', sa', ' sa',
+    ', gmbh', ' gmbh',
+    ', plc', ' plc',
+    ', limited', ' limited',
+    ', corporation', ' corporation',
+    ', incorporated', ' incorporated',
+]
+
+
+def normalize_entity_name(name: str) -> str:
+    """
+    Normalize entity name for matching.
+
+    Removes common corporate suffixes, punctuation, and normalizes case.
+    Used for matching entity names across different documents.
+
+    For the full-featured normalize_name (with "the " removal, suffix
+    replacement, etc.), use app.services.utils.normalize_name instead.
+
+    Args:
+        name: Entity name to normalize
+
+    Returns:
+        Normalized lowercase name
+    """
+    if not name:
+        return ""
+    name = name.lower().strip()
+    for suffix in CORPORATE_SUFFIXES:
+        if name.endswith(suffix):
+            name = name[:-len(suffix)]
+    return name.replace(',', '').replace('.', '').strip()
+
+
+def fuzzy_match_entity(
+    name: str,
+    entity_map: dict[str, UUID],
+    threshold: float = 0.85,
+) -> Optional[UUID]:
+    """
+    Find entity ID by fuzzy name matching.
+
+    Args:
+        name: Entity name to match
+        entity_map: Dict mapping normalized names to entity IDs
+        threshold: Minimum similarity ratio (default: 0.85)
+
+    Returns:
+        Entity UUID if match found, None otherwise
+    """
+    if not name:
+        return None
+
+    normalized = normalize_entity_name(name)
+
+    # Exact match first
+    if normalized in entity_map:
+        return entity_map[normalized]
+
+    # Try original lowercase
+    name_lower = name.lower().strip()
+    if name_lower in entity_map:
+        return entity_map[name_lower]
+
+    # Fuzzy match
+    best_ratio = 0.0
+    best_match = None
+    for key, entity_id in entity_map.items():
+        ratio = SequenceMatcher(None, normalized, key).ratio()
+        if ratio > best_ratio and ratio >= threshold:
+            best_ratio = ratio
+            best_match = entity_id
+
+    return best_match
+
+
+def fuzzy_match_debt_name(
+    name1: str,
+    name2: str,
+    threshold: float = 0.6,
+) -> bool:
+    """
+    Check if two debt instrument names are similar enough to match.
+
+    Uses substring matching and SequenceMatcher for fuzzy comparison.
+
+    Args:
+        name1: First debt name
+        name2: Second debt name
+        threshold: Minimum similarity ratio (default: 0.6)
+
+    Returns:
+        True if names match
+    """
+    if not name1 or not name2:
+        return False
+
+    name1 = name1.lower().strip()
+    name2 = name2.lower().strip()
+
+    # Exact match
+    if name1 == name2:
+        return True
+
+    # Substring match
+    if name1 in name2 or name2 in name1:
+        return True
+
+    # Fuzzy match
+    ratio = SequenceMatcher(None, name1, name2).ratio()
+    return ratio >= threshold
+
+
+def build_entity_map(entities: list) -> dict[str, UUID]:
+    """
+    Build a name->ID lookup map from entity list.
+
+    Creates entries for both normalized and lowercase original names.
+
+    Args:
+        entities: List of Entity objects with 'id' and 'name' attributes
+
+    Returns:
+        Dict mapping normalized names to entity IDs
+    """
+    entity_map = {}
+    for entity in entities:
+        if entity.name:
+            # Add normalized version
+            entity_map[normalize_entity_name(entity.name)] = entity.id
+            # Add lowercase original
+            entity_map[entity.name.lower().strip()] = entity.id
+    return entity_map
+
+
+# =============================================================================
+# BOND IDENTIFIER EXTRACTION
+# =============================================================================
 
 
 def extract_identifiers_from_text(text: str) -> dict[str, set[str]]:

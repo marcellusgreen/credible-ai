@@ -13,7 +13,6 @@ USAGE
 """
 
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 from typing import Any, Optional
 from uuid import UUID, uuid4
 
@@ -22,53 +21,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Entity, DebtInstrument, Guarantee, DocumentSection, DebtInstrumentDocument
 from app.services.base_extractor import BaseExtractor, ExtractionContext
+from app.services.identifier_utils import (
+    normalize_entity_name,
+    fuzzy_match_entity,
+    fuzzy_match_debt_name,
+)
 from app.services.llm_utils import LLMResponse
-
-
-def _normalize_name(name: str) -> str:
-    """Normalize entity name for matching."""
-    if not name:
-        return ""
-    # Remove common suffixes and punctuation
-    name = name.lower().strip()
-    for suffix in [', inc.', ', inc', ' inc.', ' inc', ', llc', ' llc',
-                   ', l.p.', ' l.p.', ', lp', ' lp', ', ltd.', ', ltd',
-                   ' ltd.', ' ltd', ', corp.', ', corp', ' corp.', ' corp']:
-        if name.endswith(suffix):
-            name = name[:-len(suffix)]
-    return name.replace(',', '').replace('.', '').strip()
-
-
-def _fuzzy_match_entity(name: str, entity_map: dict, threshold: float = 0.85) -> Optional[UUID]:
-    """
-    Find entity ID by fuzzy name matching.
-
-    Returns entity ID if match found, None otherwise.
-    """
-    if not name:
-        return None
-
-    normalized = _normalize_name(name)
-
-    # Exact match first
-    if normalized in entity_map:
-        return entity_map[normalized]
-
-    # Try original lowercase
-    name_lower = name.lower().strip()
-    if name_lower in entity_map:
-        return entity_map[name_lower]
-
-    # Fuzzy match
-    best_ratio = 0
-    best_match = None
-    for key, entity_id in entity_map.items():
-        ratio = SequenceMatcher(None, normalized, key).ratio()
-        if ratio > best_ratio and ratio >= threshold:
-            best_ratio = ratio
-            best_match = entity_id
-
-    return best_match
 
 
 @dataclass
@@ -249,7 +207,7 @@ Only include guarantors that EXACTLY match entity names above."""
         entity_map = {}
         for e in context.entities:
             entity_map[e.name.lower()] = e.id
-            entity_map[_normalize_name(e.name)] = e.id
+            entity_map[normalize_entity_name(e.name)] = e.id
 
         instrument_map = {i.name.lower(): i for i in context.instruments}
 
@@ -262,7 +220,7 @@ Only include guarantors that EXACTLY match entity names above."""
             if not instrument:
                 # Try fuzzy match
                 for inst in context.instruments:
-                    if SequenceMatcher(None, parsed.debt_name.lower(), inst.name.lower()).ratio() > 0.8:
+                    if fuzzy_match_debt_name(parsed.debt_name, inst.name, threshold=0.8):
                         instrument = inst
                         break
 
@@ -273,7 +231,7 @@ Only include guarantors that EXACTLY match entity names above."""
 
             for guarantor_name in parsed.guarantor_names:
                 # Use fuzzy matching for entity
-                entity_id = _fuzzy_match_entity(guarantor_name, entity_map)
+                entity_id = fuzzy_match_entity(guarantor_name, entity_map)
                 if not entity_id:
                     continue
 
