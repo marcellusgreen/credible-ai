@@ -15,26 +15,15 @@ Usage:
 import argparse
 import asyncio
 import os
-import sys
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from sqlalchemy import select, func
 
-from dotenv import load_dotenv
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-
-load_dotenv()
-
-
-async def get_session():
-    """Create database session."""
-    database_url = os.getenv("DATABASE_URL")
-    if not database_url:
-        raise ValueError("DATABASE_URL not set")
-
-    engine = create_async_engine(database_url)
-    async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    return async_session(), engine
+from script_utils import (
+    get_db_session,
+    print_header,
+    print_summary,
+    run_async,
+)
 
 
 def format_price(price) -> str:
@@ -63,25 +52,18 @@ async def update_single_company(ticker: str):
     """Update pricing for a single company."""
     from app.services.bond_pricing import update_company_pricing
 
-    print(f"\n{'='*60}")
-    print(f"Updating pricing for {ticker}")
-    print(f"{'='*60}")
+    print_header(f"UPDATING PRICING FOR {ticker}")
 
-    session, engine = await get_session()
-    try:
+    async with get_db_session() as session:
         results = await update_company_pricing(session, ticker)
 
-        print(f"\nResults:")
+        print("Results:")
         print("-" * 60)
         print(f"  Bonds checked:      {results['bonds_checked']}")
         print(f"  Prices found (TRACE): {results.get('prices_found', 0)}")
         print(f"  Prices estimated:   {results.get('prices_estimated', 0)}")
         print(f"  Prices failed:      {results.get('prices_failed', 0)}")
         print(f"  Yields calculated:  {results['yields_calculated']}")
-
-    finally:
-        await session.close()
-        await engine.dispose()
 
 
 async def update_all(stale_only: bool = True, stale_days: int = 1, limit: int = 100):
@@ -94,16 +76,14 @@ async def update_all(stale_only: bool = True, stale_days: int = 1, limit: int = 
     )
     from app.services.yield_calculation import calculate_ytm_and_spread
 
-    print(f"\n{'='*60}")
-    print(f"Updating pricing for all bonds")
+    print_header("UPDATING PRICING FOR ALL BONDS")
     if stale_only:
         print(f"Mode: Stale only (>{stale_days} days)")
     else:
         print(f"Mode: All bonds (limit: {limit})")
-    print(f"{'='*60}")
+    print()
 
-    session, engine = await get_session()
-    try:
+    async with get_db_session() as session:
         bonds = await get_bonds_needing_pricing(
             session,
             stale_only=stale_only,
@@ -185,35 +165,26 @@ async def update_all(stale_only: bool = True, stale_days: int = 1, limit: int = 
                 await asyncio.sleep(REQUEST_DELAY)
 
         # Summary
-        print(f"\n{'='*60}")
-        print(f"SUMMARY")
-        print(f"{'='*60}")
-        print(f"Bonds checked:       {results['checked']}")
-        print(f"Prices (TRACE):      {results['prices_trace']}")
-        print(f"Prices (estimated):  {results['prices_estimated']}")
-        print(f"Prices failed:       {results['prices_failed']}")
-        print(f"Yields calculated:   {results['yields_calculated']}")
-
         total_priced = results['prices_trace'] + results['prices_estimated']
         success_rate = total_priced / results['checked'] * 100 if results['checked'] > 0 else 0
-        print(f"Success rate:        {success_rate:.1f}%")
 
-    finally:
-        await session.close()
-        await engine.dispose()
+        print_summary({
+            "Bonds checked": results['checked'],
+            "Prices (TRACE)": results['prices_trace'],
+            "Prices (estimated)": results['prices_estimated'],
+            "Prices failed": results['prices_failed'],
+            "Yields calculated": results['yields_calculated'],
+            "Success rate": f"{success_rate:.1f}%",
+        })
 
 
 async def show_pricing_summary():
     """Show summary of current pricing data."""
-    from sqlalchemy import select, func
     from app.models import BondPricing, DebtInstrument
 
-    print(f"\n{'='*60}")
-    print(f"PRICING DATA SUMMARY")
-    print(f"{'='*60}")
+    print_header("PRICING DATA SUMMARY")
 
-    session, engine = await get_session()
-    try:
+    async with get_db_session() as session:
         # Total bonds with CUSIPs
         total_with_cusip = await session.scalar(
             select(func.count()).select_from(DebtInstrument)
@@ -244,18 +215,14 @@ async def show_pricing_summary():
             .where(BondPricing.ytm_bps.isnot(None))
         )
 
+        coverage = total_pricing / total_with_cusip * 100 if total_with_cusip > 0 else 0
+
         print(f"Bonds with CUSIPs:    {total_with_cusip}")
         print(f"Pricing records:      {total_pricing}")
         print(f"Fresh (<1 day):       {fresh_pricing}")
         print(f"Stale (>7 days):      {stale_pricing}")
         print(f"With yields:          {with_yields}")
-
-        coverage = total_pricing / total_with_cusip * 100 if total_with_cusip > 0 else 0
         print(f"Coverage:             {coverage:.1f}%")
-
-    finally:
-        await session.close()
-        await engine.dispose()
 
 
 async def main():
@@ -294,7 +261,6 @@ async def main():
     args = parser.parse_args()
 
     # Check for Finnhub API key
-    import os
     if os.getenv("FINNHUB_API_KEY"):
         print("Using Finnhub API for TRACE data (with estimated fallback)")
     else:
@@ -324,4 +290,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_async(main())

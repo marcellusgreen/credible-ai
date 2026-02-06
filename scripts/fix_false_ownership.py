@@ -23,17 +23,16 @@ Usage:
 """
 
 import argparse
-import asyncio
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
+from script_utils import (
+    get_db_session,
+    print_header,
+    print_summary,
+    run_async,
+)
 
 
 async def get_stats(session: AsyncSession, ticker: str = None) -> dict:
@@ -183,14 +182,8 @@ async def main():
     parser.add_argument("--show-preserved", action="store_true", help="Show preserved relationships")
     args = parser.parse_args()
 
-    settings = get_settings()
-    engine = create_async_engine(settings.database_url)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    async with async_session() as session:
-        print("=" * 70)
-        print("FIX FALSE OWNERSHIP RELATIONSHIPS")
-        print("=" * 70)
+    async with get_db_session() as session:
+        print_header("FIX FALSE OWNERSHIP RELATIONSHIPS")
         print(f"Mode: {'SAVE TO DB' if args.save_db else 'DRY RUN'}")
         if args.ticker:
             print(f"Company: {args.ticker}")
@@ -265,8 +258,6 @@ async def main():
             print()
             print("Run with --save-db to apply changes.")
 
-    await engine.dispose()
-
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_async(main())

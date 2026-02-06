@@ -12,26 +12,17 @@ Usage:
 """
 
 import argparse
-import asyncio
-import os
-import sys
-
-from dotenv import load_dotenv
-
-# Add parent dir to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-load_dotenv()
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
 
-from app.core.config import get_settings
+from script_utils import (
+    get_db_session,
+    print_header,
+    run_async,
+)
+
 from app.models import Company
 from app.services.metrics import recompute_metrics_for_company
-
-settings = get_settings()
 
 
 async def main():
@@ -40,18 +31,7 @@ async def main():
     parser.add_argument("--dry-run", action="store_true", help="Preview without saving")
     args = parser.parse_args()
 
-    # Create async engine
-    database_url = settings.database_url
-    if database_url.startswith("postgresql://"):
-        database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    elif not database_url.startswith("postgresql+asyncpg://"):
-        # Handle case where it already has asyncpg
-        pass
-
-    engine = create_async_engine(database_url, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    async with async_session() as db:
+    async with get_db_session() as db:
         # Get companies to process
         if args.ticker:
             result = await db.execute(
@@ -65,6 +45,7 @@ async def main():
             result = await db.execute(select(Company).order_by(Company.ticker))
             companies = list(result.scalars().all())
 
+        print_header("RECOMPUTE COMPANY METRICS")
         print(f"Processing {len(companies)} companies...")
         if args.dry_run:
             print("(DRY RUN - no changes will be saved)")
@@ -108,4 +89,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_async(main())
