@@ -440,12 +440,12 @@ class ExtractionService:
         # Try SEC-API.io first (faster, no rate limits)
         if self.sec_api and self.sec_api.query_api:
             print(f"\n  Fetching filings via SEC-API.io...")
-            filings = await self.sec_api.get_all_relevant_filings(ticker, include_exhibits=True)
+            filings, _ = await self.sec_api.get_all_relevant_filings(ticker, include_exhibits=True)
 
         # Fall back to direct SEC EDGAR if SEC-API didn't work
         if not filings:
             print(f"\n  Fetching filings from SEC EDGAR (direct)...")
-            filings = await self.edgar.get_all_relevant_filings(cik, include_exhibits=True)
+            filings, _ = await self.edgar.get_all_relevant_filings(cik, include_exhibits=True)
 
         if not filings:
             raise ValueError(f"No filings found for {ticker} (CIK: {cik})")
@@ -1338,6 +1338,41 @@ async def refresh_company_cache(
     # ==========================================================================
     # Build response_structure (entity tree)
     # ==========================================================================
+
+    # Identify key entities (issuers and guarantors) - these have known relationships
+    issuer_ids = {d.issuer_id for d in debt_instruments if d.issuer_id}
+    guarantor_ids = set()
+    for debt_id, gids in guarantees_by_debt.items():
+        guarantor_ids.update(gids)
+    key_entity_ids = issuer_ids | guarantor_ids
+
+    # Classify entities by ownership confidence
+    entities_with_known_parent = []  # parent_id is set AND parent is not root, OR entity is key entity
+    entities_with_unknown_parent = []  # parent_id is NULL and not root
+
+    root_entity_ids = {e.id for e in entities if e.is_root}
+
+    for e in entities:
+        if e.is_root:
+            continue
+        if e.parent_id is not None:
+            # Has a parent - check if it's intermediate (not root)
+            parent = entity_by_id.get(e.parent_id)
+            if parent and not parent.is_root:
+                entities_with_known_parent.append(e)
+            elif e.id in key_entity_ids:
+                # Key entity linked to root - this is meaningful
+                entities_with_known_parent.append(e)
+            else:
+                # Non-key entity linked to root - we now set these to NULL
+                entities_with_unknown_parent.append(e)
+        else:
+            # No parent set
+            if e.id in key_entity_ids:
+                entities_with_known_parent.append(e)
+            else:
+                entities_with_unknown_parent.append(e)
+
     def build_entity_tree(entity: Entity) -> dict:
         children = [e for e in entities if e.parent_id == entity.id]
 
@@ -1345,8 +1380,8 @@ async def refresh_company_cache(
         entity_debt_instruments = [d for d in debt_instruments if d.issuer_id == entity.id]
         debt_details = []
         for d in entity_debt_instruments:
-            guarantor_ids = guarantees_by_debt.get(d.id, [])
-            guarantor_names = [entity_by_id[g].name for g in guarantor_ids if g in entity_by_id]
+            guar_ids = guarantees_by_debt.get(d.id, [])
+            guarantor_names = [entity_by_id[g].name for g in guar_ids if g in entity_by_id]
 
             debt_details.append({
                 "id": str(d.id),
@@ -1366,6 +1401,22 @@ async def refresh_company_cache(
                 "guarantors": guarantor_names,
             })
 
+        # Determine ownership confidence for this entity
+        is_key = entity.id in key_entity_ids
+        has_intermediate_parent = (
+            entity.parent_id is not None
+            and entity.parent_id not in root_entity_ids
+        )
+
+        if entity.is_root:
+            ownership_confidence = "root"
+        elif has_intermediate_parent:
+            ownership_confidence = "verified"  # From indenture/credit agreement parsing
+        elif is_key:
+            ownership_confidence = "key_entity"  # Issuer or guarantor
+        else:
+            ownership_confidence = "unknown"  # From Exhibit 21 only
+
         return {
             "id": str(entity.id),
             "name": entity.name,
@@ -1376,6 +1427,7 @@ async def refresh_company_cache(
             "is_borrower": entity.is_borrower,
             "is_unrestricted": entity.is_unrestricted,
             "ownership_pct": float(entity.ownership_pct) if entity.ownership_pct else 100.0,
+            "ownership_confidence": ownership_confidence,
             "debt_at_entity": {
                 "total": sum(d.outstanding or 0 for d in entity_debt_instruments),
                 "instrument_count": len(entity_debt_instruments),
@@ -1384,9 +1436,23 @@ async def refresh_company_cache(
             "children": [build_entity_tree(c) for c in children],
         }
 
-    # Find root entities (no parent)
-    root_entities = [e for e in entities if e.parent_id is None]
+    # Find root entities (is_root=True or no parent for backwards compatibility)
+    root_entities = [e for e in entities if e.is_root or (e.parent_id is None and not any(
+        other.parent_id == e.id for other in entities
+    ) == False and e.is_root)]
+    # Simpler: just use is_root
+    root_entities = [e for e in entities if e.is_root]
+    if not root_entities:
+        # Fallback: entities with no parent
+        root_entities = [e for e in entities if e.parent_id is None]
+
     structure_tree = [build_entity_tree(e) for e in root_entities]
+
+    # Build list of entities with unknown parent (for transparency)
+    unknown_parent_list = [
+        {"name": e.name, "jurisdiction": e.jurisdiction, "entity_type": e.entity_type}
+        for e in sorted(entities_with_unknown_parent, key=lambda x: x.name or "")
+    ]
 
     response_structure = {
         "company": {"ticker": ticker, "name": company.name, "sector": company.sector},
@@ -1398,9 +1464,25 @@ async def refresh_company_cache(
             "unrestricted_count": sum(1 for e in entities if e.is_unrestricted),
             "total_debt": sum(d.outstanding or 0 for d in debt_instruments),
         },
+        "ownership_coverage": {
+            "known_relationships": len(entities_with_known_parent),
+            "unknown_relationships": len(entities_with_unknown_parent),
+            "key_entities": len(key_entity_ids),
+            "coverage_pct": round(
+                len(entities_with_known_parent) / max(len(entities) - 1, 1) * 100, 1
+            ) if len(entities) > 1 else 100.0,
+            "note": "Ownership relationships are only shown where we have evidence from SEC filings (indentures, credit agreements). "
+                    "Entities with unknown parent are subsidiaries listed in Exhibit 21 where the intermediate holding structure is not disclosed."
+        },
+        "other_subsidiaries": {
+            "count": len(unknown_parent_list),
+            "note": "These subsidiaries exist but their parent company within the corporate structure is unknown from public SEC filings.",
+            "entities": unknown_parent_list[:50],  # Limit to 50 for response size
+            "truncated": len(unknown_parent_list) > 50,
+        } if unknown_parent_list else None,
         "meta": {
             "as_of_date": filing_date.isoformat() if filing_date else None,
-            "confidence": "high",
+            "confidence": "high" if len(entities_with_unknown_parent) == 0 else "partial",
         },
     }
 
