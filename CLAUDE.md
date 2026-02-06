@@ -21,13 +21,13 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 ## Current Status (February 2026)
 
-**Database**: 201 companies | 5,374 entities | 3,056 active debt instruments | 30 priced bonds | 13,862 document sections | 3,831 guarantees | 626 collateral records
+**Database**: 201 companies | 26,771 entities | 3,056 active debt instruments | 2,359 Finnhub bonds (2,017 with pricing) | 13,862 document sections | 3,831 guarantees | 626 collateral records
 
 **Document Coverage**: 93% of instruments linked (2,829 / 3,056) via `DebtInstrumentDocument` junction table
 
 **Entity Distribution**: 94 companies (47%) have 50+ entities, 71 (35%) have 11-50, 34 (17%) have 2-10, 2 have 1 entity (ODFL, TTD - legitimate single-entity companies with no Exhibit 21 subsidiaries)
 
-**Ownership Coverage**: 199/201 companies have identified root entity (`is_root=true`); 862 explicit parent-child relationships
+**Ownership Coverage**: 199/201 companies have identified root entity (`is_root=true`); 1,474 entities with known parent relationships (678 intermediate + 796 key entities linked to root); 25,096 entities with unknown parent (from Exhibit 21 only)
 
 **Data Quality**: QC audit passing - 0 critical, 0 errors, 4 warnings (2026-01-29)
 
@@ -422,6 +422,47 @@ python scripts/fix_ownership_hierarchy.py --all --save-db         # All companie
 | `false` | `NULL` | Orphan (parent unknown from SEC filings) |
 
 **Note:** SEC filings rarely contain explicit intermediate ownership chains. Documents typically say entities are "subsidiaries of the Company" without specifying intermediate holding companies. The extraction only captures what's explicitly documented - no inferences.
+
+### Ownership Data Honesty
+
+We only show parent-child relationships where we have evidence from SEC filings. The `/structure` endpoint includes transparency fields:
+
+**Entity-level `ownership_confidence`:**
+- `root` - Ultimate parent company
+- `key_entity` - Issuer or guarantor with known relationship to parent
+- `verified` - Intermediate parent verified from indenture/credit agreement parsing
+- `unknown` - Listed in Exhibit 21 but parent relationship unknown (not shown in hierarchy tree)
+
+**Response-level `ownership_coverage`:**
+```json
+{
+  "ownership_coverage": {
+    "known_relationships": 3,
+    "unknown_relationships": 227,
+    "key_entities": 4,
+    "coverage_pct": 1.3,
+    "note": "Ownership relationships are only shown where we have evidence..."
+  }
+}
+```
+
+**`other_subsidiaries` section:** Lists entities with unknown parent relationships separately.
+
+**`meta.confidence`:** Shows "partial" when some relationships are unknown, "high" when all are known.
+
+### Fix False Ownership Script
+
+If ownership data needs cleanup:
+```bash
+# Dry run - see what would change
+python scripts/fix_false_ownership.py
+
+# Apply changes (sets parent_id=NULL for non-key entities with unverified relationships)
+python scripts/fix_false_ownership.py --save-db
+
+# Single company
+python scripts/fix_false_ownership.py --ticker RIG --save-db
+```
 
 ### TTM EBITDA Calculation (Leverage Ratios)
 

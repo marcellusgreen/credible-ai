@@ -19,7 +19,7 @@ Corporate structure and debt analysis is complex. Even with AI, achieving accura
 
 ## Current Database
 
-**201 companies | 5,374 entities | 3,056 debt instruments | 591 with CUSIP/ISIN | 13,862 document sections | 3,831 guarantees | 626 collateral records | 13,970 treasury yields**
+**201 companies | 26,771 entities | 3,056 debt instruments | 2,359 Finnhub bonds (2,017 with pricing) | 13,862 document sections | 3,831 guarantees | 626 collateral records | 13,970 treasury yields**
 
 Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
 
@@ -43,8 +43,9 @@ Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
 - **Individual Debt Instruments**: Each bond, note, and credit facility extracted separately (not just totals)
 - **Guarantee Relationships**: 3,831 guarantee records linking debt to guarantor subsidiaries
 - **Collateral Tracking**: 626 collateral records with asset types (equipment, vehicles, real estate, etc.)
-- **Corporate Ownership Hierarchy**: Nested parent-child structures parsed from SEC Exhibit 21 indentation
-- **Direct/Indirect Subsidiaries**: Clear classification of ownership relationships
+- **Corporate Ownership Hierarchy**: Nested parent-child structures from SEC Exhibit 21 and indenture parsing
+- **Ownership Transparency**: API indicates confidence level for each relationship (verified vs unknown)
+- **Direct/Indirect Subsidiaries**: Clear classification of ownership relationships where evidence exists
 - **Complex Corporate Structures**: Multiple owners, joint ventures, VIEs, partial ownership
 - **Financial Statements**: Quarterly income statement, balance sheet, cash flow from 10-Q/10-K
 - **Credit Ratios**: Leverage, interest coverage, margins, liquidity metrics
@@ -93,6 +94,46 @@ Returns:
 - **10-Q filing**: Sum trailing 4 quarters
 - **<4 quarters available**: Annualize (flagged as `is_annualized: true`)
 - **No D&A data**: Use operating income as proxy (flagged as `ebitda_estimated: true`)
+
+### Ownership Relationship Transparency
+
+Corporate ownership hierarchies are complex. SEC Exhibit 21 lists subsidiaries but rarely shows intermediate holding structures. We only show parent-child relationships where we have evidence:
+
+```json
+{
+  "structure": {
+    "name": "Transocean Ltd.",
+    "ownership_confidence": "root",
+    "children": [
+      {
+        "name": "Transocean Inc.",
+        "ownership_confidence": "key_entity",
+        "children": [
+          {
+            "name": "Transocean Offshore Deepwater Holdings",
+            "ownership_confidence": "verified"
+          }
+        ]
+      }
+    ]
+  },
+  "ownership_coverage": {
+    "known_relationships": 3,
+    "unknown_relationships": 227,
+    "coverage_pct": 1.3
+  },
+  "other_subsidiaries": {
+    "count": 227,
+    "note": "Parent relationships unknown from public SEC filings"
+  }
+}
+```
+
+**Ownership confidence levels:**
+- `root` - Ultimate parent company
+- `key_entity` - Issuer or guarantor (relationship matters for credit analysis)
+- `verified` - Intermediate parent verified from indenture/credit agreement
+- `unknown` - From Exhibit 21 only (listed in `other_subsidiaries`, not in hierarchy tree)
 
 ### Data Freshness Advantage
 
