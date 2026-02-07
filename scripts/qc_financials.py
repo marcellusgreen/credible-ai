@@ -15,21 +15,16 @@ Usage:
 """
 
 import argparse
-import asyncio
-import os
 import random
 import re
 import sys
 from dataclasses import dataclass, field
 from typing import Optional
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
+from script_utils import get_db_session, print_header, run_async
 from app.services.financial_extraction import detect_filing_scale
 
 
@@ -534,22 +529,15 @@ async def main():
     parser.add_argument("--sample", type=int, help="Audit N random companies")
     args = parser.parse_args()
 
-    settings = get_settings()
-    url = settings.database_url.replace('postgresql://', 'postgresql+asyncpg://', 1)
-    engine = create_async_engine(url, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
     tickers = [args.ticker.upper()] if args.ticker else None
 
-    async with async_session() as db:
+    async with get_db_session() as db:
         result = await run_audit(
             db,
             tickers=tickers,
             sample_size=args.sample,
             verbose=args.verbose
         )
-
-    await engine.dispose()
 
     if result['status'] == 'fail':
         sys.exit(2)
@@ -560,4 +548,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_async(main())

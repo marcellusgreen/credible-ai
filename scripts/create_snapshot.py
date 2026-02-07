@@ -17,23 +17,16 @@ Usage:
 """
 
 import argparse
-import asyncio
-import os
-import sys
 from datetime import date, datetime
 from decimal import Decimal
 from uuid import uuid4
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from sqlalchemy import select
 
-from sqlalchemy import select, func
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
-
+from script_utils import get_db_session, print_header, run_async
 from app.models import (
     Company, CompanyMetrics, CompanyFinancials, CompanySnapshot,
-    Entity, DebtInstrument, Guarantee
+    Entity, DebtInstrument
 )
 
 
@@ -222,19 +215,9 @@ async def main():
     if args.date:
         snapshot_date = date.fromisoformat(args.date)
 
-    # Connect to database
-    database_url = os.environ.get("DATABASE_URL")
-    if not database_url:
-        print("ERROR: DATABASE_URL not set")
-        return
+    print_header("CREATE COMPANY SNAPSHOTS")
 
-    if database_url.startswith("postgresql://"):
-        database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-
-    engine = create_async_engine(database_url)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    async with async_session() as session:
+    async with get_db_session() as session:
         # Get companies to snapshot
         if args.ticker:
             result = await session.execute(
@@ -281,4 +264,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_async(main())

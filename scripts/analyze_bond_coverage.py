@@ -7,29 +7,13 @@ Phase 2: CUSIPs without ISINs (can derive ISIN)
 Phase 3: No identifiers (need SEC discovery)
 """
 
-import asyncio
-import os
-import sys
-
-from dotenv import load_dotenv
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-load_dotenv()
+from script_utils import get_db_session, print_header, run_async
 
 
 async def analyze_coverage():
-    database_url = os.getenv("DATABASE_URL", "")
-    if database_url.startswith("postgres://"):
-        database_url = database_url.replace("postgres://", "postgresql+asyncpg://", 1)
-    elif database_url.startswith("postgresql://"):
-        database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-
-    engine = create_async_engine(database_url, echo=False)
-    async_session = async_sessionmaker(engine, expire_on_commit=False)
-
-    async with async_session() as session:
+    async with get_db_session() as session:
         # Phase 1: ISINs we have
         result = await session.execute(
             text("SELECT COUNT(*) FROM debt_instruments WHERE is_active = true AND isin IS NOT NULL AND isin <> ''")
@@ -111,9 +95,7 @@ async def analyze_coverage():
         )
         companies_no_id = result.fetchall()
 
-        print("=" * 70)
-        print("BOND IDENTIFIER COVERAGE ANALYSIS")
-        print("=" * 70)
+        print_header("BOND IDENTIFIER COVERAGE ANALYSIS")
         print()
         print(f"Phase 1 - With ISIN (ready to price):      {with_isin:,}")
         print(f"Phase 2 - CUSIP only (can derive ISIN):    {cusip_no_isin:,}")
@@ -149,8 +131,7 @@ async def analyze_coverage():
         for ticker, cnt in companies_no_id:
             print(f"  {ticker:<8} {cnt:<15}")
 
-    await engine.dispose()
 
 
 if __name__ == "__main__":
-    asyncio.run(analyze_coverage())
+    run_async(analyze_coverage())

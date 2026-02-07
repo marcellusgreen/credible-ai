@@ -12,18 +12,11 @@ Usage:
 """
 
 import argparse
-import asyncio
-import os
-import sys
-from datetime import datetime
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from dotenv import load_dotenv
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-load_dotenv()
+from script_utils import get_db_session, print_header, print_summary, run_async
 
 
 def format_cents(value: int | None) -> str:
@@ -220,18 +213,12 @@ async def main():
     parser.add_argument("--save-db", action="store_true", help="Save fixes to database")
     args = parser.parse_args()
 
-    database_url = os.getenv('DATABASE_URL')
-    if not database_url:
-        print("ERROR: DATABASE_URL not set")
-        sys.exit(1)
-
-    print("Financial QC Fix Script")
-    print("=" * 60)
+    print_header("FINANCIAL QC FIX SCRIPT")
     print(f"Mode: {'SAVE TO DB' if args.save_db else 'DRY RUN'}")
 
-    engine = create_async_engine(database_url)
+    async with get_db_session() as session:
+        conn = await session.connection()
 
-    async with engine.connect() as conn:
         # Step 1: Delete impossible records
         deleted = await delete_impossible_records(conn, args.save_db)
 
@@ -242,18 +229,15 @@ async def main():
         # Step 3: Report other issues
         await find_additional_issues(conn)
 
-    await engine.dispose()
-
-    print("\n" + "=" * 60)
-    print("SUMMARY")
-    print("=" * 60)
-    print(f"Deleted impossible records: {deleted}")
-    print(f"Re-extracted with revenue: {fixed}")
-    print(f"Failed re-extractions: {failed}")
+    print_summary({
+        "Deleted impossible records": deleted,
+        "Re-extracted with revenue": fixed,
+        "Failed re-extractions": failed,
+    })
 
     if not args.save_db:
         print("\n[DRY RUN] Run with --save-db to apply fixes")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_async(main())

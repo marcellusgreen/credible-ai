@@ -8,33 +8,16 @@ Checks:
 4. Companies with flat vs nested structures
 """
 
-import sys
-from pathlib import Path
+from sqlalchemy import select, func, and_
 
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-import asyncio
-from collections import defaultdict
-from sqlalchemy import select, func, and_, or_, case
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
-
+from script_utils import get_db_session, print_header, run_async
 from app.models import Company, Entity, OwnershipLink
-from app.core.config import get_settings
-
-settings = get_settings()
 
 
 async def audit_ownership():
     """Run ownership data audit."""
-    engine = create_async_engine(settings.database_url.replace("postgresql://", "postgresql+asyncpg://"))
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    async with async_session() as db:
-        print("=" * 70)
-        print("OWNERSHIP DATA AUDIT")
-        print("=" * 70)
+    async with get_db_session() as db:
+        print_header("OWNERSHIP DATA AUDIT")
 
         # 1. Basic entity counts
         total_entities = await db.scalar(select(func.count()).select_from(Entity))
@@ -208,4 +191,4 @@ async def audit_ownership():
 
 
 if __name__ == "__main__":
-    asyncio.run(audit_ownership())
+    run_async(audit_ownership())

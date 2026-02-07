@@ -15,18 +15,11 @@ Usage:
 """
 
 import argparse
-import asyncio
-import os
-import sys
 from collections import defaultdict
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from dotenv import load_dotenv
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
 
-load_dotenv()
+from script_utils import get_db_session, print_header, run_async
 
 # Known issuer aliases (entity names that refer to the same legal entity)
 ISSUER_ALIASES = {
@@ -48,17 +41,10 @@ async def main():
     parser.add_argument("--verbose", action="store_true", help="Show detailed output")
     args = parser.parse_args()
 
-    database_url = os.getenv('DATABASE_URL')
-    if not database_url:
-        print("ERROR: DATABASE_URL not set")
-        sys.exit(1)
+    print_header("DEDUPLICATE DEBT INSTRUMENTS")
 
-    if 'postgresql://' in database_url and '+asyncpg' not in database_url:
-        database_url = database_url.replace('postgresql://', 'postgresql+asyncpg://', 1)
-
-    engine = create_async_engine(database_url)
-
-    async with engine.begin() as conn:
+    async with get_db_session() as session:
+        conn = await session.connection()
         # Get all potential duplicates
         # Use COALESCE to handle NULL maturity dates (NULL = NULL is false in SQL)
         result = await conn.execute(text('''
@@ -268,8 +254,6 @@ async def main():
         else:
             print(f"\n[DRY RUN] Run with --save to apply changes")
 
-    await engine.dispose()
-
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_async(main())
