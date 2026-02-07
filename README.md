@@ -529,6 +529,29 @@ The extraction pipeline is **idempotent** - safe to re-run on existing companies
 
 **Typical cost: $0.02-0.03 per company**
 
+### Script Utilities
+
+All scripts use shared utilities from `scripts/script_utils.py` for consistency:
+
+```python
+from script_utils import get_db_session, print_header, run_async
+
+async def main():
+    print_header("SCRIPT NAME")
+    async with get_db_session() as db:
+        # Work with database session
+        pass
+
+if __name__ == "__main__":
+    run_async(main())
+```
+
+Key utilities:
+- `get_db_session()` - Async database session with proper cleanup
+- `run_async()` - Runs async code with Windows event loop handling
+- `print_header()`, `print_summary()` - Consistent CLI output
+- `create_base_parser()` - Common CLI arguments (`--ticker`, `--all`, `--limit`)
+
 ## Project Structure
 
 ```
@@ -563,6 +586,10 @@ credible/
 │       ├── pricing_history.py       # Historical pricing backfill
 │       └── treasury_yields.py       # Treasury yield curves
 ├── scripts/                       # CLI tools
+│   ├── script_utils.py            # Shared utilities (DB, parsers, progress)
+│   ├── extract_iterative.py       # Complete extraction pipeline
+│   ├── recompute_metrics.py       # Metrics recomputation
+│   └── ...                        # See CLAUDE.md for full list
 ├── alembic/                       # Database migrations
 ├── docs/                          # Documentation
 │   ├── DEPLOYMENT.md              # Deployment guide

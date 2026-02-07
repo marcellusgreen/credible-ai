@@ -94,8 +94,9 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 **Scripts** are thin CLI wrappers that import from services:
 - `scripts/extract_iterative.py` - Complete extraction pipeline
 - `scripts/recompute_metrics.py` - Metrics recomputation
+- `scripts/script_utils.py` - **Shared utilities** (DB sessions, parsers, progress)
 
-This separation keeps business logic testable and reusable while scripts handle CLI concerns.
+This separation keeps business logic testable and reusable while scripts handle CLI concerns. All scripts should use `script_utils.py` for consistent database handling and Windows compatibility.
 
 ## Key Files
 
@@ -909,23 +910,56 @@ This pattern is used by `guarantee_extraction.py` and `collateral_extraction.py`
 
 ### Script Utilities (`scripts/script_utils.py`)
 
-Shared utilities for CLI scripts:
+Shared utilities for CLI scripts. **All new scripts should use these utilities** to ensure consistency and proper Windows/async handling.
 
 ```python
 from script_utils import (
+    # Database
     get_db_session,         # Async database session context manager
     get_all_companies,      # Get all companies with CIKs
     get_company_by_ticker,  # Get single company by ticker
+
+    # CLI parsers
     create_base_parser,     # Base argparse with --ticker/--all/--limit
     create_fix_parser,      # Fix script parser with --save/--verbose
     create_extract_parser,  # Extraction parser with --cik/--save-db/--skip-existing
+
+    # Output formatting
     print_header,           # Print formatted header
+    print_subheader,        # Print formatted subheader
     print_summary,          # Print stats summary
     print_progress,         # Print progress indicator
+
+    # Batch processing
     process_companies,      # Batch process companies with progress
     run_async,              # Run async function with Windows event loop handling
 )
 ```
+
+**Standard script pattern:**
+```python
+#!/usr/bin/env python3
+"""Script description."""
+
+from script_utils import get_db_session, print_header, run_async
+
+async def main():
+    print_header("SCRIPT NAME")
+
+    async with get_db_session() as db:
+        # Do work with db session
+        pass
+
+if __name__ == "__main__":
+    run_async(main())
+```
+
+**Benefits:**
+- Eliminates ~15-20 lines of boilerplate per script (sys.path, dotenv, engine creation)
+- Handles Windows event loop policy automatically
+- Handles UTF-8 output encoding on Windows
+- Proper async session cleanup with rollback on errors
+- Consistent CLI output formatting
 
 ## Common Issues
 
