@@ -22,20 +22,13 @@ Checks performed:
 """
 
 import argparse
-import asyncio
-import os
 import sys
 from datetime import date, datetime
-from typing import Optional
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from sqlalchemy import select, func, text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
-
-from app.core.config import get_settings
-from app.models import Company, Entity, DebtInstrument, CompanyFinancials, CompanyMetrics
+from script_utils import get_db_session, run_async
 
 
 class QCAudit:
@@ -439,20 +432,13 @@ async def main():
     parser.add_argument("--verbose", "-v", action="store_true", help="Show detailed output")
     args = parser.parse_args()
 
-    settings = get_settings()
-    url = settings.database_url.replace('postgresql://', 'postgresql+asyncpg://', 1)
-    engine = create_async_engine(url, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    async with async_session() as db:
+    async with get_db_session() as db:
         audit = QCAudit(db, verbose=args.verbose, fix=args.fix)
         success = await audit.run_all_checks()
-
-    await engine.dispose()
 
     # Exit with appropriate code
     sys.exit(0 if success else 1)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_async(main())

@@ -5,22 +5,12 @@ Fix companies that have CIK numbers as their ticker.
 Maps CIK numbers to proper stock ticker symbols.
 """
 
-import asyncio
-import os
-import sys
-from dotenv import load_dotenv
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-load_dotenv()
+import argparse
 
 from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
 
-from app.core.config import get_settings
+from script_utils import get_db_session, print_header, run_async
 from app.models import Company, CompanyMetrics
-
-settings = get_settings()
 
 # CIK to Ticker mapping for well-known companies
 # Source: SEC EDGAR company search
@@ -169,14 +159,9 @@ CIK_TO_TICKER = {
 async def fix_tickers(dry_run: bool = False):
     """Update companies with CIK as ticker to use proper ticker symbols."""
 
-    database_url = settings.database_url
-    if database_url.startswith("postgresql://"):
-        database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    print_header("FIX CIK TICKERS")
 
-    engine = create_async_engine(database_url, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    async with async_session() as db:
+    async with get_db_session() as db:
         # Get all companies with CIK as ticker
         result = await db.execute(select(Company).order_by(Company.ticker))
         companies = list(result.scalars().all())
@@ -232,13 +217,10 @@ async def fix_tickers(dry_run: bool = False):
                 name_safe = name[:50].encode('ascii', 'replace').decode('ascii')
                 print(f"  {cik}: {name_safe}")
 
-        await engine.dispose()
-
 
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="Preview without saving")
     args = parser.parse_args()
 
-    asyncio.run(fix_tickers(dry_run=args.dry_run))
+    run_async(fix_tickers(dry_run=args.dry_run))
