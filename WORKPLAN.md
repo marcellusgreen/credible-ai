@@ -1,37 +1,91 @@
 # DebtStack Work Plan
 
-Last Updated: 2026-02-03
+Last Updated: 2026-02-04
 
 ## Current Status
 
-**Database**: 201 companies | 5,374 entities | 3,056 debt instruments | 591 with CUSIP/ISIN | 30 priced bonds | 13,862 document sections | 600+ financials | 3,831 guarantees | 626 collateral records | 1,181 covenants | 13,970 treasury yields
+**Database**: 201 companies | 5,374 entities | 4,822+ debt instruments (incl. ~1,750+ Finnhub bonds) | 591 original with CUSIP/ISIN | 30 priced bonds | 13,862 document sections | 600+ financials | 3,831 guarantees | 626 collateral records | 1,181 covenants | 13,970 treasury yields
 **Deployment**: Live at `https://credible-ai-production.up.railway.app`
 **Infrastructure**: Railway + Neon PostgreSQL + Upstash Redis (complete)
 **Leverage Coverage**: 155/189 companies (82%) - good coverage across all sectors
 **Guarantee Coverage**: ~1,500/2,485 debt instruments (~60%) - up from 34.7% on 2026-01-21
 **Collateral Coverage**: 230/230 senior_secured instruments (100%) with collateral type identified
-**Document Coverage**: 100% (2,560/2,557 linkable instruments)
+**Document Coverage**: 2,777/4,675 linkable instruments (59.4%) — dropped from 100% due to 1,750+ new Finnhub bonds awaiting linking
 **Ownership Coverage**: 199/201 companies have identified root entity; 862 explicit parent-child relationships extracted
 **Covenant Coverage**: 1,181 covenants across 201 companies (100%), 92.5% linked to specific instruments
 **Data Quality**: QC audit passing - 0 critical, 0 errors, 4 warnings (2026-01-26)
 
 ---
 
-## What's Next: Historical Pricing & SDK
+## What's Next: Finnhub Bond Discovery → Linking → Pricing
 
-### Immediate Priority: Finnhub Pricing Expansion
-**Why**: Currently only 30 bonds have pricing data. Need to expand to 200+ bonds.
+### Step 1: Finnhub Bond Discovery (Phase 4) — 🔄 IN PROGRESS
+**Status**: Running via `python scripts/expand_bond_pricing.py --phase4`
+**Script**: `scripts/expand_bond_pricing.py` → `phase4_discover_from_finnhub()`
 
-**Tasks**:
-1. Configure Finnhub premium API key
-2. Run bond pricing backfill: `python scripts/backfill_pricing_history.py --all --days 1095`
-3. Set up Railway cron job for `scripts/collect_daily_pricing.py`
+Discovers bonds from Finnhub API by iterating CUSIP issuer codes (AA-ZZ pattern per company).
+Creates `DebtInstrument` records with CUSIP, ISIN, coupon, maturity, seniority, and `attributes={"source": "finnhub_discovery"}`.
+
+**Progress (as of 2026-02-04)**:
+- 109/201 companies scanned → 1,758 bonds discovered
+- 92 companies remaining (includes both no-bond companies and not-yet-scanned)
+- ~5 min/company, ~288 API calls/company, rate limited at 1.1s/call
+
+**To resume if interrupted**: `python scripts/expand_bond_pricing.py --phase4`
+- Script is idempotent — skips companies already processed (checks existing bonds by CUSIP)
+- Check which companies are done: companies with `instrument_type='bond' AND cusip IS NOT NULL AND isin IS NOT NULL AND created_at >= '2026-02-03'`
+
+### Step 2: Link Finnhub Bonds to Documents — ⬜ WAITING (on Step 1)
+**Status**: Script ready, waiting for Phase 4 discovery to finish
+**Script**: `scripts/link_finnhub_bonds.py`
+
+Links newly discovered Finnhub bonds to existing indenture documents, then extracts guarantees and collateral.
+
+**Sub-steps** (all idempotent, run in sequence):
+1. **Backfill source tags** — Tag existing Finnhub bonds with `attributes.source = "finnhub_discovery"`
+2. **Pattern matching** — Search doc content for rate + maturity patterns (confidence 0.75-0.85)
+3. **Heuristic matching** — Score-based matching: rate (+0.4), year (+0.3), type (+0.2) (threshold 0.5)
+4. **Base indenture fallback** — Link to company's base indenture (confidence 0.55-0.60)
+5. **Mark unmatchable** — Tag bonds where company has no indenture documents
+6. **Extract guarantees** — Run guarantee extraction for companies with newly-linked bonds
+7. **Extract collateral** — Run collateral extraction for secured bonds with links
+
+**Commands**:
+```bash
+python scripts/link_finnhub_bonds.py --all --dry-run    # Preview first
+python scripts/link_finnhub_bonds.py --all               # Live run
+python scripts/link_finnhub_bonds.py --ticker CHTR        # Single company
+python scripts/link_finnhub_bonds.py --step backfill      # Specific step only
+python scripts/link_finnhub_bonds.py --step match         # Pattern matching only
+python scripts/link_finnhub_bonds.py --step guarantees    # Guarantees only
+```
+
+**Dry run results (2026-02-04)**:
+- 1,266 bonds to backfill with source tags
+- 1,511 unlinked bonds across 99 companies
+- Pattern matching: ~5% hit rate (rate+maturity found in doc text)
+- Base indenture fallback: covers ~70 companies with 1,000+ bonds
+- All companies have indenture documents available (0 to mark as no-doc)
+
+**Notes**:
+- Uses fresh DB session per step (survives Neon connection drops)
+- Per-company error handling with rollback (2 companies hit connection timeouts in dry run, recovered)
+- `created_by='finnhub_linker'` on all links for tracking
+
+### Step 3: Price Newly Discovered Bonds — ⬜ WAITING (on Step 2)
+**Script**: `python scripts/expand_bond_pricing.py --phase1`
+
+Fetches current prices from Finnhub for all bonds with CUSIPs.
+
+### Step 4: Historical Pricing Backfill — ⬜ WAITING (on Step 3)
+```bash
+python scripts/backfill_pricing_history.py --all --days 1095 --with-spreads
+```
 
 ### Then: SDK & Documentation
-Once Finnhub premium is configured:
-1. Backfill bond pricing history: `python scripts/backfill_pricing_history.py --all --days 1095`
-2. With spreads (using treasury yields): `python scripts/backfill_pricing_history.py --all --with-spreads`
-3. Set up Railway cron job for `scripts/collect_daily_pricing.py`
+1. SDK publication to PyPI
+2. Mintlify docs deployment to docs.debtstack.ai
+3. Set up Railway cron job for daily pricing collection
 
 ---
 
@@ -1470,6 +1524,66 @@ Traditional data APIs lack network effects. These features create compounding va
 
 ---
 
+### Future Opportunity: Corporate Registry Ownership Enrichment
+**Status**: 📋 BACKLOG
+**Effort**: Medium (3-5 days)
+**Priority**: LOW - Nice to have for ownership coverage improvement
+
+Use public corporate registries to enrich entity parent-child relationships beyond what SEC filings provide.
+
+**The Opportunity:**
+- SEC Exhibit 21 lists subsidiaries but rarely shows intermediate ownership chains
+- Corporate registries (especially UK Companies House) have **PSC (Persons with Significant Control)** data showing exact parent companies
+- Current ownership coverage: 862 explicit parent-child relationships; 25,096 entities with unknown parent
+
+**Registry Coverage by Jurisdiction:**
+
+| Jurisdiction | Registry | Data Quality | Cost | Our Entity Count |
+|--------------|----------|--------------|------|------------------|
+| UK (England & Wales) | Companies House | Excellent - PSC shows parent company, % ownership | FREE API | ~100+ entities |
+| Ireland | CRO | Good | Paid | Varies |
+| Luxembourg | LBR | Good - shareholder info | Paid | ~50+ entities |
+| Netherlands | KVK | Good | Paid | ~30+ entities |
+| Switzerland | Zefix | Limited | Free | ~50+ entities |
+| Cayman Islands | General Registry | Improving (beneficial ownership now required) | Paid | ~200+ entities |
+| Delaware | Div of Corps | Minimal (no ownership in filings) | Paid | ~500+ entities |
+
+**Recommended Approach:**
+
+1. **UK Companies House (Start here)** - Free API, best data quality
+   - Query PSC endpoint: `GET /company/{number}/persons-with-significant-control`
+   - Returns parent company name, jurisdiction, company number, ownership %
+   - Example: `Accenture Song Brand UK Limited` → `Accenture (UK) Limited` → `Accenture Plc (Ireland)`
+
+2. **OpenCorporates API** - Aggregates 200M+ companies from 145 jurisdictions
+   - Free for academics, journalists, NGOs, nonprofits (apply for access)
+   - Has `control_mechanisms` with share ownership percentages
+   - Would need to apply as fintech/research project
+
+3. **Match registry data to our entities** by name + jurisdiction
+
+**Implementation Steps:**
+```bash
+# Step 1: UK Companies House enrichment
+python scripts/enrich_ownership_uk.py --dry-run    # Preview matches
+python scripts/enrich_ownership_uk.py --save-db    # Apply to database
+
+# Step 2: OpenCorporates enrichment (after getting API access)
+python scripts/enrich_ownership_opencorporates.py --all
+```
+
+**Expected Impact:**
+- UK entities: ~100 parent relationships discovered
+- With OpenCorporates: potentially 500-1,000+ across EU jurisdictions
+- Won't help with US (Delaware) or offshore (Bermuda) - those registries don't disclose ownership
+
+**Defer until:**
+- Core product distribution complete (SDK, docs)
+- User requests for better ownership coverage
+- OpenCorporates API access approved
+
+---
+
 ### Completed: Covenant Relationship Extraction
 **Status**: ✅ COMPLETE (2026-01-24)
 **Effort**: Medium (implemented in 1 day)
@@ -1676,6 +1790,62 @@ When starting a new session, read this file first, then:
 ---
 
 ## Session Log
+
+### 2026-02-04 (Session 30) - Finnhub Bond Linking Pipeline
+
+**Objective:** Link Finnhub-discovered bonds to existing indenture documents, then extract guarantees and collateral.
+
+**Context:** Phase 4 bond discovery (`expand_bond_pricing.py --phase4`) is creating `DebtInstrument` records with CUSIP/ISIN from Finnhub, but they have no document links, no guarantees, and no collateral. This session built the pipeline to fill those gaps.
+
+**Part 1: Tag Finnhub Bonds**
+- ✅ Added `attributes={"source": "finnhub_discovery"}` to `DebtInstrument` constructor in `phase4_discover_from_finnhub()` (line ~950 of `expand_bond_pricing.py`)
+- Tags all future Finnhub-discovered bonds for easy identification
+
+**Part 2: Orchestration Script**
+- ✅ Created `scripts/link_finnhub_bonds.py` (~400 lines) with 7 sub-steps:
+  1. Backfill source tags on existing Finnhub bonds
+  2. Pattern-based document matching (rate + maturity in doc content, confidence 0.75-0.85)
+  3. Heuristic document matching (score-based: rate +0.4, year +0.3, type +0.2, threshold 0.5)
+  4. Base indenture fallback (confidence 0.55-0.60)
+  5. Mark unmatchable bonds (no indenture documents available)
+  6. Guarantee extraction for newly-linked bonds
+  7. Collateral extraction for secured bonds with links
+- ✅ CLI: `--all`, `--ticker`, `--dry-run`, `--step <name>`
+- ✅ Fresh DB session per step (prevents cascade failures from Neon connection drops)
+- ✅ Per-company try/except with rollback (survives individual company timeouts)
+- ✅ Progress output per company for long-running batch operations
+- ✅ Reuses existing infrastructure: `smart_document_matching.py`, `link_to_base_indenture.py`, `document_linking.py`, `guarantee_extraction.py`, `collateral_extraction.py`
+
+**Part 3: Dry Run Results**
+- 1,266 bonds to backfill with source tags
+- 1,511 unlinked bonds across 99 companies
+- Pattern matching hit rate: ~5% (bonds where coupon+maturity found in doc text)
+- Base indenture fallback: covers ~70 companies, ~1,000+ bonds
+- 2 companies hit Neon connection timeouts — recovered and continued
+- All companies have indenture documents (0 to mark as no-doc-expected)
+
+**Phase 4 Discovery Status (as of session end)**:
+- 109/201 companies scanned → 1,758 bonds discovered
+- 92 companies remaining — Phase 4 still running in background
+
+**Files Created:**
+| File | Purpose |
+|------|---------|
+| `scripts/link_finnhub_bonds.py` | Orchestration script for linking Finnhub bonds to documents |
+
+**Files Modified:**
+| File | Changes |
+|------|---------|
+| `scripts/expand_bond_pricing.py` | Added `attributes={"source": "finnhub_discovery"}` to Phase 4 bond creation |
+| `WORKPLAN.md` | Updated status, added "What's Next" pipeline steps, session log |
+
+**Next Steps:**
+1. Wait for Phase 4 discovery to finish (92 companies remaining)
+2. Run linking pipeline: `python scripts/link_finnhub_bonds.py --all --dry-run` then `--all`
+3. Run Phase 1 pricing: `python scripts/expand_bond_pricing.py --phase1`
+4. Historical pricing backfill: `python scripts/backfill_pricing_history.py --all --with-spreads`
+
+---
 
 ### 2026-02-02 (Session 29) - Treasury Yield History & Bond Pricing Infrastructure
 
