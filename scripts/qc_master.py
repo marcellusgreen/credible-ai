@@ -19,22 +19,19 @@ Usage:
 """
 
 import argparse
-import asyncio
-import os
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, date
-from typing import Optional
+from datetime import datetime
 from collections import defaultdict
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from dotenv import load_dotenv
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
-load_dotenv()
+from script_utils import (
+    get_db_session,
+    print_header,
+    run_async,
+)
 
 
 @dataclass
@@ -1445,30 +1442,14 @@ async def main():
     parser.add_argument("--fix", action="store_true", help="Auto-fix where safe")
     args = parser.parse_args()
 
-    database_url = os.getenv('DATABASE_URL')
-    if not database_url:
-        print("ERROR: DATABASE_URL not set")
-        sys.exit(1)
-
-    # Convert to async URL
-    if 'postgresql://' in database_url and '+asyncpg' not in database_url:
-        database_url = database_url.replace('postgresql://', 'postgresql+asyncpg://', 1)
-
-    engine = create_async_engine(database_url, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    print("=" * 70)
-    print("MASTER DATA QUALITY CONTROL SUITE")
-    print("=" * 70)
+    print_header("MASTER DATA QUALITY CONTROL SUITE")
     print("ACCURACY IS THE NUMBER ONE PRODUCT")
     print(f"\nRun time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-    async with async_session() as db:
+    async with get_db_session() as db:
         qc = QCMaster(db, verbose=args.verbose, fix=args.fix)
         categories = [args.category] if args.category else None
         result = await qc.run_all(categories)
-
-    await engine.dispose()
 
     if result['status'] == 'fail':
         sys.exit(2)
@@ -1479,4 +1460,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_async(main())

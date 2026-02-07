@@ -19,15 +19,14 @@ Usage:
 
 import argparse
 import asyncio
-import os
 import sys
-from datetime import datetime, date
+from datetime import datetime
 
-from dotenv import load_dotenv
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from script_utils import (
+    get_db_session,
+    print_header,
+    run_async,
+)
 
 from app.services.pricing_history import copy_current_to_history
 from app.services.bond_pricing import (
@@ -37,8 +36,6 @@ from app.services.bond_pricing import (
     REQUEST_DELAY,
 )
 from app.services.yield_calculation import calculate_ytm_and_spread
-
-load_dotenv()
 
 
 async def update_current_prices(
@@ -133,30 +130,14 @@ async def main():
             print(f"Error: Invalid date format: {args.date}")
             sys.exit(1)
 
-    # Database connection
-    database_url = os.getenv("DATABASE_URL", "")
-    if database_url.startswith("postgres://"):
-        database_url = database_url.replace("postgres://", "postgresql+asyncpg://", 1)
-    elif database_url.startswith("postgresql://"):
-        database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-
-    if not database_url:
-        print("Error: DATABASE_URL not set")
-        sys.exit(1)
-
-    engine = create_async_engine(database_url, echo=False)
-    async_session = async_sessionmaker(engine, expire_on_commit=False)
-
-    print(f"\n{'='*60}")
-    print("DAILY BOND PRICING COLLECTION")
-    print(f"{'='*60}")
+    print_header("DAILY BOND PRICING COLLECTION")
     print(f"Time: {datetime.now().isoformat()}")
     print(f"Dry run: {args.dry_run}")
     if args.ticker:
         print(f"Ticker: {args.ticker}")
     print()
 
-    async with async_session() as session:
+    async with get_db_session() as session:
         # Step 1: Update current prices (unless --history-only)
         if not args.history_only:
             print("Step 1: Updating current prices...")
@@ -185,15 +166,13 @@ async def main():
             print(f"  Errors:            {history_stats.errors}")
             print()
 
-    await engine.dispose()
-
-    print(f"{'='*60}")
+    print("=" * 60)
     print("COMPLETE")
-    print(f"{'='*60}")
+    print("=" * 60)
 
     if args.dry_run:
         print("\n[DRY RUN - No data was saved]")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_async(main())

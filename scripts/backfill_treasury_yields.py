@@ -16,24 +16,20 @@ Usage:
 """
 
 import argparse
-import asyncio
-import os
-import sys
 from datetime import date
 
-from dotenv import load_dotenv
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from script_utils import (
+    get_db_session,
+    print_header,
+    print_summary,
+    run_async,
+)
 
 from app.services.treasury_yields import (
     backfill_treasury_yields,
     get_treasury_yield_stats,
     BENCHMARKS,
 )
-
-load_dotenv()
 
 
 async def main():
@@ -53,28 +49,12 @@ async def main():
 
     args = parser.parse_args()
 
-    # Database connection
-    database_url = os.getenv("DATABASE_URL", "")
-    if database_url.startswith("postgres://"):
-        database_url = database_url.replace("postgres://", "postgresql+asyncpg://", 1)
-    elif database_url.startswith("postgresql://"):
-        database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-
-    if not database_url:
-        print("Error: DATABASE_URL not set")
-        sys.exit(1)
-
-    engine = create_async_engine(database_url, echo=False)
-    async_session = async_sessionmaker(engine, expire_on_commit=False)
-
     # Show stats
     if args.stats:
-        async with async_session() as session:
+        async with get_db_session() as session:
             stats = await get_treasury_yield_stats(session)
 
-        print(f"\n{'='*60}")
-        print("TREASURY YIELD HISTORY STATISTICS")
-        print(f"{'='*60}")
+        print_header("TREASURY YIELD HISTORY STATISTICS")
         print(f"Total records:      {stats.total_records:,}")
         print(f"Unique dates:       {stats.unique_dates:,}")
         if stats.min_date:
@@ -83,8 +63,6 @@ async def main():
             print("Date range:         No data yet")
         print(f"Benchmarks:         {', '.join(stats.benchmarks_covered) if stats.benchmarks_covered else 'None'}")
         print(f"Expected benchmarks: {', '.join(BENCHMARKS)}")
-
-        await engine.dispose()
         return
 
     # Determine year range
@@ -97,14 +75,12 @@ async def main():
         from_year = args.from_year or (current_year - 3)
         to_year = args.to_year or current_year
 
-    print(f"\n{'='*60}")
-    print("BACKFILL TREASURY YIELDS")
-    print(f"{'='*60}")
+    print_header("BACKFILL TREASURY YIELDS")
     print(f"Years: {from_year} to {to_year}")
     print(f"Dry run: {args.dry_run}")
     print()
 
-    async with async_session() as session:
+    async with get_db_session() as session:
         stats = await backfill_treasury_yields(
             session,
             from_year=from_year,
@@ -112,15 +88,12 @@ async def main():
             dry_run=args.dry_run,
         )
 
-    await engine.dispose()
-
     # Summary
-    print(f"\n{'='*60}")
-    print("SUMMARY")
-    print(f"{'='*60}")
-    print(f"Years processed:    {stats['years_processed']}")
-    print(f"Total yields found: {stats['total_yields']:,}")
-    print(f"Records saved:      {stats['saved']:,}")
+    print_summary({
+        "Years processed": stats['years_processed'],
+        "Total yields found": f"{stats['total_yields']:,}",
+        "Records saved": f"{stats['saved']:,}",
+    })
 
     if stats["errors"]:
         print(f"\nErrors ({len(stats['errors'])}):")
@@ -132,4 +105,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_async(main())
