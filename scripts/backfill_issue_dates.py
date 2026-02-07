@@ -14,26 +14,14 @@ Usage:
 """
 
 import argparse
-import asyncio
-import os
 import re
-import sys
 from datetime import date
 
 from dateutil.relativedelta import relativedelta
-from dotenv import load_dotenv
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-load_dotenv()
-
 from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
 
-from app.core.config import get_settings
+from script_utils import get_db_session, print_header, run_async
 from app.models import DebtInstrument, Company
-
-settings = get_settings()
 
 
 # Default tenors by instrument type (in years)
@@ -68,17 +56,15 @@ def estimate_issue_date(
     return maturity_date - relativedelta(years=tenor_years)
 
 
-async def backfill_issue_dates(save: bool = False):
+async def main():
     """Backfill issue_date for debt instruments missing it."""
+    parser = argparse.ArgumentParser(description="Backfill issue_date for debt instruments")
+    parser.add_argument("--save", action="store_true", help="Apply changes to database")
+    args = parser.parse_args()
 
-    database_url = settings.database_url
-    if database_url.startswith("postgresql://"):
-        database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    print_header("BACKFILL ISSUE DATES")
 
-    engine = create_async_engine(database_url, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    async with async_session() as db:
+    async with get_db_session() as db:
         # Get debt instruments with maturity but no issue date
         result = await db.execute(
             select(DebtInstrument, Company)
@@ -95,7 +81,6 @@ async def backfill_issue_dates(save: bool = False):
 
         if not rows:
             print("Nothing to do.")
-            await engine.dispose()
             return
 
         updates = []
@@ -139,7 +124,7 @@ async def backfill_issue_dates(save: bool = False):
         print("-" * 100)
         print()
 
-        if save:
+        if args.save:
             print("Applying updates...")
             count = 0
             for u in updates:
@@ -159,12 +144,6 @@ async def backfill_issue_dates(save: bool = False):
         else:
             print("DRY RUN - no changes made. Use --save to apply updates.")
 
-    await engine.dispose()
-
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Backfill issue_date for debt instruments")
-    parser.add_argument("--save", action="store_true", help="Apply changes to database")
-    args = parser.parse_args()
-
-    asyncio.run(backfill_issue_dates(save=args.save))
+    run_async(main())

@@ -11,18 +11,12 @@ Usage:
 """
 
 import argparse
-import asyncio
-import sys
-from pathlib import Path
 from uuid import UUID
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from sqlalchemy import select, update, func, desc
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
+from script_utils import get_db_session, print_header, run_async
 from app.models import Company, Covenant, DocumentSection
 
 
@@ -103,14 +97,10 @@ async def main():
         print("  python scripts/backfill_covenant_source_docs.py --all --dry-run")
         return
 
-    settings = get_settings()
-    engine = create_async_engine(
-        settings.database_url.replace("postgresql://", "postgresql+asyncpg://")
-    )
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    print_header("BACKFILL COVENANT SOURCE DOCUMENTS")
 
     # Get companies to process
-    async with async_session() as db:
+    async with get_db_session() as db:
         if args.ticker:
             result = await db.execute(
                 select(Company).where(Company.ticker == args.ticker.upper())
@@ -127,19 +117,18 @@ async def main():
             )
             companies = list(result.scalars())
 
-    if args.dry_run:
-        print("[DRY RUN] No changes will be saved\n")
+        if args.dry_run:
+            print("[DRY RUN] No changes will be saved\n")
 
-    print(f"Processing {len(companies)} companies\n")
+        print(f"Processing {len(companies)} companies\n")
 
-    total_updated = 0
+        total_updated = 0
 
-    for company in companies:
-        if not company:
-            print("Company not found")
-            continue
+        for company in companies:
+            if not company:
+                print("Company not found")
+                continue
 
-        async with async_session() as db:
             updated = await backfill_for_company(
                 db, company.id, company.ticker, args.dry_run
             )
@@ -148,11 +137,9 @@ async def main():
                 print(f"[{company.ticker}] Linked {updated} covenants to source document")
                 total_updated += updated
 
-    print(f"\n{'='*50}")
-    print(f"Total covenants updated: {total_updated}")
-
-    await engine.dispose()
+        print(f"\n{'='*50}")
+        print(f"Total covenants updated: {total_updated}")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_async(main())
