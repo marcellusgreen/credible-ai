@@ -427,7 +427,7 @@ async def main():
     parser = argparse.ArgumentParser(description="Test DebtStack API edge cases")
     parser.add_argument(
         "--base-url",
-        default="https://credible-ai-production.up.railway.app",
+        default="https://api.debtstack.ai",
         help="Base URL of the API (default: production)"
     )
     parser.add_argument(

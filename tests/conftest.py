@@ -150,7 +150,7 @@ def sample_credit_agreement_content():
 @pytest.fixture
 def api_base_url():
     """Base URL for API tests."""
-    return os.getenv("TEST_API_URL", "https://credible-ai-production.up.railway.app")
+    return os.getenv("TEST_API_URL", "https://api.debtstack.ai")
 
 
 @pytest.fixture

@@ -32,7 +32,7 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 **Data Quality**: QC audit passing - 0 critical, 0 errors, 4 warnings (2026-01-29)
 
 **Deployment**: Railway with Neon PostgreSQL + Upstash Redis
-- Live at: `https://credible-ai-production.up.railway.app`
+- Live at: `https://api.debtstack.ai`
 
 **What's Working**:
 - **Three-Tier Pricing**: Pay-as-You-Go ($0 + per-call), Pro ($199/mo), Business ($499/mo)
@@ -1035,7 +1035,7 @@ Screen and filter the bond universe using structured data:
 
 ```python
 import requests
-BASE = "https://credible-ai-production.up.railway.app/v1"
+BASE = "https://api.debtstack.ai/v1"
 
 # Find high-yield bonds with equipment collateral
 r = requests.get(f"{BASE}/bonds", params={

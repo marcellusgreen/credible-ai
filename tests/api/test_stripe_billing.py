@@ -45,7 +45,7 @@ pytestmark = pytest.mark.skipif(
 def get_api_client():
     """Get configured API client."""
     import httpx
-    base_url = os.getenv("TEST_API_URL", "https://credible-ai-production.up.railway.app")
+    base_url = os.getenv("TEST_API_URL", "https://api.debtstack.ai")
     api_key = os.getenv("DEBTSTACK_API_KEY") or os.getenv("TEST_API_KEY")
     return httpx.Client(
         base_url=base_url,
@@ -93,7 +93,7 @@ class TestAuthEndpoints:
     def test_auth_me_without_key_returns_401(self):
         """GET /v1/auth/me without API key returns 401."""
         import httpx
-        base_url = os.getenv("TEST_API_URL", "https://credible-ai-production.up.railway.app")
+        base_url = os.getenv("TEST_API_URL", "https://api.debtstack.ai")
         with httpx.Client(base_url=base_url, timeout=30.0) as client:
             response = client.get("/v1/auth/me")
             assert response.status_code == 401
@@ -106,7 +106,7 @@ class TestUpgradeEndpoint:
     def test_upgrade_requires_auth(self):
         """POST /v1/auth/upgrade requires authentication."""
         import httpx
-        base_url = os.getenv("TEST_API_URL", "https://credible-ai-production.up.railway.app")
+        base_url = os.getenv("TEST_API_URL", "https://api.debtstack.ai")
         with httpx.Client(base_url=base_url, timeout=30.0) as client:
             response = client.post("/v1/auth/upgrade", json={
                 "success_url": "https://debtstack.ai/dashboard?upgraded=true",
@@ -134,7 +134,7 @@ class TestPortalEndpoint:
     def test_portal_requires_auth(self):
         """POST /v1/auth/portal requires authentication."""
         import httpx
-        base_url = os.getenv("TEST_API_URL", "https://credible-ai-production.up.railway.app")
+        base_url = os.getenv("TEST_API_URL", "https://api.debtstack.ai")
         with httpx.Client(base_url=base_url, timeout=30.0) as client:
             response = client.post("/v1/auth/portal")
             assert response.status_code == 401
@@ -233,7 +233,7 @@ class TestWebhookEndpoint:
     def test_webhook_requires_signature(self):
         """POST /v1/auth/webhook requires Stripe signature."""
         import httpx
-        base_url = os.getenv("TEST_API_URL", "https://credible-ai-production.up.railway.app")
+        base_url = os.getenv("TEST_API_URL", "https://api.debtstack.ai")
         with httpx.Client(base_url=base_url, timeout=30.0) as client:
             # Send without stripe-signature header
             response = client.post(
@@ -248,7 +248,7 @@ class TestWebhookEndpoint:
     def test_webhook_endpoint_exists(self):
         """POST /v1/auth/webhook endpoint exists."""
         import httpx
-        base_url = os.getenv("TEST_API_URL", "https://credible-ai-production.up.railway.app")
+        base_url = os.getenv("TEST_API_URL", "https://api.debtstack.ai")
         with httpx.Client(base_url=base_url, timeout=30.0) as client:
             response = client.post("/v1/auth/webhook", content=b"{}")
             # Should NOT be 404

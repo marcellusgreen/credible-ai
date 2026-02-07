@@ -21,7 +21,7 @@ pytestmark = pytest.mark.skipif(
 def get_api_client():
     """Get configured API client."""
     import httpx
-    base_url = os.getenv("TEST_API_URL", "https://credible-ai-production.up.railway.app")
+    base_url = os.getenv("TEST_API_URL", "https://api.debtstack.ai")
     api_key = os.getenv("DEBTSTACK_API_KEY") or os.getenv("TEST_API_KEY")
     return httpx.Client(
         base_url=base_url,

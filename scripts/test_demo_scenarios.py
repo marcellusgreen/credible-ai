@@ -2,7 +2,19 @@
 """
 Test Demo Scenarios
 
-Validates database coverage and API functionality by running the 8 demo scenarios.
+DEPRECATED: This script is replaced by the eval framework.
+Use: python scripts/run_evals.py
+
+The eval framework provides:
+- Ground-truth validation against database/SEC filings
+- Accuracy scoring and regression detection
+- Per-primitive testing (~65 use cases)
+- Baseline comparison
+
+See docs/EVAL_FRAMEWORK.md for details.
+
+---
+LEGACY: Validates database coverage and API functionality by running the 8 demo scenarios.
 See docs/DEMO_SCENARIOS.md for detailed documentation.
 
 Usage:
@@ -24,7 +36,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configuration
-DEFAULT_API_URL = "https://credible-ai-production.up.railway.app"
+DEFAULT_API_URL = "https://api.debtstack.ai"
 API_KEY = os.getenv("DEBTSTACK_API_KEY") or os.getenv("TEST_API_KEY")
 
 

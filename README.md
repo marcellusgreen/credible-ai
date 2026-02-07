@@ -194,15 +194,15 @@ export DEBTSTACK_API_KEY="ds_your_api_key_here"
 
 # Search companies with field selection
 curl -H "X-API-Key: $DEBTSTACK_API_KEY" \
-  "https://credible-ai-production.up.railway.app/v1/companies?ticker=AAPL,MSFT,GOOGL&fields=ticker,name,net_leverage_ratio"
+  "https://api.debtstack.ai/v1/companies?ticker=AAPL,MSFT,GOOGL&fields=ticker,name,net_leverage_ratio"
 
 # Search bonds with pricing
 curl -H "X-API-Key: $DEBTSTACK_API_KEY" \
-  "https://credible-ai-production.up.railway.app/v1/bonds?seniority=senior_unsecured&min_ytm=8.0"
+  "https://api.debtstack.ai/v1/bonds?seniority=senior_unsecured&min_ytm=8.0"
 
 # Traverse entity relationships (find guarantors)
 curl -H "X-API-Key: $DEBTSTACK_API_KEY" \
-  -X POST "https://credible-ai-production.up.railway.app/v1/entities/traverse" \
+  -X POST "https://api.debtstack.ai/v1/entities/traverse" \
   -H "Content-Type: application/json" \
   -d '{"start":{"type":"bond","id":"893830AK8"},"relationships":["guarantees"]}'
 ```
