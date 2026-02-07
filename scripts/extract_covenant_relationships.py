@@ -24,19 +24,14 @@ Usage:
 
 import argparse
 import asyncio
-import os
-import sys
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import google.generativeai as genai
 from sqlalchemy import select, func
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
 
+from script_utils import get_db_session, print_header, run_async
 from app.core.config import get_settings
 from app.models import (
     Company,
@@ -642,16 +637,9 @@ async def main():
         print("Error: GEMINI_API_KEY not set")
         return
 
-    engine = create_async_engine(
-        settings.database_url.replace("postgresql://", "postgresql+asyncpg://")
-    )
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
     extractor = GeminiRelationshipExtractor(settings.gemini_api_key)
 
-    print("=" * 70)
-    print("COVENANT RELATIONSHIP EXTRACTION")
-    print("=" * 70)
+    print_header("COVENANT RELATIONSHIP EXTRACTION")
     print(f"Mode: {'SAVE TO DB' if args.save_db else 'DRY RUN'}")
 
     total_stats = {
@@ -663,7 +651,7 @@ async def main():
         "non_guarantor_total": 0,
     }
 
-    async with async_session() as db:
+    async with get_db_session() as db:
         companies = await get_companies_with_documents(
             db,
             ticker=args.ticker,
@@ -706,4 +694,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_async(main())

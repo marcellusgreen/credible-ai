@@ -1,31 +1,25 @@
 #!/usr/bin/env python3
 """
-Fix ownership hierarchy using ONLY explicit ownership statements from SEC filings.
+Extract intermediate parent-child ownership relationships from indentures and credit agreements.
 
-No inferences - only extracts relationships that are explicitly stated in documents.
+Fixes the issue where all entities point to the root company by finding the actual
+intermediate ownership chains (e.g., "CCO Holdings Capital Corp is a subsidiary of CCO Holdings, LLC").
 
 Usage:
     # Single company (dry run)
-    python scripts/fix_ownership_hierarchy.py --ticker CHTR
+    python scripts/extract_intermediate_ownership.py --ticker CHTR
 
     # Single company (save to database)
-    python scripts/fix_ownership_hierarchy.py --ticker CHTR --save-db
+    python scripts/extract_intermediate_ownership.py --ticker CHTR --save-db
 
     # All companies
-    python scripts/fix_ownership_hierarchy.py --all --save-db
+    python scripts/extract_intermediate_ownership.py --all --save-db
 """
 
 import argparse
 import asyncio
-import re
-import sys
 from typing import Optional
 from uuid import UUID
-
-# Fix Windows console encoding
-if sys.platform == 'win32':
-    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 import google.generativeai as genai
 from sqlalchemy import select, func
@@ -45,55 +39,54 @@ from app.services.utils import parse_json_robust
 # PROMPTS
 # =============================================================================
 
-EXTRACT_HIERARCHY_PROMPT = """You are analyzing SEC filings to extract EXPLICIT corporate ownership statements.
+EXTRACT_HIERARCHY_PROMPT = """You are analyzing SEC filings (indentures, credit agreements) to extract the INTERMEDIATE corporate ownership hierarchy.
 
 COMPANY: {company_name} ({ticker})
 
-ENTITIES:
+ALL ENTITIES (need to determine parent-child relationships between them):
 {entity_list}
 
 DOCUMENT CONTENT:
 {document_content}
 
-TASK: Find ONLY relationships that are EXPLICITLY stated in the documents.
+TASK: Find the DIRECT parent-child relationships between entities in the list above.
 
-Valid evidence patterns:
+Look for patterns like:
 - "X, a wholly-owned subsidiary of Y"
 - "X, a direct subsidiary of Y"
-- "X, an indirect subsidiary of Y"
 - "X is a subsidiary of Y"
 - "Y, the direct parent of X"
 - "X is owned by Y"
-- "Y owns X"
-- "The Issuer is a direct wholly-owned subsidiary of Holdings"
+- Organizational structure descriptions
+- Guarantor hierarchy descriptions
 
-DO NOT INCLUDE:
-- Inferred relationships based on naming patterns
-- Assumed relationships based on corporate structure
-- Relationships where you're guessing based on context
+CRITICAL: We need to find which entity is the DIRECT parent of each entity - not the ultimate parent.
+
+For example, if the documents say:
+- "CCO Holdings Capital Corp., a wholly-owned subsidiary of CCO Holdings, LLC"
+- "CCO Holdings, LLC, a subsidiary of Charter Communications, Inc."
+
+Then CCO Holdings Capital Corp's direct parent is CCO Holdings, LLC (NOT Charter Communications, Inc.)
 
 Return JSON:
 {{
-  "relationships": [
+  "ownership_chain": [
     {{
       "child": "EXACT entity name from list",
-      "parent": "EXACT entity name from list",
-      "ownership_type": "direct" or "indirect" or null,
-      "evidence": "EXACT quote from document showing this relationship"
+      "direct_parent": "EXACT entity name from list (the immediate parent, not ultimate parent)",
+      "evidence": "Quote showing the direct relationship"
     }}
   ],
-  "notes": "Any observations"
+  "root_entity": "Name of the ultimate parent company (top of hierarchy)",
+  "notes": "Any observations about the corporate structure"
 }}
 
 RULES:
-1. Names must EXACTLY match the entity list
-2. Evidence must be a direct quote, not a summary
-3. Only include relationships with explicit documentary evidence
-4. If you cannot find explicit evidence, return empty relationships array
-5. ownership_type:
-   - "direct" ONLY if evidence explicitly says "direct subsidiary" or "direct parent"
-   - "indirect" ONLY if evidence explicitly says "indirect subsidiary"
-   - null if evidence just says "subsidiary" without specifying direct/indirect
+1. child and direct_parent MUST be EXACT matches to names in the entity list
+2. Only include relationships where you find DIRECT parent evidence
+3. Do NOT assume the root company is the direct parent unless explicitly stated
+4. If entity A is subsidiary of B, and B is subsidiary of C, report A->B and B->C separately
+5. Skip any relationship you're not confident about
 
 Return ONLY the JSON object."""
 
@@ -110,7 +103,7 @@ class GeminiHierarchyExtractor:
         self.model = genai.GenerativeModel(
             model_name="gemini-2.0-flash",
             generation_config={
-                "temperature": 0.0,
+                "temperature": 0.1,
                 "response_mime_type": "application/json",
                 "max_output_tokens": 16000,
             }
@@ -138,7 +131,7 @@ class GeminiHierarchyExtractor:
             return result
         except Exception as e:
             print(f"    LLM error: {e}")
-            return {"relationships": [], "notes": f"Error: {e}"}
+            return {"ownership_chain": [], "notes": f"Error: {e}"}
 
 
 # =============================================================================
@@ -172,28 +165,28 @@ def match_entity_name(name: str, entity_by_name: dict) -> Optional[Entity]:
 
 
 async def get_document_content(db: AsyncSession, company_id: UUID) -> str:
-    """Get all relevant document sections."""
+    """Get relevant document sections for hierarchy extraction."""
     content_parts = []
 
-    # Get all document types that might have ownership info
-    section_types = ['credit_agreement', 'indenture', 'guarantor_list', 'exhibit_21', 'exhibit_22']
+    # Priority: credit_agreement (has org structure), indenture (has guarantor hierarchy)
+    section_types = ['credit_agreement', 'indenture', 'guarantor_list']
 
     for section_type in section_types:
         sections = await db.execute(
             select(DocumentSection)
             .where(DocumentSection.company_id == company_id)
             .where(DocumentSection.section_type == section_type)
-            .order_by(DocumentSection.filing_date.desc())
+            .order_by(DocumentSection.content_length.desc())  # Largest first (more complete)
             .limit(3)
         )
 
         for section in sections.scalars():
             content_parts.append(f"\n=== {section_type.upper()} ({section.filing_date}) ===\n")
-            # Extract ownership-related paragraphs from large docs
+            # Extract ownership-related sections from large docs
             if section.content_length > 50000:
-                content_parts.append(extract_ownership_paragraphs(section.content))
+                content_parts.append(extract_hierarchy_sections(section.content))
             else:
-                content_parts.append(section.content)
+                content_parts.append(section.content[:40000])
 
         if sum(len(p) for p in content_parts) > 100000:
             break
@@ -201,25 +194,34 @@ async def get_document_content(db: AsyncSession, company_id: UUID) -> str:
     return "\n".join(content_parts)
 
 
-def extract_ownership_paragraphs(content: str) -> str:
-    """Extract paragraphs containing explicit ownership language."""
-    extracted = []
+def extract_hierarchy_sections(content: str) -> str:
+    """Extract hierarchy-related sections from large documents."""
+    import re
 
-    # Only look for explicit ownership patterns
-    ownership_patterns = [
-        r'wholly.?owned\s+subsidiary',
-        r'direct\s+subsidiary',
-        r'indirect\s+subsidiary',
+    extracted_parts = []
+
+    # Keywords indicating ownership/hierarchy info
+    hierarchy_keywords = [
+        r'wholly.?owned',
+        r'direct.*subsidiary',
+        r'indirect.*subsidiary',
         r'subsidiary\s+of',
         r'parent\s+of',
         r'owned\s+by',
-        r'owns\s+\d+%',
-        r'100%\s+owned',
+        r'organizational\s+structure',
+        r'corporate\s+structure',
+        r'guarantor',
+        r'the\s+issuer',
+        r'the\s+company',
+        r'holdings?\s*,?\s*llc',
+        r'capital\s+corp',
+        r'operating\s*,?\s*llc',
     ]
 
     lines = content.split('\n')
-    current_para = []
 
+    # Extract paragraphs containing hierarchy keywords
+    current_para = []
     for line in lines:
         if line.strip():
             current_para.append(line)
@@ -227,18 +229,19 @@ def extract_ownership_paragraphs(content: str) -> str:
             if current_para:
                 para_text = ' '.join(current_para)
                 para_lower = para_text.lower()
-                if any(re.search(pat, para_lower) for pat in ownership_patterns):
-                    extracted.append(para_text[:3000])
+                if any(re.search(kw, para_lower) for kw in hierarchy_keywords):
+                    extracted_parts.append(para_text[:2000])
                 current_para = []
 
+    # Don't forget last paragraph
     if current_para:
         para_text = ' '.join(current_para)
         para_lower = para_text.lower()
-        if any(re.search(pat, para_lower) for pat in ownership_patterns):
-            extracted.append(para_text[:3000])
+        if any(re.search(kw, para_lower) for kw in hierarchy_keywords):
+            extracted_parts.append(para_text[:2000])
 
-    if extracted:
-        return '\n\n---\n\n'.join(extracted[:50])
+    if extracted_parts:
+        return '\n\n---\n\n'.join(extracted_parts[:50])  # Limit number of excerpts
 
     return content[:40000]
 
@@ -253,15 +256,15 @@ async def process_company(
     extractor: GeminiHierarchyExtractor,
     save_db: bool = False,
 ) -> dict:
-    """Process a single company to fix ownership hierarchy."""
+    """Process a single company to extract intermediate ownership."""
 
     print(f"\n[{company.ticker}] {company.name}")
 
     # Get all entities
-    entities_result = await db.execute(
+    entities = await db.execute(
         select(Entity).where(Entity.company_id == company.id)
     )
-    entities = list(entities_result.scalars())
+    entities = list(entities.scalars())
 
     if len(entities) < 2:
         print("  Less than 2 entities, skipping")
@@ -278,19 +281,24 @@ async def process_company(
         if e.legal_name:
             entity_by_name[normalize_name(e.legal_name)] = e
 
+    # Find root entity (structure_tier = 1 with no parent)
+    root = next((e for e in entities if e.structure_tier == 1 and e.parent_id is None), None)
+    if not root:
+        root = next((e for e in entities if e.structure_tier == 1), None)
+
     # Get document content
     content = await get_document_content(db, company.id)
-    if not content or len(content) < 500:
-        print("  No document content")
+    if not content or len(content) < 1000:
+        print("  Insufficient document content")
         return {"status": "skipped", "reason": "no_documents"}
 
     print(f"  Document content: {len(content):,} chars")
 
     # Format entity list
-    entity_list = "\n".join([f"- {e.name}" for e in entities])
+    entity_list = "\n".join([f"- {e.name} (tier: {e.structure_tier}, type: {e.entity_type})" for e in entities])
 
     # Call LLM
-    print("  Extracting explicit ownership statements...")
+    print("  Calling Gemini...")
     result = await extractor.extract_hierarchy(
         company_name=company.name,
         ticker=company.ticker,
@@ -298,87 +306,95 @@ async def process_company(
         document_content=content,
     )
 
-    relationships = result.get("relationships", []) or []
-    print(f"  Found {len(relationships)} explicit relationships")
+    ownership_chain = result.get("ownership_chain", []) or []
+    print(f"  Found {len(ownership_chain)} intermediate relationships")
 
     if result.get("notes"):
-        print(f"  Notes: {result['notes'][:100]}")
+        print(f"  Notes: {result['notes'][:150]}")
 
+    # Process results
     stats = {"updated": 0, "links_updated": 0}
 
-    for item in relationships:
+    for item in ownership_chain:
         if not item:
             continue
 
-        child_name = item.get("child", "") or ""
-        parent_name = item.get("parent", "") or ""
-        evidence = item.get("evidence", "") or ""
-        ownership_type = item.get("ownership_type")  # Can be "direct", "indirect", or None
+        try:
+            child_name = item.get("child", "") or ""
+            parent_name = item.get("direct_parent", "") or ""
+            evidence = item.get("evidence", "") or ""
 
-        child_entity = match_entity_name(child_name, entity_by_name)
-        parent_entity = match_entity_name(parent_name, entity_by_name)
+            child_entity = match_entity_name(child_name, entity_by_name)
+            parent_entity = match_entity_name(parent_name, entity_by_name)
 
-        if not child_entity:
-            print(f"    NO MATCH (child): '{child_name[:40]}'")
-            continue
-        if not parent_entity:
-            print(f"    NO MATCH (parent): '{parent_name[:40]}'")
-            continue
-
-        if child_entity.id == parent_entity.id:
-            continue
-
-        # Validate tier if available
-        if parent_entity.structure_tier and child_entity.structure_tier:
-            if parent_entity.structure_tier >= child_entity.structure_tier:
-                print(f"    SKIP (tier mismatch): {child_entity.name[:30]} tier {child_entity.structure_tier} -> {parent_entity.name[:30]} tier {parent_entity.structure_tier}")
+            if not child_entity:
+                print(f"    NO MATCH (child): '{child_name[:40]}'")
+                continue
+            if not parent_entity:
+                print(f"    NO MATCH (parent): '{parent_name[:40]}'")
                 continue
 
-        current_parent = entity_by_id.get(child_entity.parent_id)
-        current_parent_name = current_parent.name[:25] if current_parent else "None"
+            if child_entity.id == parent_entity.id:
+                continue  # Skip self-references
 
-        type_str = f" [{ownership_type}]" if ownership_type else ""
-        print(f"    {child_entity.name[:35]} -> {parent_entity.name[:25]}{type_str}")
-        print(f"      Evidence: \"{evidence[:80]}...\"")
-        if current_parent_name != parent_entity.name[:25]:
-            print(f"      (was: {current_parent_name})")
+            # Check if this is a NEW intermediate relationship (not just pointing to root)
+            current_parent = entity_by_id.get(child_entity.parent_id)
+            current_parent_name = current_parent.name if current_parent else "None"
 
-        if save_db:
-            child_entity.parent_id = parent_entity.id
-            stats["updated"] += 1
-
-            # Update or create ownership_link
-            existing_link = await db.scalar(
-                select(OwnershipLink).where(
-                    OwnershipLink.child_entity_id == child_entity.id
-                )
+            # Only update if we're finding a more specific (intermediate) parent
+            is_new_info = (
+                child_entity.parent_id is None or
+                child_entity.parent_id == root.id if root else False or
+                parent_entity.id != child_entity.parent_id
             )
 
-            if existing_link:
-                existing_link.parent_entity_id = parent_entity.id
-                # Only update ownership_type if we have explicit evidence
-                if ownership_type:
-                    existing_link.ownership_type = ownership_type
-                else:
-                    existing_link.ownership_type = None  # Unknown
-            else:
-                link = OwnershipLink(
-                    parent_entity_id=parent_entity.id,
-                    child_entity_id=child_entity.id,
-                    ownership_pct=100,
-                    ownership_type=ownership_type,  # Can be None if not explicitly stated
+            if parent_entity.structure_tier and child_entity.structure_tier:
+                # Parent should be at a higher tier (lower number) than child
+                if parent_entity.structure_tier >= child_entity.structure_tier:
+                    print(f"    SKIP (tier mismatch): {child_entity.name[:30]} tier {child_entity.structure_tier} -> {parent_entity.name[:30]} tier {parent_entity.structure_tier}")
+                    continue
+
+            print(f"    {child_entity.name[:35]} -> {parent_entity.name[:30]}")
+            if current_parent_name != parent_entity.name:
+                print(f"      (was: {current_parent_name[:30]})")
+
+            if save_db and is_new_info:
+                # Update parent_id
+                child_entity.parent_id = parent_entity.id
+                stats["updated"] += 1
+
+                # Update or create ownership_link
+                existing_link = await db.scalar(
+                    select(OwnershipLink).where(
+                        OwnershipLink.child_entity_id == child_entity.id
+                    )
                 )
-                db.add(link)
-            stats["links_updated"] += 1
+
+                if existing_link:
+                    existing_link.parent_entity_id = parent_entity.id
+                    existing_link.ownership_type = "direct"
+                    stats["links_updated"] += 1
+                else:
+                    link = OwnershipLink(
+                        parent_entity_id=parent_entity.id,
+                        child_entity_id=child_entity.id,
+                        ownership_pct=100,
+                        ownership_type="direct",
+                    )
+                    db.add(link)
+                    stats["links_updated"] += 1
+
+        except Exception as e:
+            print(f"    Error: {e}")
 
     if save_db:
         await db.commit()
-        print(f"\n  Saved: {stats['updated']} updates, {stats['links_updated']} links")
+        print(f"  Saved: {stats['updated']} parent updates, {stats['links_updated']} links")
 
     return {
         "status": "success",
         "entities": len(entities),
-        "relationships_found": len(relationships),
+        "relationships_found": len(ownership_chain),
         "stats": stats,
     }
 
@@ -389,6 +405,7 @@ async def get_companies_to_process(db: AsyncSession, ticker: Optional[str] = Non
         company = await db.scalar(select(Company).where(Company.ticker == ticker.upper()))
         return [company] if company else []
 
+    # Get companies with multiple entities
     query = (
         select(Company)
         .join(Entity, Entity.company_id == Company.id)
@@ -405,7 +422,7 @@ async def get_companies_to_process(db: AsyncSession, ticker: Optional[str] = Non
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="Fix ownership hierarchy (explicit statements only)")
+    parser = argparse.ArgumentParser(description="Extract intermediate ownership relationships")
     parser.add_argument("--ticker", type=str, help="Process single company by ticker")
     parser.add_argument("--all", action="store_true", help="Process all companies")
     parser.add_argument("--limit", type=int, help="Limit number of companies")
@@ -425,49 +442,48 @@ async def main():
 
     extractor = GeminiHierarchyExtractor(settings.gemini_api_key)
 
-    print_header("FIX OWNERSHIP HIERARCHY (Explicit Statements Only)")
+    print_header("INTERMEDIATE OWNERSHIP EXTRACTION")
     print(f"Mode: {'SAVE TO DB' if args.save_db else 'DRY RUN'}")
 
     total_stats = {
         "companies_processed": 0,
         "companies_skipped": 0,
         "relationships_found": 0,
-        "updated": 0,
+        "parents_updated": 0,
+        "links_updated": 0,
     }
 
     async with get_db_session() as db:
         companies = await get_companies_to_process(db, args.ticker, args.limit)
         print(f"Found {len(companies)} companies to process")
 
-    for company in companies:
-        try:
-            # Use fresh session for each company to avoid state issues
-            async with get_db_session() as db:
+        for company in companies:
+            try:
                 result = await process_company(db, company, extractor, args.save_db)
 
                 if result["status"] == "success":
                     total_stats["companies_processed"] += 1
                     total_stats["relationships_found"] += result.get("relationships_found", 0)
                     stats = result.get("stats", {})
-                    total_stats["updated"] += stats.get("updated", 0)
+                    total_stats["parents_updated"] += stats.get("updated", 0)
+                    total_stats["links_updated"] += stats.get("links_updated", 0)
                 else:
                     total_stats["companies_skipped"] += 1
 
-        except Exception as e:
-            print(f"  Error: {e}")
-            import traceback
-            traceback.print_exc()
-            total_stats["companies_skipped"] += 1
+            except Exception as e:
+                print(f"  Error: {e}")
+                total_stats["companies_skipped"] += 1
 
-        await asyncio.sleep(1)
+            await asyncio.sleep(1)
 
     print("\n" + "=" * 70)
     print("SUMMARY")
     print("=" * 70)
     print(f"Companies processed: {total_stats['companies_processed']}")
     print(f"Companies skipped: {total_stats['companies_skipped']}")
-    print(f"Explicit relationships found: {total_stats['relationships_found']}")
-    print(f"Parent updates applied: {total_stats['updated']}")
+    print(f"Intermediate relationships found: {total_stats['relationships_found']}")
+    print(f"Parent updates: {total_stats['parents_updated']}")
+    print(f"Ownership links updated: {total_stats['links_updated']}")
 
 
 if __name__ == "__main__":

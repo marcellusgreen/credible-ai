@@ -10,27 +10,16 @@ Usage:
 """
 
 import argparse
-import asyncio
 import os
 import re
-import sys
 from typing import Optional
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from app.core.config import get_settings
-
-# Set up API keys
-_settings = get_settings()
-if _settings.gemini_api_key:
-    os.environ["GEMINI_API_KEY"] = _settings.gemini_api_key
 
 import google.generativeai as genai
 from pydantic import BaseModel, Field
-from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import select
 
+from script_utils import get_db_session, print_header, run_async
+from app.core.config import get_settings
 from app.models import Company, Entity, DebtInstrument, Guarantee, DocumentSection
 from app.services.extraction import SecApiClient
 from app.services.utils import clean_filing_html, parse_json_robust
@@ -204,6 +193,11 @@ async def fetch_and_create_guarantors(
 
     sec_client = SecApiClient(api_key=sec_api_key)
 
+    # Set up Gemini API key
+    gemini_key = os.getenv("GEMINI_API_KEY") or settings.gemini_api_key
+    if gemini_key:
+        os.environ["GEMINI_API_KEY"] = gemini_key
+
     # Fetch Exhibit 22.1
     print(f"Fetching Exhibit 22.1 for {ticker}...")
     exhibit_22_content = fetch_exhibit_22(ticker, sec_client)
@@ -264,11 +258,7 @@ async def fetch_and_create_guarantors(
             print(f"    ... and {len(result.guarantor_subsidiaries) - 10} more")
 
     # Connect to database
-    url = settings.database_url.replace('postgresql://', 'postgresql+asyncpg://', 1)
-    engine = create_async_engine(url, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    async with async_session() as db:
+    async with get_db_session() as db:
         # Get company
         company_result = await db.execute(
             select(Company).where(Company.ticker == ticker.upper())
@@ -412,7 +402,6 @@ async def fetch_and_create_guarantors(
         else:
             print(f"\nDRY RUN - Would create: {len(new_entities)} entities, update: {len(updated_entities)}")
 
-    await engine.dispose()
     return stats
 
 
@@ -423,7 +412,7 @@ async def main():
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     args = parser.parse_args()
 
-    print(f"=== Fetching Guarantor Subsidiaries for {args.ticker.upper()} ===")
+    print_header(f"FETCH GUARANTOR SUBSIDIARIES - {args.ticker.upper()}")
     if args.dry_run:
         print("DRY RUN - no changes will be saved")
     print()
@@ -448,4 +437,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_async(main())

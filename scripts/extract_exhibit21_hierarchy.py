@@ -25,22 +25,14 @@ Usage:
 import argparse
 import asyncio
 import html
-import os
 import re
-import sys
 from dataclasses import dataclass
 from typing import Optional
-from uuid import UUID
 
 import httpx
+from sqlalchemy import select
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
-
-from app.core.config import get_settings
+from script_utils import get_db_session, print_header, run_async
 from app.models import Company, Entity, OwnershipLink
 
 
@@ -554,15 +546,7 @@ async def main():
         print("Error: Must specify --ticker or --all")
         return
 
-    settings = get_settings()
-    engine = create_async_engine(
-        settings.database_url.replace("postgresql://", "postgresql+asyncpg://")
-    )
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    print("=" * 70)
-    print("EXHIBIT 21 HIERARCHY EXTRACTION")
-    print("=" * 70)
+    print_header("EXHIBIT 21 HIERARCHY EXTRACTION")
     print(f"Mode: {'SAVE TO DB' if args.save_db else 'DRY RUN'}")
 
     # HTTP client with SEC-required headers
@@ -572,7 +556,7 @@ async def main():
     }
 
     async with httpx.AsyncClient(headers=headers, timeout=30.0) as client:
-        async with async_session() as db:
+        async with get_db_session() as db:
             if args.ticker:
                 company = await db.scalar(
                     select(Company).where(Company.ticker == args.ticker.upper())
@@ -613,4 +597,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_async(main())

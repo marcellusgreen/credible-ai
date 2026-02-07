@@ -12,29 +12,16 @@ Usage:
 """
 
 import argparse
-import asyncio
 import os
 import re
-import sys
 from collections import Counter
 
-from dotenv import load_dotenv
-
-# Add parent dir to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-load_dotenv()
-
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
 
-from app.core.config import get_settings
+from script_utils import get_db_session, print_header, run_async
 from app.models import Company, CompanyMetrics
 from app.services.extraction import SecApiClient
 from app.services.utils import clean_filing_html
-
-settings = get_settings()
 
 # Initialize SEC API client (will be created in main)
 sec_client = None
@@ -273,15 +260,9 @@ async def main():
         return
     sec_client = SecApiClient(api_key)
 
-    # Create async engine
-    database_url = settings.database_url
-    if database_url.startswith("postgresql://"):
-        database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    print_header("EXTRACT CREDIT RATINGS")
 
-    engine = create_async_engine(database_url, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    async with async_session() as db:
+    async with get_db_session() as db:
         # Get companies to process
         if args.ticker:
             result = await db.execute(
@@ -332,4 +313,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_async(main())
