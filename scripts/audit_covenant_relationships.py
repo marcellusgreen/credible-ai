@@ -14,17 +14,11 @@ Usage:
 """
 
 import argparse
-import asyncio
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy import select, func, text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
+from script_utils import get_db_session, print_header, run_async
 from app.models import (
     Company,
     CompanyMetrics,
@@ -283,18 +277,9 @@ async def main():
 
     args = parser.parse_args()
 
-    settings = get_settings()
+    print_header("COVENANT RELATIONSHIP DATA AUDIT")
 
-    engine = create_async_engine(
-        settings.database_url.replace("postgresql://", "postgresql+asyncpg://")
-    )
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    print("=" * 60)
-    print("COVENANT RELATIONSHIP DATA AUDIT")
-    print("=" * 60)
-
-    async with async_session() as db:
+    async with get_db_session() as db:
         await audit_unrestricted_subsidiaries(db, args.verbose)
         await audit_cross_default_links(db, args.verbose)
         await audit_guarantee_conditions(db, args.verbose)
@@ -307,4 +292,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_async(main())

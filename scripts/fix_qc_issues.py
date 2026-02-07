@@ -8,20 +8,13 @@ This script applies automated fixes where safe:
 3. missing_maturity - Parse year from instrument name
 """
 
-import asyncio
 import re
-import sys
-import os
 from datetime import date
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from dotenv import load_dotenv
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
-load_dotenv()
+from script_utils import get_db_session, print_header, run_async
 
 
 async def fix_guarantor_flags(session: AsyncSession) -> int:
@@ -189,23 +182,9 @@ async def deduplicate_instruments(session: AsyncSession) -> int:
 
 
 async def main():
-    database_url = os.getenv('DATABASE_URL')
-    if not database_url:
-        print("ERROR: DATABASE_URL not set")
-        sys.exit(1)
+    print_header("QC ISSUE AUTO-FIX")
 
-    # Convert to async URL
-    if 'postgresql://' in database_url and '+asyncpg' not in database_url:
-        database_url = database_url.replace('postgresql://', 'postgresql+asyncpg://', 1)
-
-    engine = create_async_engine(database_url, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    print("=" * 70)
-    print("QC ISSUE AUTO-FIX")
-    print("=" * 70)
-
-    async with async_session() as session:
+    async with get_db_session() as session:
         total_fixed = 0
 
         # Fix 1: Guarantor flags
@@ -224,8 +203,6 @@ async def main():
         fixed = await deduplicate_instruments(session)
         total_fixed += fixed
 
-    await engine.dispose()
-
     print("\n" + "=" * 70)
     print(f"TOTAL FIXES APPLIED: {total_fixed}")
     print("=" * 70)
@@ -233,4 +210,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_async(main())

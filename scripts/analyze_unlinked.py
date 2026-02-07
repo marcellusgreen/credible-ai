@@ -1,32 +1,15 @@
 #!/usr/bin/env python3
 """Analyze remaining unlinked instruments."""
 
-import asyncio
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from dotenv import load_dotenv
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
 
-load_dotenv()
+from script_utils import get_db_session, print_header, run_async
 
 
 async def analyze():
-    database_url = os.getenv('DATABASE_URL')
-    if 'postgresql://' in database_url and '+asyncpg' not in database_url:
-        database_url = database_url.replace('postgresql://', 'postgresql+asyncpg://', 1)
+    print_header("REMAINING INSTRUMENTS WITHOUT DOCUMENT LINKS")
 
-    engine = create_async_engine(database_url, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    async with async_session() as session:
-        print('=' * 80)
-        print('ANALYSIS: REMAINING INSTRUMENTS WITHOUT DOCUMENT LINKS')
-        print('=' * 80)
+    async with get_db_session() as session:
 
         # Get all unlinked instruments with details
         result = await session.execute(text('''
@@ -170,8 +153,6 @@ async def analyze():
             docs = f'{r.indentures}i/{r.credit_agreements}ca'
             print(f'    {r.ticker:<6} {name:<42} {principal:>10} ({docs})')
 
-    await engine.dispose()
-
 
 if __name__ == "__main__":
-    asyncio.run(analyze())
+    run_async(analyze())

@@ -13,20 +13,12 @@ Output:
 - Identifies specific algorithm improvements needed
 """
 
-import asyncio
-import os
 import re
-import sys
 from collections import defaultdict
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from dotenv import load_dotenv
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
 
-load_dotenv()
+from script_utils import get_db_session, print_header, run_async
 
 
 def extract_coupons_from_text(text: str) -> set[float]:
@@ -97,17 +89,9 @@ def extract_note_descriptions(text: str) -> list[tuple[float, int]]:
 
 
 async def diagnose():
-    database_url = os.getenv('DATABASE_URL')
-    if 'postgresql://' in database_url and '+asyncpg' not in database_url:
-        database_url = database_url.replace('postgresql://', 'postgresql+asyncpg://', 1)
+    print_header("DOCUMENT MATCHING DIAGNOSIS")
 
-    engine = create_async_engine(database_url, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    async with async_session() as session:
-        print('=' * 100)
-        print('DOCUMENT MATCHING DIAGNOSIS')
-        print('=' * 100)
+    async with get_db_session() as session:
 
         # Get unlinked notes with their company's indentures
         result = await session.execute(text('''
@@ -362,8 +346,6 @@ async def diagnose():
             print(f"\n  Recommendation 2: Increase coupon tolerance from 0.01 to 0.05")
             print(f"  Would fix {rate_mismatches} additional notes")
 
-    await engine.dispose()
-
 
 if __name__ == "__main__":
-    asyncio.run(diagnose())
+    run_async(diagnose())

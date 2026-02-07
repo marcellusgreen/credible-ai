@@ -3,40 +3,16 @@
 Investigate QC issues in detail to understand root causes.
 """
 
-import asyncio
-import sys
-import os
-
-# Add the parent directory to the path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from dotenv import load_dotenv
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
 
-load_dotenv()
+from script_utils import get_db_session, print_header, run_async
 
 
 async def investigate_all_issues():
     """Run detailed investigation of each QC issue."""
+    print_header("QC ISSUE INVESTIGATION")
 
-    database_url = os.getenv('DATABASE_URL')
-    if not database_url:
-        print("ERROR: DATABASE_URL not set")
-        sys.exit(1)
-
-    # Convert to async URL
-    if 'postgresql://' in database_url and '+asyncpg' not in database_url:
-        database_url = database_url.replace('postgresql://', 'postgresql+asyncpg://', 1)
-
-    engine = create_async_engine(database_url, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    async with async_session() as session:
-        print("=" * 70)
-        print("QC ISSUE INVESTIGATION")
-        print("=" * 70)
+    async with get_db_session() as session:
 
         # Issue 1: debt_mismatch (75) - Sum differs >50% from financials
         print("\n" + "=" * 70)
@@ -324,4 +300,4 @@ INFO (acceptable gaps):
 
 
 if __name__ == "__main__":
-    asyncio.run(investigate_all_issues())
+    run_async(investigate_all_issues())

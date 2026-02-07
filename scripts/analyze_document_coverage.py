@@ -3,32 +3,15 @@
 Analyze debt instrument document coverage (indentures, credit agreements).
 """
 
-import asyncio
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from dotenv import load_dotenv
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
 
-load_dotenv()
+from script_utils import get_db_session, print_header, run_async
 
 
 async def analyze_document_coverage():
-    database_url = os.getenv('DATABASE_URL')
-    if 'postgresql://' in database_url and '+asyncpg' not in database_url:
-        database_url = database_url.replace('postgresql://', 'postgresql+asyncpg://', 1)
+    print_header("DEBT INSTRUMENT DOCUMENT COVERAGE ANALYSIS")
 
-    engine = create_async_engine(database_url, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    async with async_session() as session:
-        print('=' * 80)
-        print('DEBT INSTRUMENT DOCUMENT COVERAGE ANALYSIS')
-        print('=' * 80)
+    async with get_db_session() as session:
 
         # Total active debt instruments
         result = await session.execute(text('''
@@ -176,8 +159,6 @@ async def analyze_document_coverage():
         print(f'  Principal without documents: ${uncovered:,.1f}B ({100-coverage_pct:.1f}%)')
         print(f'  Total principal:             ${total:,.1f}B')
 
-    await engine.dispose()
-
 
 if __name__ == "__main__":
-    asyncio.run(analyze_document_coverage())
+    run_async(analyze_document_coverage())

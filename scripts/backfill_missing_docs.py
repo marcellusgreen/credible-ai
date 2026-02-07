@@ -21,18 +21,11 @@ import argparse
 import asyncio
 import os
 import re
-import sys
 from datetime import date
 
-from dotenv import load_dotenv
+from sqlalchemy import text
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-load_dotenv()
-
-from sqlalchemy import text, select
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-
+from script_utils import get_db_session, print_header, run_async
 from app.models import Company, DocumentSection
 from app.services.extraction import SecApiClient
 from app.services.section_extraction import ExtractedSection, store_sections
@@ -306,24 +299,15 @@ async def main():
     parser.add_argument('--dry-run', action='store_true', help='Show what would be done')
     args = parser.parse_args()
 
-    sec_api_key = os.getenv('SEC_API_KEY')
+    sec_api_key = os.environ.get('SEC_API_KEY')
     if not sec_api_key:
         print("ERROR: SEC_API_KEY environment variable required")
-        sys.exit(1)
+        return
 
-    database_url = os.getenv('DATABASE_URL')
-    if 'postgresql://' in database_url and '+asyncpg' not in database_url:
-        database_url = database_url.replace('postgresql://', 'postgresql+asyncpg://', 1)
-
-    engine = create_async_engine(database_url, echo=False)
-    async_session = async_sessionmaker(engine, expire_on_commit=False)
-
-    print("=" * 80)
-    print("BACKFILL MISSING DOCUMENT SECTIONS")
-    print("=" * 80)
+    print_header("BACKFILL MISSING DOCUMENT SECTIONS")
     print(f"Dry run: {args.dry_run}")
 
-    async with async_session() as session:
+    async with get_db_session() as session:
         if args.ticker:
             # Get specific company
             result = await session.execute(text('''
@@ -376,8 +360,6 @@ async def main():
                 for r in skipped:
                     print(f"  {r['ticker']}: {r.get('reason', 'unknown')}")
 
-    await engine.dispose()
-
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_async(main())

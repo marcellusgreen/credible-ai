@@ -3,9 +3,7 @@
 Diagnose why credit facilities aren't matching to available credit agreements.
 """
 
-import asyncio
 import io
-import os
 import re
 import sys
 from collections import defaultdict
@@ -13,14 +11,9 @@ from collections import defaultdict
 if sys.platform == 'win32':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from dotenv import load_dotenv
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
 
-load_dotenv()
+from script_utils import get_db_session, print_header, run_async
 
 
 def extract_facility_keywords(text: str) -> set[str]:
@@ -72,17 +65,9 @@ def extract_amounts_from_text(text: str) -> list[int]:
 
 
 async def diagnose():
-    database_url = os.getenv('DATABASE_URL')
-    if 'postgresql://' in database_url and '+asyncpg' not in database_url:
-        database_url = database_url.replace('postgresql://', 'postgresql+asyncpg://', 1)
+    print_header("CREDIT FACILITY MATCHING DIAGNOSIS")
 
-    engine = create_async_engine(database_url, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    async with async_session() as session:
-        print("=" * 100)
-        print("CREDIT FACILITY MATCHING DIAGNOSIS")
-        print("=" * 100)
+    async with get_db_session() as session:
 
         # Get unlinked credit facilities with available CAs
         result = await session.execute(text('''
@@ -189,8 +174,6 @@ async def diagnose():
         print("  3. Multiple facilities under one credit agreement (multi-tranche)")
         print("  4. Filing date may not match issue date (amendments filed later)")
 
-    await engine.dispose()
-
 
 if __name__ == "__main__":
-    asyncio.run(diagnose())
+    run_async(diagnose())

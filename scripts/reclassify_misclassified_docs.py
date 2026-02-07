@@ -13,18 +13,10 @@ Many documents classified as 'credit_agreement' are actually:
 This script reclassifies them to 'other' section_type.
 """
 
-import asyncio
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from dotenv import load_dotenv
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
-load_dotenv()
+from script_utils import get_db_session, print_header, run_async
 
 # Patterns that indicate a document is NOT a credit agreement
 MISCLASSIFIED_PATTERNS = [
@@ -150,17 +142,9 @@ async def main():
                         help='Show detailed analysis of misclassified documents')
     args = parser.parse_args()
 
-    database_url = os.getenv('DATABASE_URL')
-    if 'postgresql://' in database_url and '+asyncpg' not in database_url:
-        database_url = database_url.replace('postgresql://', 'postgresql+asyncpg://', 1)
+    print_header("RECLASSIFY MISCLASSIFIED DOCUMENT SECTIONS")
 
-    engine = create_async_engine(database_url, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    async with async_session() as session:
-        print('=' * 80)
-        print('RECLASSIFY MISCLASSIFIED DOCUMENT SECTIONS')
-        print('=' * 80)
+    async with get_db_session() as session:
 
         if args.analyze:
             stats = await analyze_misclassified(session)
@@ -195,8 +179,6 @@ async def main():
             for row in result.fetchall():
                 print(f'  {row[0]}: {row[1]}')
 
-    await engine.dispose()
-
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_async(main())
