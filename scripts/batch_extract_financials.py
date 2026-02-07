@@ -10,20 +10,13 @@ Usage:
 
 import argparse
 import asyncio
-import os
 import sys
 from datetime import datetime
-
-from dotenv import load_dotenv
-
-# Add parent dir to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-load_dotenv()
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
+from script_utils import get_db_session, print_header, run_async
 from app.core.config import get_settings
 from app.models import Company, CompanyFinancials, CompanyMetrics
 from app.services.financial_extraction import extract_financials, save_financials_to_db
@@ -84,6 +77,7 @@ async def main():
         print("\nError: Specify --tickers, --high-debt, or --all")
         sys.exit(1)
 
+    # Still need engine for async_sessionmaker within the loop
     database_url = settings.database_url
     if database_url.startswith("postgres://"):
         database_url = database_url.replace("postgres://", "postgresql+asyncpg://", 1)
@@ -93,7 +87,7 @@ async def main():
     engine = create_async_engine(database_url, echo=False)
     async_session = async_sessionmaker(engine, expire_on_commit=False)
 
-    async with async_session() as db:
+    async with get_db_session() as db:
         if args.tickers:
             tickers = [t.strip().upper() for t in args.tickers.split(",")]
         else:
@@ -105,9 +99,7 @@ async def main():
     if args.limit:
         tickers = tickers[:args.limit]
 
-    print("=" * 60)
-    print("BATCH EXTRACT FINANCIALS")
-    print("=" * 60)
+    print_header("BATCH EXTRACT FINANCIALS")
     print(f"Companies: {len(tickers)}")
     print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print()
@@ -152,4 +144,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_async(main())

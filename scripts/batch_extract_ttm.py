@@ -9,36 +9,18 @@ Usage:
 """
 
 import argparse
-import asyncio
-import os
-import sys
 import subprocess
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from dotenv import load_dotenv
-load_dotenv()
+import sys
 
 from sqlalchemy import select, func
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
 
-from app.core.config import get_settings
+from script_utils import get_db_session, print_header, run_async
 from app.models import Company, CompanyFinancials
-
-settings = get_settings()
 
 
 async def get_companies_needing_ttm():
     """Get list of companies with fewer than 4 quarters of financial data."""
-    database_url = settings.database_url
-    if database_url.startswith('postgresql://'):
-        database_url = database_url.replace('postgresql://', 'postgresql+asyncpg://', 1)
-    
-    engine = create_async_engine(database_url, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    
-    async with async_session() as db:
+    async with get_db_session() as db:
         companies = (await db.execute(select(Company).order_by(Company.ticker))).scalars().all()
         
         needing_ttm = []
@@ -54,8 +36,8 @@ async def get_companies_needing_ttm():
             
             if count < 4:
                 needing_ttm.append((company.ticker, company.cik, count))
-        
-        return needing_ttm
+
+    return needing_ttm
 
 
 def extract_ttm(ticker: str, dry_run: bool = False) -> bool:
@@ -99,9 +81,11 @@ async def main():
     parser.add_argument("--max", type=int, help="Maximum companies to process")
     parser.add_argument("--dry-run", action="store_true", help="Preview without extracting")
     args = parser.parse_args()
-    
+
+    print_header("BATCH EXTRACT TTM FINANCIALS")
+
     companies = await get_companies_needing_ttm()
-    
+
     print(f"Found {len(companies)} companies needing TTM extraction")
     print()
     
@@ -128,4 +112,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_async(main())
