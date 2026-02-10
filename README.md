@@ -19,7 +19,7 @@ Corporate structure and debt analysis is complex. Even with AI, achieving accura
 
 ## Current Database
 
-**200+ companies** covering S&P 100 and NASDAQ 100, with thousands of debt instruments, real-time bond pricing, and searchable SEC filing sections. Expanding to 1,000+ companies in 2026.
+**200+ companies** covering S&P 100 and NASDAQ 100, with thousands of debt instruments, real-time bond pricing, and searchable SEC filing sections. Soon expanding to 1,000+ companies.
 
 Coverage spans all major sectors:
 
