@@ -1,54 +1,51 @@
 # DebtStack Work Plan
 
-Last Updated: 2026-02-04
+Last Updated: 2026-02-09
 
 ## Current Status
 
-**Database**: 201 companies | 5,374 entities | 4,822+ debt instruments (incl. ~1,750+ Finnhub bonds) | 591 original with CUSIP/ISIN | 30 priced bonds | 13,862 document sections | 600+ financials | 3,831 guarantees | 626 collateral records | 1,181 covenants | 13,970 treasury yields
-**Deployment**: Live at `https://credible-ai-production.up.railway.app`
+**Database**: 201 companies | 5,828 debt instruments | 2,948 with CUSIP | 2,552 with pricing | 13,862 document sections | 3,831 guarantees | 626 collateral records | 1,181 covenants | 13,970 treasury yields
+**Deployment**: Live at `https://credible-ai-production.up.railway.app` and `https://api.debtstack.ai`
 **Infrastructure**: Railway + Neon PostgreSQL + Upstash Redis (complete)
+**Pricing Coverage**: 2,552/2,948 bonds with CUSIPs have pricing (86.5%) — 2,470 updated in last 7 days
+**Finnhub Discovery**: 161/201 companies scanned, 2,359 bonds discovered, 2,017 with pricing
+**Seniority Distribution**: 5,446 senior_unsecured | 360 senior_secured | 14 subordinated | 8 junior_subordinated
 **Leverage Coverage**: 155/189 companies (82%) - good coverage across all sectors
 **Guarantee Coverage**: ~1,500/2,485 debt instruments (~60%) - up from 34.7% on 2026-01-21
 **Collateral Coverage**: 230/230 senior_secured instruments (100%) with collateral type identified
-**Document Coverage**: 2,777/4,675 linkable instruments (59.4%) — dropped from 100% due to 1,750+ new Finnhub bonds awaiting linking
+**Document Coverage**: 2,777/4,675 linkable instruments (59.4%) — dropped from 100% due to Finnhub bonds awaiting linking
 **Ownership Coverage**: 199/201 companies have identified root entity; 862 explicit parent-child relationships extracted
 **Covenant Coverage**: 1,181 covenants across 201 companies (100%), 92.5% linked to specific instruments
-**Data Quality**: QC audit passing - 0 critical, 0 errors, 4 warnings (2026-01-26)
+**Data Quality**: QC audit passing - 0 critical, 0 errors, 4 warnings (2026-01-26). Fixed 38 mislabeled seniority records (2026-02-06).
 
 ---
 
-## What's Next: Finnhub Bond Discovery → Linking → Pricing
+## What's Next
 
-### Step 1: Finnhub Bond Discovery (Phase 4) — 🔄 IN PROGRESS
-**Status**: Running via `python scripts/expand_bond_pricing.py --phase4`
-**Script**: `scripts/expand_bond_pricing.py` → `phase4_discover_from_finnhub()`
+### Finnhub Bond Discovery & Pricing — Status Update (2026-02-06)
 
-Discovers bonds from Finnhub API by iterating CUSIP issuer codes (AA-ZZ pattern per company).
-Creates `DebtInstrument` records with CUSIP, ISIN, coupon, maturity, seniority, and `attributes={"source": "finnhub_discovery"}`.
+**Finnhub Discovery (Phase 4)**: 161/201 companies scanned. 2,359 bonds discovered.
+- 40 companies remaining (mostly tech/low-debt: AAPL, TSLA, NXPI, TXN, LIN, PANW, PLTR, etc.)
+- To resume: `python scripts/expand_bond_pricing.py --phase4` (idempotent, skips already-scanned)
 
-**Progress (as of 2026-02-04)**:
-- 109/201 companies scanned → 1,758 bonds discovered
-- 92 companies remaining (includes both no-bond companies and not-yet-scanned)
-- ~5 min/company, ~288 API calls/company, rate limited at 1.1s/call
+**Pricing**: 2,552 bonds priced out of 2,948 with CUSIPs (86.5%).
+- 488 bonds have CUSIPs but no pricing (342 Finnhub-discovered, 146 SEC-extracted)
+- These were attempted but Finnhub returned `no_data` — illiquid/no recent TRACE trades
+- Pricing is fresh: 2,470/2,552 updated in last 7 days
 
-**To resume if interrupted**: `python scripts/expand_bond_pricing.py --phase4`
-- Script is idempotent — skips companies already processed (checks existing bonds by CUSIP)
-- Check which companies are done: companies with `instrument_type='bond' AND cusip IS NOT NULL AND isin IS NOT NULL AND created_at >= '2026-02-03'`
+**Seniority Fix (2026-02-06)**: Fixed 38 bonds mislabeled as `senior_secured` where name said "Senior Unsecured" (APA, ADSK, BKR, BX, CAR, ABNB, ATUS). Distribution now: 5,446 unsecured | 360 secured | 14 subordinated | 8 junior_subordinated.
 
-### Step 2: Link Finnhub Bonds to Documents — ⬜ WAITING (on Step 1)
-**Status**: Script ready, waiting for Phase 4 discovery to finish
+**Remaining Steps**:
+
+#### Step 1: Complete Finnhub Discovery (40 companies remaining)
+```bash
+python scripts/expand_bond_pricing.py --phase4
+```
+
+#### Step 2: Link Finnhub Bonds to Documents
 **Script**: `scripts/link_finnhub_bonds.py`
 
-Links newly discovered Finnhub bonds to existing indenture documents, then extracts guarantees and collateral.
-
-**Sub-steps** (all idempotent, run in sequence):
-1. **Backfill source tags** — Tag existing Finnhub bonds with `attributes.source = "finnhub_discovery"`
-2. **Pattern matching** — Search doc content for rate + maturity patterns (confidence 0.75-0.85)
-3. **Heuristic matching** — Score-based matching: rate (+0.4), year (+0.3), type (+0.2) (threshold 0.5)
-4. **Base indenture fallback** — Link to company's base indenture (confidence 0.55-0.60)
-5. **Mark unmatchable** — Tag bonds where company has no indenture documents
-6. **Extract guarantees** — Run guarantee extraction for companies with newly-linked bonds
-7. **Extract collateral** — Run collateral extraction for secured bonds with links
+Links discovered Finnhub bonds to indenture documents, then extracts guarantees and collateral.
 
 **Commands**:
 ```bash
@@ -60,32 +57,177 @@ python scripts/link_finnhub_bonds.py --step match         # Pattern matching onl
 python scripts/link_finnhub_bonds.py --step guarantees    # Guarantees only
 ```
 
-**Dry run results (2026-02-04)**:
-- 1,266 bonds to backfill with source tags
-- 1,511 unlinked bonds across 99 companies
-- Pattern matching: ~5% hit rate (rate+maturity found in doc text)
-- Base indenture fallback: covers ~70 companies with 1,000+ bonds
-- All companies have indenture documents available (0 to mark as no-doc)
-
-**Notes**:
-- Uses fresh DB session per step (survives Neon connection drops)
-- Per-company error handling with rollback (2 companies hit connection timeouts in dry run, recovered)
-- `created_by='finnhub_linker'` on all links for tracking
-
-### Step 3: Price Newly Discovered Bonds — ⬜ WAITING (on Step 2)
-**Script**: `python scripts/expand_bond_pricing.py --phase1`
-
-Fetches current prices from Finnhub for all bonds with CUSIPs.
-
-### Step 4: Historical Pricing Backfill — ⬜ WAITING (on Step 3)
+#### Step 3: Historical Pricing Backfill
 ```bash
 python scripts/backfill_pricing_history.py --all --days 1095 --with-spreads
 ```
 
-### Then: SDK & Documentation
+#### Then: SDK & Documentation
 1. SDK publication to PyPI
 2. Mintlify docs deployment to docs.debtstack.ai
 3. Set up Railway cron job for daily pricing collection
+
+### Company Expansion: Next 87 Companies (2026-02-09)
+
+**Goal**: Expand from 201 → 288 companies, prioritized by debt issuance and credit analysis value.
+
+**Script**: `scripts/next_100_companies.py` - generates prioritized list with CIKs
+
+**Extraction Command**:
+```bash
+# Single company
+python scripts/extract_iterative.py --ticker CMCSA --cik 0001166691 --save-db
+
+# Full extraction with Finnhub pricing
+python scripts/extract_iterative.py --ticker CMCSA --cik 0001166691 --save-db --full
+```
+
+#### Tier 1: Massive Debt (>$50B) - HIGHEST PRIORITY (10 companies)
+
+| Ticker | Company | Debt | Sector | CIK |
+|--------|---------|------|--------|-----|
+| CMCSA | Comcast Corporation | ~$99B | Telecom/Media | 0001166691 |
+| DUK | Duke Energy | ~$90B | Utilities | 0001326160 |
+| CVS | CVS Health | ~$82B | Healthcare | 0000064803 |
+| USB | U.S. Bancorp | ~$78B | Financials | 0000036104 |
+| SO | Southern Company | ~$74B | Utilities | 0000092122 |
+| TFC | Truist Financial | ~$71B | Financials | 0000092230 |
+| ET | Energy Transfer LP | ~$64B | Energy/MLP | 0001276187 |
+| PNC | PNC Financial Services | ~$62B | Financials | 0000713676 |
+| PCG | PG&E Corporation | ~$60B | Utilities | 0001004980 |
+| BMY | Bristol-Myers Squibb | ~$51B | Healthcare | 0000014272 |
+
+#### Tier 2: Large Debt ($30-50B) - HIGH PRIORITY (22 companies)
+
+| Ticker | Company | Debt | Sector | CIK |
+|--------|---------|------|--------|-----|
+| D | Dominion Energy | ~$49B | Utilities | 0000715957 |
+| NAVI | Navient Corporation | ~$46B | Student Loans | 0001593538 |
+| AMT | American Tower | ~$45B | REIT/Telecom | 0001053507 |
+| EIX | Edison International | ~$39B | Utilities | 0000827052 |
+| FDX | FedEx Corporation | ~$38B | Industrials | 0001048911 |
+| BK | Bank of New York Mellon | ~$35B | Financials | 0001390777 |
+| STT | State Street Corporation | ~$35B | Financials | 0000093751 |
+| CI | Cigna Group | ~$34B | Healthcare | 0001739940 |
+| MPC | Marathon Petroleum | ~$34B | Energy | 0001510295 |
+| OKE | ONEOK Inc | ~$34B | Energy/MLP | 0001039684 |
+| EPD | Enterprise Products Partners | ~$34B | Energy/MLP | 0001061219 |
+| SRE | Sempra Energy | ~$33B | Utilities | 0001032208 |
+| KMI | Kinder Morgan | ~$32B | Energy/MLP | 0001506307 |
+| ELV | Elevance Health | ~$32B | Healthcare | 0001156039 |
+| SATS | EchoStar Corporation | ~$31B | Telecom | 0001415404 |
+| DELL | Dell Technologies | ~$31B | Technology | 0001571996 |
+| AES | AES Corporation | ~$31B | Utilities | 0000874761 |
+| TDG | TransDigm Group | ~$30B | Aerospace | 0001260221 |
+| ETR | Entergy Corporation | ~$30B | Utilities | 0000065984 |
+| FI | Fiserv Inc | ~$30B | FinTech | 0000798354 |
+| ES | Eversource Energy | ~$30B | Utilities | 0000072741 |
+| CCI | Crown Castle Inc | ~$30B | REIT/Telecom | 0001051470 |
+
+#### Tier 3: Significant Debt ($15-30B) - MEDIUM PRIORITY (38 companies)
+
+| Ticker | Company | Debt | Sector | CIK |
+|--------|---------|------|--------|-----|
+| UPS | United Parcel Service | ~$29B | Industrials | 0001090727 |
+| NLY | Annaly Capital Management | ~$29B | Mortgage REIT | 0001043219 |
+| O | Realty Income Corporation | ~$29B | REIT | 0000726728 |
+| WMB | Williams Companies | ~$28B | Energy/MLP | 0000107263 |
+| FE | FirstEnergy Corp | ~$27B | Utilities | 0001031296 |
+| ED | Consolidated Edison | ~$27B | Utilities | 0001047862 |
+| MPLX | MPLX LP | ~$26B | Energy/MLP | 0001552275 |
+| LNG | Cheniere Energy | ~$25B | Energy/LNG | 0003570 |
+| WM | Waste Management | ~$23B | Industrials | 0000823768 |
+| OMF | OneMain Financial | ~$22B | Consumer Finance | 0001584207 |
+| CNP | CenterPoint Energy | ~$22B | Utilities | 0001130310 |
+| PRU | Prudential Financial | ~$22B | Insurance | 0001137774 |
+| PSX | Phillips 66 | ~$22B | Energy | 0001534701 |
+| MMC | Marsh McLennan | ~$21B | Insurance | 0000062996 |
+| WEC | WEC Energy Group | ~$21B | Utilities | 0000783325 |
+| EQIX | Equinix Inc | ~$21B | REIT/Data Centers | 0001101239 |
+| ALLY | Ally Financial | ~$20B | Auto Finance | 0000040729 |
+| AL | Air Lease Corporation | ~$20B | Aircraft Leasing | 0001487712 |
+| AEE | Ameren Corporation | ~$20B | Utilities | 0001002910 |
+| TGT | Target Corporation | ~$20B | Retail | 0000027419 |
+| MET | MetLife Inc | ~$20B | Insurance | 0001099219 |
+| ICE | Intercontinental Exchange | ~$20B | Exchanges | 0001571949 |
+| DOW | Dow Inc | ~$20B | Chemicals | 0001751788 |
+| DLR | Digital Realty Trust | ~$20B | REIT/Data Centers | 0001297996 |
+| BDX | Becton Dickinson | ~$19B | Healthcare | 0000010795 |
+| PPL | PPL Corporation | ~$19B | Utilities | 0000922224 |
+| IRM | Iron Mountain | ~$18B | REIT | 0001020569 |
+| APD | Air Products and Chemicals | ~$18B | Industrials | 0000002969 |
+| CMS | CMS Energy | ~$18B | Utilities | 0000811156 |
+| KMX | CarMax Inc | ~$18B | Auto Retail | 0001170010 |
+| BG | Bunge Global SA | ~$18B | Agriculture | 0001996862 |
+| VICI | VICI Properties | ~$18B | REIT/Gaming | 0001705696 |
+| AON | Aon plc | ~$18B | Insurance | 0000315293 |
+| CNC | Centene Corporation | ~$18B | Healthcare | 0001071739 |
+| VST | Vistra Corp | ~$18B | Utilities | 0001692819 |
+| TRGP | Targa Resources | ~$17B | Energy/MLP | 0001389170 |
+| KR | Kroger Co | ~$15B | Retail | 0000056873 |
+| MMM | 3M Company | ~$15B | Industrials | 0000066740 |
+
+#### Tier 4: Moderate Debt ($5-15B) - SECTOR DIVERSITY (13 companies)
+
+| Ticker | Company | Debt | Sector | CIK |
+|--------|---------|------|--------|-----|
+| NOC | Northrop Grumman | ~$14B | Aerospace | 0001133421 |
+| HUM | Humana Inc | ~$12B | Healthcare | 0000049071 |
+| GIS | General Mills | ~$12B | Consumer Staples | 0000040704 |
+| SYY | Sysco Corporation | ~$12B | Food Distribution | 0000096021 |
+| GD | General Dynamics | ~$12B | Aerospace | 0000040533 |
+| EMR | Emerson Electric | ~$10B | Industrials | 0000032604 |
+| ADM | Archer-Daniels-Midland | ~$10B | Agriculture | 0000007084 |
+| CAG | Conagra Brands | ~$9B | Consumer Staples | 0000023217 |
+| IP | International Paper | ~$8B | Paper/Packaging | 0000051434 |
+| SJM | J.M. Smucker Company | ~$8B | Consumer Staples | 0000091419 |
+| DG | Dollar General | ~$7B | Retail | 0000029534 |
+| K | Kellanova | ~$6B | Consumer Staples | 0000055067 |
+| CPB | Campbell Soup Company | ~$5B | Consumer Staples | 0000016732 |
+
+#### Tier 5: Special Interest - Distressed/Restructuring (4 companies)
+
+| Ticker | Company | Debt | Sector | CIK |
+|--------|---------|------|--------|-----|
+| PKG | Packaging Corp of America | ~$4B | Packaging | 0000075677 |
+| CLX | Clorox Company | ~$4B | Consumer Staples | 0000021076 |
+| SAVE | Spirit Airlines | ~$3B | Airlines | 0001498710 |
+| AAP | Advance Auto Parts | ~$2B | Retail | 0001158449 |
+
+#### Sector Coverage After Expansion
+
+| Sector | Current | Adding | Total |
+|--------|---------|--------|-------|
+| Utilities | 5 | 18 | 23 |
+| Energy/MLP | 8 | 12 | 20 |
+| Healthcare | 12 | 8 | 20 |
+| Financials | 15 | 6 | 21 |
+| REIT | 4 | 9 | 13 |
+| Industrials | 18 | 7 | 25 |
+| Consumer Staples | 8 | 8 | 16 |
+| Telecom | 6 | 3 | 9 |
+| Other | 125 | 16 | 141 |
+| **Total** | **201** | **87** | **288** |
+
+#### Recommended Execution Order
+
+1. **Week 1**: Tier 1 (10 companies) - Massive debt issuers
+2. **Week 2**: Tier 2 (22 companies) - Large debt issuers
+3. **Week 3-4**: Tier 3 (38 companies) - Significant debt
+4. **Week 5**: Tier 4-5 (17 companies) - Sector diversity & special interest
+
+**Estimated time**: ~3-5 minutes per company (standard), ~10 minutes with `--full`
+**Estimated cost**: ~$0.03-0.08 per company
+
+### Eval Suite Results (2026-02-06)
+
+Ran full eval suite (136 tests) against production API:
+- **119 passed, 12 failed, 5 skipped** (87.5% accuracy)
+- **10 failures**: `/v1/covenants/compare` — all 403 Forbidden (Business-tier only, test key is lower tier)
+- **2 failures**: Workflow threshold assertions — not enough secured bonds with pricing for test thresholds
+  - `test_physical_asset_backed_bonds`: expects 5+ secured bonds with YTM >= 8%, only 1 exists (BHC)
+  - `test_yield_per_leverage`: expects 3+ bonds with YTM >= 7%, only 2 exist
+- **5 skipped**: Missing test CUSIPs for bond-start traversal and exact lookup tests
 
 ---
 
@@ -454,15 +596,19 @@ Create `tests/test_pricing_tiers.py`:
 
 ---
 
-### Secondary Priorities (after pricing implementation):
-1. **Finnhub Pricing Expansion** - Expand from 30 to 200+ bonds with pricing data
+### Secondary Priorities:
+1. ~~**Finnhub Pricing Expansion**~~ - ✅ DONE: Expanded from 30 to 2,552 bonds with pricing data
 2. **SDK Publication** - Publish `debtstack-ai` to PyPI for easy Python integration
 3. **Mintlify Docs Deployment** - Deploy docs to `docs.debtstack.ai`
 4. **Scale Error Investigation** - Verify INTU/META/etc. scale issues against source SEC filings (don't auto-fix)
+5. **Eval Suite Fixes** - Adjust workflow test thresholds for secured bond pricing reality; add Business-tier test key for covenants/compare tests
 
 ## Recent Completed Work
 
 ### February 2026
+- [x] **Seniority Data Fix** (2026-02-06) - Fixed 38 bonds mislabeled as `senior_secured` where name contained "Unsecured" (APA, ADSK, BKR, BX, CAR, ABNB, ATUS). Updated seniority to `senior_unsecured`. Verified 0 reverse mismatches.
+- [x] **Eval Suite Run** (2026-02-06) - Ran full 136-test eval suite against production: 119 passed, 12 failed, 5 skipped (87.5%). Failures are expected: 10 due to Business-tier access on covenants/compare, 2 due to insufficient secured bond pricing for workflow thresholds.
+- [x] **DNS Configuration** (2026-02-06) - Configured `api.debtstack.ai` CNAME to Railway via Vercel DNS (nameservers are on Vercel, not Squarespace). Added Railway verification TXT record.
 - [x] **Stripe Integration Complete** (2026-02-03) - Full Stripe billing system operational:
   - Created Stripe products: Pro ($199/mo), Business ($499/mo), Credit packages ($10-$100)
   - Configured price IDs in Railway environment variables

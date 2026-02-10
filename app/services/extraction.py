@@ -257,8 +257,8 @@ class ExtractedEntity(BaseModel):
 class ExtractedDebtInstrument(BaseModel):
     """Validated debt instrument from extraction."""
     name: str
-    instrument_type: str
-    seniority: str
+    instrument_type: Optional[str] = "senior_notes"
+    seniority: Optional[str] = "senior_unsecured"
     security_type: Optional[str] = None
     issuer_name: str
     commitment: Optional[int] = None
@@ -275,9 +275,21 @@ class ExtractedDebtInstrument(BaseModel):
     guarantor_names: list[str] = Field(default_factory=list)
     attributes: dict = Field(default_factory=dict)
 
+    @field_validator("instrument_type")
+    @classmethod
+    def validate_instrument_type(cls, v: Optional[str]) -> str:
+        if v is None:
+            return "senior_notes"
+        valid = {"senior_notes", "senior_secured_notes", "subordinated_notes", "term_loan", "revolver", "bond", "debenture", "other"}
+        if v.lower() not in valid:
+            return "senior_notes"
+        return v.lower()
+
     @field_validator("seniority")
     @classmethod
-    def validate_seniority(cls, v: str) -> str:
+    def validate_seniority(cls, v: Optional[str]) -> str:
+        if v is None:
+            return "senior_unsecured"
         valid = {"senior_secured", "senior_unsecured", "subordinated", "junior_subordinated"}
         if v.lower() not in valid:
             return "senior_unsecured"

@@ -25,8 +25,10 @@ import os
 import sys
 from datetime import date, timedelta
 
-import httpx
 from dotenv import load_dotenv
+load_dotenv()  # Must be before imports that use env vars
+
+import httpx
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 # Add parent directory to path
@@ -40,8 +42,6 @@ from app.services.pricing_history import (
 )
 from app.services.bond_pricing import FINNHUB_API_KEY, REQUEST_DELAY
 from app.services.treasury_yields import get_treasury_yield_stats
-
-load_dotenv()
 
 
 async def main():
