@@ -129,9 +129,10 @@ async def get_usage_analytics(
     total_row = total_result.one()
 
     # Daily breakdown
+    day_trunc = func.date_trunc('day', UsageLog.created_at).label("day")
     daily_result = await db.execute(
         select(
-            func.date_trunc('day', UsageLog.created_at).label("day"),
+            day_trunc,
             func.count(UsageLog.id).label("query_count"),
             func.coalesce(func.sum(UsageLog.cost_usd), 0).label("cost"),
             func.count(func.distinct(UsageLog.endpoint)).label("unique_endpoints"),
@@ -140,9 +141,9 @@ async def get_usage_analytics(
             UsageLog.created_at >= period_start,
             UsageLog.created_at <= period_end,
         ).group_by(
-            func.date_trunc('day', UsageLog.created_at)
+            day_trunc
         ).order_by(
-            func.date_trunc('day', UsageLog.created_at)
+            day_trunc
         )
     )
     daily_rows = daily_result.all()
@@ -281,9 +282,10 @@ async def get_usage_trends(
             trend_direction = "stable"
 
     # Daily data for current period
+    day_trunc = func.date_trunc('day', UsageLog.created_at).label("day")
     daily_result = await db.execute(
         select(
-            func.date_trunc('day', UsageLog.created_at).label("day"),
+            day_trunc,
             func.count(UsageLog.id).label("query_count"),
             func.coalesce(func.sum(UsageLog.cost_usd), 0).label("cost"),
             func.count(func.distinct(UsageLog.endpoint)).label("unique_endpoints"),
@@ -292,9 +294,9 @@ async def get_usage_trends(
             UsageLog.created_at >= current_start,
             UsageLog.created_at <= now,
         ).group_by(
-            func.date_trunc('day', UsageLog.created_at)
+            day_trunc
         ).order_by(
-            func.date_trunc('day', UsageLog.created_at)
+            day_trunc
         )
     )
     daily_rows = daily_result.all()
