@@ -69,6 +69,32 @@ python scripts/backfill_pricing_history.py --all --days 1095 --with-spreads
 2. Mintlify docs deployment to docs.debtstack.ai
 3. ~~Set up Railway cron job for daily pricing collection~~ ✅ Done — APScheduler in-process (11 AM / 3 PM / 9 PM ET)
 
+### Analytics, Error Tracking & Alerting (2026-02-10) ✅
+
+**Status**: Code complete. Environment variables need to be set in Vercel & Railway dashboards.
+
+| Tool | Where | Status |
+|------|-------|--------|
+| Vercel Analytics | Website | ✅ `<Analytics />` in layout — enable in Vercel dashboard |
+| PostHog | Website | ✅ Provider + pageview tracking + event tracking — needs `NEXT_PUBLIC_POSTHOG_KEY` |
+| Sentry | Website + Backend | ✅ Client/server configs + FastAPI integration — needs DSNs |
+| Slack Alerts | Backend | ✅ 15-min scheduler job + webhook alerting — needs `SLACK_WEBHOOK_URL` |
+
+**PostHog events tracked**: `$pageview` (automatic), `viewed_pricing`, `clicked_subscribe`, `viewed_dashboard`, `copied_api_key`
+
+**Environment variables to set**:
+
+| Variable | Where | How to Get |
+|----------|-------|------------|
+| `NEXT_PUBLIC_POSTHOG_KEY` | Vercel | PostHog → Project Settings → API Key |
+| `NEXT_PUBLIC_POSTHOG_HOST` | Vercel | `https://us.i.posthog.com` |
+| `NEXT_PUBLIC_SENTRY_DSN` | Vercel | Sentry → debtstack-website project → DSN |
+| `SENTRY_AUTH_TOKEN` | Vercel | Sentry → Settings → Auth Tokens |
+| `SENTRY_ORG` | Vercel | Sentry org slug |
+| `SENTRY_PROJECT` | Vercel | Sentry project slug |
+| `SENTRY_DSN` | Railway | Sentry → debtstack-api project → DSN |
+| `SLACK_WEBHOOK_URL` | Railway | Slack App → Incoming Webhooks → URL |
+
 ### Company Expansion: Next 87 Companies (2026-02-09)
 
 **Goal**: Expand from 201 → 288 companies, prioritized by debt issuance and credit analysis value.
@@ -1938,6 +1964,29 @@ When starting a new session, read this file first, then:
 ---
 
 ## Session Log
+
+### 2026-02-10 (Session 32) - Analytics, Error Tracking & Alerting
+
+**Objective:** Add visibility into website traffic, error tracking, and alert delivery across frontend and backend.
+
+**Changes — Backend (credible/)**:
+- `requirements.txt`: Added `sentry-sdk[fastapi]>=2.0.0`
+- `app/core/config.py`: Added `sentry_dsn` and `slack_webhook_url` settings
+- `app/main.py`: Initialize Sentry SDK (5% trace sample rate, auto-captures unhandled exceptions)
+- `app/core/alerting.py` (new): Slack webhook alerts via httpx — `send_slack_alert()` and `check_and_alert()`
+- `app/core/scheduler.py`: Added 15-minute interval job for `check_and_alert()` (checks error rate >5% and rate-limit hits >10%)
+
+**Changes — Website (debtstack-website/)**:
+- Installed `@vercel/analytics`, `posthog-js`, `@sentry/nextjs`
+- `app/providers.tsx` (new): PostHog initialization, automatic pageview tracking via `usePathname()`, Clerk user identification
+- `app/layout.tsx`: Wrapped children with `<PostHogProviders>`, added `<Analytics />`
+- `app/pricing/page.tsx`: Tracks `viewed_pricing` on load, `clicked_subscribe` on CTA clicks
+- `app/dashboard/page.tsx`: Tracks `viewed_dashboard` on load, `copied_api_key` on copy
+- `sentry.client.config.ts` (new): Sentry browser config (10% traces, no replays — PostHog handles that)
+- `sentry.server.config.ts` (new): Sentry server config (10% traces)
+- `next.config.ts`: Wrapped with `withSentryConfig()` for source map uploads
+
+**Build**: Passes cleanly. All 4 integrations are code-complete, pending environment variable configuration.
 
 ### 2026-02-09 (Session 31) - Senior Secured Bond ISIN Discovery & Pricing
 

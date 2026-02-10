@@ -25,6 +25,7 @@ from app.services.bond_pricing import (
 )
 from app.services.yield_calculation import calculate_ytm_and_spread
 from app.services.pricing_history import copy_current_to_history
+from app.core.alerting import check_and_alert
 
 logger = structlog.get_logger()
 
@@ -148,6 +149,13 @@ def start_scheduler() -> None:
         refresh_and_snapshot,
         CronTrigger(hour=21, minute=0, timezone="US/Eastern"),
         id="refresh_and_snapshot_9pm",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        check_and_alert,
+        "interval",
+        minutes=15,
+        id="check_alerts_15min",
         replace_existing=True,
     )
     scheduler.start()

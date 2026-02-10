@@ -21,6 +21,7 @@ from app.api.pricing_api import router as pricing_router
 from app.api.historical_pricing import router as historical_pricing_router
 from app.api.export import router as export_router
 from app.api.usage import router as usage_router
+import sentry_sdk
 from app.core.config import get_settings
 from app.core.cache import check_rate_limit, DEFAULT_RATE_LIMIT, DEFAULT_RATE_WINDOW
 from app.core.monitoring import record_request, record_rate_limit_hit
@@ -28,6 +29,14 @@ from app.core.auth import hash_api_key
 from app.core.scheduler import start_scheduler, stop_scheduler
 
 settings = get_settings()
+
+# Initialize Sentry for error tracking
+if settings.sentry_dsn:
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        traces_sample_rate=0.05,
+        environment=settings.environment,
+    )
 
 # Configure structured logging
 structlog.configure(

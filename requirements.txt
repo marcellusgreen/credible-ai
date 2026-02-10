@@ -32,3 +32,6 @@ tzdata>=2024.1
 
 # Billing
 stripe>=7.0.0
+
+# Error Tracking
+sentry-sdk[fastapi]>=2.0.0

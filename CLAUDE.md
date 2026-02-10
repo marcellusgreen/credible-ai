@@ -6,12 +6,13 @@ Context for AI assistants working on the DebtStack.ai codebase.
 
 ## What's Next
 
-**Immediate**: Finnhub pricing expansion (30 → 200+ bonds)
+**Immediate**: Complete Finnhub discovery (40/201 companies remaining), link discovered bonds to documents
 
 **Then**:
 1. SDK publication to PyPI
 2. Mintlify docs deployment to docs.debtstack.ai
-3. Set up Railway cron job for daily pricing collection
+3. ~~Set up Railway cron job for daily pricing collection~~ ✅ Done — APScheduler in-process
+4. ~~Analytics, error tracking & alerting~~ ✅ Done — Vercel Analytics, PostHog, Sentry, Slack alerts
 
 ## Project Overview
 
@@ -21,18 +22,26 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 ## Current Status (February 2026)
 
-**Database**: 201 companies | 26,771 entities | 3,056 active debt instruments | 2,359 Finnhub bonds (2,017 with pricing) | 13,862 document sections | 3,831 guarantees | 626 collateral records
+**Database**: 201 companies | 5,828 debt instruments | 2,948 with CUSIP | 2,552 with pricing (86.5%) | 13,862 document sections | 3,831 guarantees | 626 collateral records | 1,181 covenants | 13,970 treasury yields
 
-**Document Coverage**: 93% of instruments linked (2,829 / 3,056) via `DebtInstrumentDocument` junction table
+**Pricing Coverage**: 2,552 bonds priced via Finnhub/FINRA TRACE. 2,470 updated in last 7 days. 488 bonds have CUSIPs but no TRACE data (illiquid).
+
+**Finnhub Discovery**: 161/201 companies scanned, 2,359 bonds discovered, 40 companies remaining
+
+**Seniority Distribution**: 5,446 senior_unsecured | 360 senior_secured | 14 subordinated | 8 junior_subordinated
+
+**Document Coverage**: 93% of original instruments linked (2,829 / 3,056) via `DebtInstrumentDocument` junction table. Finnhub-discovered bonds awaiting linking.
 
 **Entity Distribution**: 94 companies (47%) have 50+ entities, 71 (35%) have 11-50, 34 (17%) have 2-10, 2 have 1 entity (ODFL, TTD - legitimate single-entity companies with no Exhibit 21 subsidiaries)
 
 **Ownership Coverage**: 199/201 companies have identified root entity (`is_root=true`); 1,474 entities with known parent relationships (678 intermediate + 796 key entities linked to root); 25,096 entities with unknown parent (from Exhibit 21 only)
 
-**Data Quality**: QC audit passing - 0 critical, 0 errors, 4 warnings (2026-01-29)
+**Data Quality**: QC audit passing - 0 critical, 0 errors, 4 warnings (2026-01-29). Fixed 38 mislabeled seniority records (2026-02-06).
+
+**Eval Suite**: 119/136 tests passing (87.5%). 10 failures are Business-tier access (expected), 2 are workflow threshold gaps.
 
 **Deployment**: Railway with Neon PostgreSQL + Upstash Redis
-- Live at: `https://api.debtstack.ai`
+- Live at: `https://api.debtstack.ai` (CNAME via Vercel DNS → Railway)
 
 **What's Working**:
 - **Three-Tier Pricing**: Pay-as-You-Go ($0 + per-call), Pro ($199/mo), Business ($499/mo)
@@ -40,6 +49,7 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 - **Business-Only Endpoints**: Historical pricing, covenant compare, bulk export, usage analytics
 - **Auth & Credits**: API key auth, tier-based access control, usage tracking with cost
 - **Legacy REST API**: 26 endpoints for detailed company data
+- **Observability**: Vercel Analytics, PostHog (events/funnels), Sentry (error tracking), Slack alerts
 - Iterative extraction with QA feedback loop (5 checks, 85% threshold)
 - Gemini for extraction (~$0.008), Claude for escalation
 - SEC-API.io integration (paid tier)
@@ -133,6 +143,9 @@ This separation keeps business logic testable and reusable while scripts handle 
 | `app/models/schema.py` | SQLAlchemy models (includes User, UserCredits, UsageLog) |
 | `app/core/config.py` | Environment configuration |
 | `app/core/database.py` | Database connection |
+| `app/core/alerting.py` | Slack webhook alerts (check_and_alert called every 15 min) |
+| `app/core/monitoring.py` | Redis-based API metrics and alert condition checks |
+| `app/core/scheduler.py` | APScheduler jobs: pricing refresh + alert checks |
 
 ## Database Schema
 
@@ -816,6 +829,8 @@ python scripts/collect_daily_pricing.py --all
 | `GEMINI_API_KEY` | Recommended | Gemini for extraction |
 | `SEC_API_KEY` | Recommended | SEC-API.io for filing retrieval |
 | `FINNHUB_API_KEY` | Optional | Finnhub for bond pricing (~$100/mo tier) |
+| `SENTRY_DSN` | Optional | Sentry error tracking (FastAPI auto-integration) |
+| `SLACK_WEBHOOK_URL` | Optional | Slack incoming webhook for alert notifications |
 
 ## Deployment
 
