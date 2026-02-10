@@ -161,7 +161,7 @@ This separation keeps business logic testable and reusable while scripts handle 
 - `guarantees`: Links debt to guarantor entities
 - `collateral`: Asset-backed collateral for secured debt (type, description, priority)
 - `covenants`: Structured covenant data extracted from credit agreements/indentures
-- `company_financials`: Quarterly financial statements (amounts in cents)
+- `company_financials`: Quarterly financial statements (amounts in cents) - see **Industry-Specific Metrics** below
 - `bond_pricing`: Pricing data (YTM, spreads in basis points)
 - `document_sections`: SEC filing sections for full-text search (TSVECTOR + GIN index)
 
@@ -179,6 +179,32 @@ This separation keeps business logic testable and reusable while scripts handle 
 **Cache Tables**:
 - `company_cache`: Pre-computed JSON responses + `extraction_status` (JSONB tracking step attempts)
 - `company_metrics`: Computed credit metrics + `source_filings` JSONB for TTM provenance
+
+### Industry-Specific Financial Metrics
+
+Different industries use different primary profitability metrics. The `company_financials.ebitda` field stores the industry-appropriate metric, with `ebitda_type` indicating which:
+
+| `ebitda_type` | Industry | Metric | Calculation |
+|---------------|----------|--------|-------------|
+| `"ebitda"` | Operating companies | EBITDA | Operating Income + D&A |
+| `"ppnr"` | Banks | Pre-Provision Net Revenue | NII + Non-Interest Income - Non-Interest Expense |
+| `"ffo"` | REITs | Funds From Operations | Net Income + D&A - Gains on Sales |
+| `"noi"` | Real Estate | Net Operating Income | Rental Income - Operating Expenses |
+
+**Current Support:**
+- Banks/Financial Institutions: `companies.is_financial_institution = true` (12 companies: AXP, BAC, C, COF, GS, JPM, MS, PNC, SCHW, TFC, USB, WFC)
+- Industry-specific fields in `company_financials`: `net_interest_income`, `non_interest_income`, `non_interest_expense`, `provision_for_credit_losses`
+
+**To add a new industry type:**
+1. Add flag to `companies` table (e.g., `is_reit`) or use `sector` detection
+2. Add industry-specific columns to `company_financials` in schema.py
+3. Create Alembic migration for new columns
+4. Add extraction prompt in `app/services/financial_extraction.py` (see `BANK_FINANCIAL_EXTRACTION_PROMPT`)
+5. Add calculation logic in `save_financials_to_db()` to compute the metric and set `ebitda_type`
+6. Update `extract_iterative.py` to detect and flag the industry type
+
+**API Response:**
+The `/v1/financials` endpoint returns `ebitda_type` so consumers know which metric they're seeing. Bank-specific fields (`net_interest_income`, etc.) are included but null for non-banks.
 
 ## API Endpoints
 

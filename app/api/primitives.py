@@ -299,6 +299,11 @@ async def search_companies(
             "limit": limit,
             "offset": offset,
             "fields": list(selected_fields) if selected_fields else "all",
+            "data_sources": {
+                "total_debt": "SEC financial statements (10-K/10-Q balance sheet)",
+                "leverage_ratio": "total_debt / TTM EBITDA from SEC filings",
+                "ebitda": "TTM from SEC filings; for banks, this is PPNR (check ebitda_type in /financials)",
+            },
         }
     }
     return etag_response(response_data, if_none_match)
@@ -2467,9 +2472,14 @@ async def search_financials(
             "gross_profit": fin.gross_profit,
             "operating_income": fin.operating_income,
             "ebitda": fin.ebitda,
+            "ebitda_type": fin.ebitda_type,  # "ebitda" or "ppnr" (for banks)
             "interest_expense": fin.interest_expense,
             "net_income": fin.net_income,
             "depreciation_amortization": fin.depreciation_amortization,
+            # Bank-specific (null for non-banks)
+            "net_interest_income": fin.net_interest_income,
+            "non_interest_income": fin.non_interest_income,
+            "provision_for_credit_losses": fin.provision_for_credit_losses,
             # Balance Sheet
             "cash": fin.cash_and_equivalents,
             "total_current_assets": fin.total_current_assets,
@@ -2502,6 +2512,12 @@ async def search_financials(
             "total": total,
             "limit": limit,
             "offset": offset,
+            "data_sources": {
+                "all_fields": "Extracted from SEC 10-K and 10-Q filings",
+                "total_debt": "Balance sheet total debt (short-term + long-term)",
+                "ebitda": "Operating income + D&A; for banks (ebitda_type='ppnr'), this is Pre-Provision Net Revenue",
+                "ebitda_type": "'ebitda' for operating companies, 'ppnr' for banks/financial institutions",
+            },
         }
     }
     return etag_response(response_data, if_none_match)

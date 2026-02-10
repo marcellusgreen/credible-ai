@@ -51,6 +51,9 @@ class Company(Base):
     # Classification
     sector: Mapped[Optional[str]] = mapped_column(String(100))
     industry: Mapped[Optional[str]] = mapped_column(String(100))
+    is_financial_institution: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )  # Banks, insurance, asset managers - use NII instead of revenue
 
     # Identifiers
     cik: Mapped[Optional[str]] = mapped_column(String(20))  # SEC Central Index Key
@@ -776,9 +779,42 @@ class CompanyFinancials(Base):
     gross_profit: Mapped[Optional[int]] = mapped_column(BigInteger)
     operating_income: Mapped[Optional[int]] = mapped_column(BigInteger)  # EBIT
     ebitda: Mapped[Optional[int]] = mapped_column(BigInteger)
+    ebitda_type: Mapped[Optional[str]] = mapped_column(String(20))  # See INDUSTRY-SPECIFIC METRICS below
     interest_expense: Mapped[Optional[int]] = mapped_column(BigInteger)
     net_income: Mapped[Optional[int]] = mapped_column(BigInteger)
     depreciation_amortization: Mapped[Optional[int]] = mapped_column(BigInteger)
+
+    # =========================================================================
+    # INDUSTRY-SPECIFIC METRICS (all in cents)
+    # =========================================================================
+    # Different industries use different primary metrics instead of EBITDA.
+    # The `ebitda` field stores the industry-appropriate metric, and `ebitda_type`
+    # indicates which metric it represents:
+    #
+    # | ebitda_type | Industry        | Metric                      | Calculation                        |
+    # |-------------|-----------------|-----------------------------|------------------------------------|
+    # | "ebitda"    | Operating cos   | EBITDA                      | Operating Income + D&A             |
+    # | "ppnr"      | Banks           | Pre-Provision Net Revenue   | NII + Non-Int Income - Non-Int Exp |
+    # | "ffo"       | REITs           | Funds From Operations       | Net Income + D&A - Gains on Sales  |
+    # | "noi"       | Real Estate     | Net Operating Income        | Rental Income - Operating Expenses |
+    #
+    # To add a new industry type:
+    # 1. Add industry-specific columns below (like net_interest_income for banks)
+    # 2. Add extraction prompt in financial_extraction.py
+    # 3. Add calculation logic in save_financials_to_db()
+    # 4. Update Company.is_financial_institution or add new flag as needed
+    # =========================================================================
+
+    # Bank/Financial Institution fields
+    net_interest_income: Mapped[Optional[int]] = mapped_column(BigInteger)
+    non_interest_income: Mapped[Optional[int]] = mapped_column(BigInteger)  # Fees, trading, etc.
+    non_interest_expense: Mapped[Optional[int]] = mapped_column(BigInteger)  # Salaries, occupancy, etc.
+    provision_for_credit_losses: Mapped[Optional[int]] = mapped_column(BigInteger)
+
+    # REIT/Real Estate fields (for future use)
+    # rental_income: Mapped[Optional[int]] = mapped_column(BigInteger)
+    # property_operating_expenses: Mapped[Optional[int]] = mapped_column(BigInteger)
+    # gains_on_property_sales: Mapped[Optional[int]] = mapped_column(BigInteger)
 
     # Balance Sheet (all in cents)
     cash_and_equivalents: Mapped[Optional[int]] = mapped_column(BigInteger)

@@ -252,13 +252,14 @@ async def run_iterative_extraction(
                 print(f"    - Collateral: {existing_data.get('collateral_count', 0)}")
                 print(f"    - Document sections: {existing_data.get('document_section_count', 0)}")
 
-                # Get company name for hierarchy building
+                # Get company name and check if financial institution
                 from app.models import Company
                 from sqlalchemy import select
                 result = await session.execute(select(Company).where(Company.ticker == ticker.upper()))
                 company = result.scalar_one_or_none()
                 if company:
                     company_name = company.name
+                    existing_data['is_financial_institution'] = company.is_financial_institution
 
         await engine.dispose()
     else:
@@ -538,10 +539,16 @@ async def run_iterative_extraction(
             try:
                 from app.services.financial_extraction import extract_ttm_financials, save_financials_to_db
 
+                # Check if this is a financial institution (bank, insurance, etc.)
+                is_financial_institution = existing_data.get('is_financial_institution', False)
+                if is_financial_institution:
+                    print(f"  [INFO] Financial institution - using bank-specific extraction")
+
                 ttm_results = await extract_ttm_financials(
                     ticker=ticker,
                     cik=cik,
                     use_claude=False,
+                    is_financial_institution=is_financial_institution,
                 )
 
                 if ttm_results:

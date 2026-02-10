@@ -528,14 +528,16 @@ class QCMaster:
                 auto_fixable=True
             )
 
-        # 3.5 Duplicate debt instruments (same issuer, name, maturity)
-        # Note: Different issuers within same company can have same-named instruments (e.g., holdco vs opco)
+        # 3.5 Duplicate debt instruments (same issuer, name, maturity, AND same CUSIP)
+        # Note: Different CUSIPs with same name/maturity are legitimate (144A vs registered tranches)
+        # Only flag true duplicates where CUSIP also matches
         result = await self.db.execute(text('''
-            SELECT c.ticker, di.name, COUNT(*) as cnt
+            SELECT c.ticker, di.name, di.cusip, COUNT(*) as cnt
             FROM debt_instruments di
             JOIN entities e ON e.id = di.issuer_id
             JOIN companies c ON c.id = e.company_id
-            GROUP BY c.ticker, e.company_id, di.issuer_id, di.name, di.maturity_date
+            WHERE di.is_active = true
+            GROUP BY c.ticker, e.company_id, di.issuer_id, di.name, di.maturity_date, di.cusip
             HAVING COUNT(*) > 1
         '''))
         rows = result.fetchall()
@@ -545,9 +547,9 @@ class QCMaster:
                 category='consistency',
                 table='debt_instruments',
                 check_name='duplicate_instruments',
-                description='Duplicate debt instruments (same issuer + name + maturity)',
-                affected_count=sum(r[2] - 1 for r in rows),
-                sample_ids=[f"{r[0]}: {r[1]} ({r[2]}x)" for r in rows[:5]]
+                description='Duplicate debt instruments (same issuer + name + maturity + CUSIP)',
+                affected_count=sum(r[3] - 1 for r in rows),
+                sample_ids=[f"{r[0]}: {r[1]} ({r[3]}x)" for r in rows[:5]]
             )
 
         # 3.6 Entity belongs to different company than its parent
@@ -688,7 +690,8 @@ class QCMaster:
                 sample_ids=[f"{r[0]}: {r[1]} by {r[2]}" for r in rows[:5]]
             )
 
-        # 4.6 EBITDA with zero revenue (extraction failure, not MSTR)
+        # 4.6 EBITDA with zero revenue (extraction failure, not MSTR or financial institutions)
+        # Banks/financial institutions use Net Interest Income, not traditional revenue
         result = await self.db.execute(text('''
             SELECT c.ticker, cf.fiscal_year, cf.fiscal_quarter,
                    cf.ebitda / 100.0 / 1e9 as ebitda_b
@@ -697,6 +700,7 @@ class QCMaster:
             WHERE (cf.revenue IS NULL OR cf.revenue = 0)
             AND cf.ebitda IS NOT NULL AND cf.ebitda > 100000000  -- >$1M
             AND c.ticker NOT IN ('MSTR')  -- Bitcoin company exception
+            AND c.is_financial_institution = false  -- Banks use NII, not revenue
         '''))
         rows = result.fetchall()
         if rows:

@@ -127,6 +127,107 @@ IMPORTANT:
 - Return null (not 0) for missing data
 """
 
+# Bank/Financial Institution specific prompt
+BANK_FINANCIAL_EXTRACTION_PROMPT = """
+Extract quarterly financial data from this SEC filing for a BANK/FINANCIAL INSTITUTION.
+
+COMPANY: {company_name} ({ticker})
+FILING TYPE: {filing_type}
+PERIOD END: {period_end}
+
+FILING CONTENT:
+{filing_content}
+
+IMPORTANT: This is a bank or financial institution. Banks have different income structure:
+- NO traditional "revenue" or "cost of revenue"
+- Instead, Net Interest Income = Interest Income - Interest Expense
+- Non-Interest Income = Fees, commissions, trading gains, etc.
+- Provision for Credit Losses = Expense for expected loan defaults
+- Non-Interest Expense = Operating costs (salaries, occupancy, technology, etc.)
+
+Extract and return this JSON structure:
+
+{{
+  "fiscal_year": {fiscal_year},
+  "fiscal_quarter": {fiscal_quarter},
+  "period_end_date": "{period_end}",
+
+  // BANK INCOME STATEMENT (quarterly figures - use EXACT numbers from filing)
+  "net_interest_income": null,           // Net interest income (CRITICAL for banks)
+  "non_interest_income": null,           // Non-interest income (fees, trading, etc.)
+  "non_interest_expense": null,          // Non-interest expense (salaries, occupancy, etc.)
+  "provision_for_credit_losses": null,   // Provision for credit losses (positive = expense)
+  "operating_income": null,              // Income before income taxes / Pre-tax income
+  "interest_expense": null,              // Interest expense (from income statement, not NII calc)
+  "income_tax_expense": null,            // Income tax expense
+  "net_income": null,                    // Net income attributable to company
+
+  // For banks, set these to null (they don't apply)
+  "revenue": null,
+  "cost_of_revenue": null,
+  "gross_profit": null,
+  "depreciation_amortization": null,
+  "ebitda": null,
+
+  // BALANCE SHEET (as of period end - use EXACT numbers from filing)
+  "cash_and_equivalents": null,          // Cash and cash equivalents
+  "total_current_assets": null,          // Total current assets (if disclosed)
+  "total_assets": null,                  // Total assets
+  "total_current_liabilities": null,     // Total current liabilities (if disclosed)
+  "total_debt": null,                    // Long-term debt (NOT deposits)
+  "total_liabilities": null,             // Total liabilities
+  "stockholders_equity": null,           // Total stockholders' equity
+
+  // CASH FLOW (quarterly figures - use EXACT numbers from filing)
+  "operating_cash_flow": null,           // Net cash from operating activities
+  "investing_cash_flow": null,           // Net cash from investing activities
+  "financing_cash_flow": null,           // Net cash from financing activities
+  "capex": null,                         // Capital expenditures (positive number)
+
+  "uncertainties": []                    // List any metrics that couldn't be found
+}}
+
+BANK-SPECIFIC EXTRACTION TIPS:
+- Net Interest Income: Usually the FIRST line in the income statement for banks
+  - Look for "Net interest income" or "Net interest income after provision"
+  - This is calculated as Interest Income - Interest Expense
+- Non-Interest Income: Second major revenue source
+  - Includes: service charges, trading revenue, asset management fees, etc.
+  - Look for "Total non-interest income" or "Non-interest revenue"
+- Non-Interest Expense: Operating costs for the bank
+  - Look for "Total non-interest expense" or "Total noninterest expense"
+  - Includes: salaries, employee benefits, occupancy, equipment, technology
+- Provision for Credit Losses: NOT interest expense - this is loan loss reserves
+  - Often shown right after Net Interest Income
+- Total Debt for banks: Focus on "Long-term debt" or "Senior notes"
+  - Do NOT include customer deposits or wholesale funding
+
+IMPORTANT:
+- Extract the EXACT numbers as shown in the filing tables
+- DO NOT convert or multiply the numbers - just extract them as presented
+- The filing header will say "in millions" or "in thousands" - we handle conversion separately
+- Return null (not 0) for missing data
+"""
+
+# Keywords to find financial sections in bank filings
+BANK_FINANCIAL_SECTIONS_KEYWORDS = [
+    "consolidated statements of income",
+    "consolidated balance sheets",
+    "consolidated statements of cash flows",
+    "net interest income",
+    "non-interest income",
+    "noninterest income",
+    "provision for credit losses",
+    "allowance for credit losses",
+    "total interest income",
+    "total interest expense",
+    "total noninterest expense",
+    "total deposits",
+    "loans and leases",
+    "total assets",
+    "stockholders' equity",
+]
+
 FINANCIAL_SECTIONS_KEYWORDS = [
     "consolidated statements of operations",
     "consolidated balance sheets",
@@ -372,6 +473,15 @@ class ExtractedFinancials(BaseModel):
     financing_cash_flow: Optional[int] = None
     capex: Optional[int] = None
 
+    # Bank/Financial Institution specific
+    net_interest_income: Optional[int] = None
+    non_interest_income: Optional[int] = None
+    non_interest_expense: Optional[int] = None  # For PPNR calculation
+    provision_for_credit_losses: Optional[int] = None
+
+    # Metadata
+    ebitda_type: Optional[str] = None  # "ebitda" or "ppnr" (for banks)
+
     uncertainties: list[str] = Field(default_factory=list)
 
     # Source metadata (set by extraction, not LLM)
@@ -384,6 +494,7 @@ class ExtractedFinancials(BaseModel):
         "total_current_assets", "total_assets", "total_current_liabilities",
         "total_debt", "total_liabilities", "stockholders_equity",
         "operating_cash_flow", "investing_cash_flow", "financing_cash_flow", "capex",
+        "net_interest_income", "non_interest_income", "non_interest_expense", "provision_for_credit_losses",
         mode="before"
     )
     @classmethod
@@ -404,16 +515,23 @@ class ExtractedFinancials(BaseModel):
 # EXTRACTION FUNCTIONS
 # =============================================================================
 
-def extract_financial_sections(filing_content: str, max_chars: int = 150000) -> str:
+def extract_financial_sections(
+    filing_content: str,
+    max_chars: int = 150000,
+    keywords: Optional[list[str]] = None,
+) -> str:
     """Extract financial statement sections from a large filing."""
     if len(filing_content) <= max_chars:
         return filing_content
+
+    # Use provided keywords or default
+    section_keywords = keywords if keywords is not None else FINANCIAL_SECTIONS_KEYWORDS
 
     # Find sections containing financial data
     content_lower = filing_content.lower()
     sections = []
 
-    for keyword in FINANCIAL_SECTIONS_KEYWORDS:
+    for keyword in section_keywords:
         # Find all occurrences of the keyword
         start = 0
         while True:
@@ -497,6 +615,7 @@ async def extract_financials(
     filing_type: str = "10-Q",
     use_claude: bool = False,
     filing_data: Optional[dict] = None,  # Optional: pass specific filing metadata
+    is_financial_institution: bool = False,  # Banks, insurance, asset managers
 ) -> Optional[ExtractedFinancials]:
     """
     Extract financial data from a 10-Q or 10-K filing.
@@ -507,6 +626,7 @@ async def extract_financials(
         filing_type: "10-Q" or "10-K"
         use_claude: Use Claude instead of Gemini for extraction
         filing_data: Optional filing metadata dict (if not provided, fetches latest)
+        is_financial_institution: If True, use bank-specific extraction prompt
 
     Returns:
         ExtractedFinancials object or None if extraction failed
@@ -557,8 +677,12 @@ async def extract_financials(
     }.get(filing_scale, "unknown")
     print(f"  Detected filing scale: {scale_name} (multiplier: {filing_scale:,})")
 
-    # Extract financial sections
-    content = extract_financial_sections(content)
+    # Extract financial sections (use bank-specific keywords for financial institutions)
+    if is_financial_institution:
+        content = extract_financial_sections(content, keywords=BANK_FINANCIAL_SECTIONS_KEYWORDS)
+        print(f"  Using bank-specific extraction for {ticker}")
+    else:
+        content = extract_financial_sections(content)
 
     # Determine fiscal period from the period end date (not filing date)
     fiscal_year, fiscal_quarter = determine_fiscal_period(period_end, filing_type)
@@ -566,8 +690,9 @@ async def extract_financials(
     # Get company name (try to extract from filing or use ticker)
     company_name = ticker  # Fallback
 
-    # Build prompt
-    prompt = FINANCIAL_EXTRACTION_PROMPT.format(
+    # Build prompt - use bank-specific prompt for financial institutions
+    prompt_template = BANK_FINANCIAL_EXTRACTION_PROMPT if is_financial_institution else FINANCIAL_EXTRACTION_PROMPT
+    prompt = prompt_template.format(
         company_name=company_name,
         ticker=ticker,
         filing_type=filing_type,
@@ -663,6 +788,7 @@ async def extract_ttm_financials(
     ticker: str,
     cik: Optional[str] = None,
     use_claude: bool = False,
+    is_financial_institution: bool = False,
 ) -> list[ExtractedFinancials]:
     """
     Extract trailing twelve months (4 quarters) of financial data.
@@ -674,6 +800,7 @@ async def extract_ttm_financials(
         ticker: Stock ticker symbol
         cik: SEC Central Index Key (optional)
         use_claude: Use Claude instead of Gemini for extraction
+        is_financial_institution: If True, use bank-specific extraction prompt
 
     Returns:
         List of ExtractedFinancials for up to 4 quarters, most recent first
@@ -725,6 +852,7 @@ async def extract_ttm_financials(
             filing_type=filing_type,
             use_claude=use_claude,
             filing_data=filing,  # Pass the specific filing
+            is_financial_institution=is_financial_institution,
         )
 
         if result:
@@ -759,7 +887,9 @@ def apply_filing_scale(data: dict, scale_multiplier: int) -> dict:
         "cash_and_equivalents", "total_current_assets", "total_assets",
         "total_current_liabilities", "total_debt", "total_liabilities",
         "stockholders_equity", "operating_cash_flow", "investing_cash_flow",
-        "financing_cash_flow", "capex"
+        "financing_cash_flow", "capex",
+        # Bank/Financial institution fields
+        "net_interest_income", "non_interest_income", "non_interest_expense", "provision_for_credit_losses",
     ]
 
     for field in monetary_fields:
@@ -812,25 +942,57 @@ async def save_financials_to_db(
     )
     existing = result.scalar_one_or_none()
 
+    # Calculate PPNR for banks if we have the required fields
+    # PPNR = Net Interest Income + Non-Interest Income - Non-Interest Expense
+    ppnr = None
+    ebitda_type = financials.ebitda_type or "ebitda"  # Default to traditional EBITDA
+
+    if company.is_financial_institution:
+        nii = financials.net_interest_income
+        noi = financials.non_interest_income
+        nie = financials.non_interest_expense
+        if nii is not None and noi is not None and nie is not None:
+            ppnr = nii + noi - nie
+            ebitda_type = "ppnr"
+        elif nii is not None:
+            # Fallback: use NII as rough PPNR proxy if we don't have all components
+            ppnr = nii
+            ebitda_type = "ppnr"
+
     if existing:
         # Update existing record
         for field in [
             "revenue", "cost_of_revenue", "gross_profit", "operating_income",
-            "interest_expense", "net_income", "depreciation_amortization", "ebitda",
+            "interest_expense", "net_income", "depreciation_amortization",
             "cash_and_equivalents", "total_current_assets", "total_assets",
             "total_current_liabilities", "total_debt", "total_liabilities",
             "stockholders_equity", "operating_cash_flow", "investing_cash_flow",
             "financing_cash_flow", "capex",
+            # Bank/Financial institution fields
+            "net_interest_income", "non_interest_income", "non_interest_expense", "provision_for_credit_losses",
         ]:
             value = getattr(financials, field)
             if value is not None:
                 setattr(existing, field, value)
+
+        # Set EBITDA/PPNR based on company type
+        if company.is_financial_institution and ppnr is not None:
+            existing.ebitda = ppnr
+            existing.ebitda_type = "ppnr"
+        elif financials.ebitda is not None:
+            existing.ebitda = financials.ebitda
+            existing.ebitda_type = "ebitda"
+
         existing.source_filing = filing_url
         existing.extracted_at = datetime.utcnow()
         await session.commit()
         return existing
 
     # Create new record
+    # For banks, use PPNR as ebitda; for others, use traditional ebitda
+    final_ebitda = ppnr if (company.is_financial_institution and ppnr is not None) else financials.ebitda
+    final_ebitda_type = "ppnr" if (company.is_financial_institution and ppnr is not None) else "ebitda"
+
     record = CompanyFinancials(
         company_id=company.id,
         fiscal_year=financials.fiscal_year,
@@ -844,7 +1006,8 @@ async def save_financials_to_db(
         interest_expense=financials.interest_expense,
         net_income=financials.net_income,
         depreciation_amortization=financials.depreciation_amortization,
-        ebitda=financials.ebitda,
+        ebitda=final_ebitda,
+        ebitda_type=final_ebitda_type,
         cash_and_equivalents=financials.cash_and_equivalents,
         total_current_assets=financials.total_current_assets,
         total_assets=financials.total_assets,
@@ -857,6 +1020,11 @@ async def save_financials_to_db(
         financing_cash_flow=financials.financing_cash_flow,
         capex=financials.capex,
         source_filing=filing_url,
+        # Bank/Financial institution fields
+        net_interest_income=financials.net_interest_income,
+        non_interest_income=financials.non_interest_income,
+        non_interest_expense=financials.non_interest_expense,
+        provision_for_credit_losses=financials.provision_for_credit_losses,
     )
     session.add(record)
     await session.commit()
