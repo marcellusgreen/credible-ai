@@ -4,6 +4,7 @@ Automated Bond Pricing Scheduler
 Runs on APScheduler AsyncIOScheduler (US/Eastern timezone):
   - 11:00 AM ET: Refresh current prices (bond_pricing table)
   - 3:00 PM ET:  Refresh current prices (bond_pricing table)
+  - 6:00 PM ET:  Refresh treasury yields (treasury_yield_history table)
   - 9:00 PM ET:  Refresh current prices + save daily snapshot (bond_pricing_history)
 
 Reuses the same service functions as scripts/collect_daily_pricing.py.
@@ -25,6 +26,7 @@ from app.services.bond_pricing import (
 )
 from app.services.yield_calculation import calculate_ytm_and_spread
 from app.services.pricing_history import copy_current_to_history
+from app.services.treasury_yields import backfill_treasury_yields
 from app.core.alerting import check_and_alert
 
 logger = structlog.get_logger()
@@ -112,6 +114,33 @@ async def refresh_current_prices() -> dict:
     return stats
 
 
+async def refresh_treasury_yields() -> dict:
+    """Fetch latest treasury yields from Treasury.gov for current year."""
+    from datetime import date
+
+    logger.info("scheduler.refresh_treasury.start")
+    stats = {"saved": 0, "error": None}
+
+    try:
+        async with async_session_maker() as session:
+            current_year = date.today().year
+            result = await backfill_treasury_yields(
+                session,
+                from_year=current_year,
+                to_year=current_year,
+                dry_run=False,
+            )
+            stats["saved"] = result["saved"]
+            if result["errors"]:
+                stats["error"] = result["errors"][0]
+    except Exception as exc:
+        logger.error("scheduler.refresh_treasury.error", error=str(exc))
+        stats["error"] = str(exc)
+
+    logger.info("scheduler.refresh_treasury.done", **stats)
+    return stats
+
+
 async def refresh_and_snapshot() -> None:
     """Refresh current prices, then copy today's prices into bond_pricing_history."""
     await refresh_current_prices()
@@ -143,6 +172,12 @@ def start_scheduler() -> None:
         refresh_current_prices,
         CronTrigger(hour=15, minute=0, timezone="US/Eastern"),
         id="refresh_prices_3pm",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        refresh_treasury_yields,
+        CronTrigger(hour=18, minute=0, timezone="US/Eastern"),
+        id="refresh_treasury_6pm",
         replace_existing=True,
     )
     scheduler.add_job(
