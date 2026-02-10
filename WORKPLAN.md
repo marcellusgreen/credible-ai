@@ -4,12 +4,13 @@ Last Updated: 2026-02-09
 
 ## Current Status
 
-**Database**: 201 companies | 5,828 debt instruments | 2,948 with CUSIP | 2,552 with pricing | 13,862 document sections | 3,831 guarantees | 626 collateral records | 1,181 covenants | 13,970 treasury yields
+**Database**: 201 companies | 5,880 debt instruments | 3,000 with CUSIP | 2,618 with pricing | 13,862 document sections | 3,831 guarantees | 626 collateral records | 1,181 covenants | 13,970 treasury yields
 **Deployment**: Live at `https://credible-ai-production.up.railway.app` and `https://api.debtstack.ai`
 **Infrastructure**: Railway + Neon PostgreSQL + Upstash Redis (complete)
-**Pricing Coverage**: 2,552/2,948 bonds with CUSIPs have pricing (86.5%) — 2,470 updated in last 7 days
-**Finnhub Discovery**: 161/201 companies scanned, 2,359 bonds discovered, 2,017 with pricing
+**Pricing Coverage**: 2,618/3,018 bonds with ISINs have pricing (86.7%) — 2,570 with YTM calculated
+**Finnhub Discovery**: 161/201 companies scanned + 26 companies re-scanned with subsidiary codes. 2,411 bonds discovered.
 **Seniority Distribution**: 5,446 senior_unsecured | 360 senior_secured | 14 subordinated | 8 junior_subordinated
+**Secured Bond Pricing**: 54 senior_secured bonds with pricing (up from 9) across 13 companies
 **Leverage Coverage**: 155/189 companies (82%) - good coverage across all sectors
 **Guarantee Coverage**: ~1,500/2,485 debt instruments (~60%) - up from 34.7% on 2026-01-21
 **Collateral Coverage**: 230/230 senior_secured instruments (100%) with collateral type identified
@@ -17,6 +18,7 @@ Last Updated: 2026-02-09
 **Ownership Coverage**: 199/201 companies have identified root entity; 862 explicit parent-child relationships extracted
 **Covenant Coverage**: 1,181 covenants across 201 companies (100%), 92.5% linked to specific instruments
 **Data Quality**: QC audit passing - 0 critical, 0 errors, 4 warnings (2026-01-26). Fixed 38 mislabeled seniority records (2026-02-06).
+**Eval Suite**: 121/136 tests passing (89.0%) — up from 119/136 (87.5%). 2 workflow tests fixed by secured bond pricing expansion.
 
 ---
 
@@ -1936,6 +1938,45 @@ When starting a new session, read this file first, then:
 ---
 
 ## Session Log
+
+### 2026-02-09 (Session 31) - Senior Secured Bond ISIN Discovery & Pricing
+
+**Objective:** Find ISINs/CUSIPs for ~155 tradeable senior secured bonds lacking identifiers, so we can fetch TRACE pricing and fix 2 failing eval workflow tests.
+
+**Problem:** 360 senior secured bonds in DB, but only 9 had pricing. 155 tradeable secured bonds (notes, first mortgage bonds) had no CUSIP or ISIN. Many are issued by subsidiaries with different CUSIP issuer codes than the parent company, and ~45 are from foreign-incorporated issuers (Cayman, Bermuda, Panama, Canada).
+
+**Part 1: Code Changes to `scripts/expand_bond_pricing.py`**
+- Added 19 subsidiary issuer codes to `ADDITIONAL_ISSUER_CODES` (HCA, BHC, THC, LUMN, CLF, MGM, SLG, DO, VAL, UAL, NRG, CVNA, EXC, FYBR, IHRT, AMC, DISH, FUN, CNK)
+- Added `FOREIGN_ISSUER_COUNTRIES` mapping for 8 non-US issuers (RIG/NE/DO→KY, NCLH/VAL→BM, CCL→PA, BHC→CA, RCL→LR)
+- Added `KNOWN_FOREIGN_ISINS` for BHC (3 CA/XS ISINs) and CCL (3 XS ISINs) discovered from SEC filings
+- Fixed Phase 3 to accept non-US ISINs (removed `isin.startswith("US")` filter, now accepts CA, KY, BM, PA, GB, LR, XS, DE, IE, NL, LU)
+- Updated Phase 2 to use correct country codes for foreign CUSIP-to-ISIN derivation with US fallback
+- Created `scripts/run_secured_bond_pipeline.py` for sequential execution (avoids Neon DB connection issues from parallel runs)
+
+**Part 2: Pipeline Execution (9 hours)**
+- Phase 4 scanned 27 companies (HCA separately + 26 via pipeline): 114 bonds discovered, 52 new added
+- Top discoveries: HCA (27 new), BHC (15), DISH (8), CLF (1), WYNN (1)
+- Phase 1 priced 2,618 bonds with 2,570 YTM calculations
+
+**Part 3: Rate+Maturity Matching**
+- Matched 67 existing `senior_secured` instruments to discovered bonds by coupon rate (±15 bps) + maturity year
+- Copied CUSIP/ISIN identifiers and 48 pricing records to secured instruments
+
+**Results:**
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Senior secured with pricing | 9 | **54** |
+| Senior secured with ISINs | 14 | **81** |
+| Total bonds priced | 2,552 | **2,618** |
+| Total bonds with ISINs | ~2,966 | **3,018** |
+| `test_physical_asset_backed_bonds` | FAIL | **PASS** |
+| `test_yield_per_leverage` | FAIL | **PASS** |
+| Eval pass rate | 119/136 (87.5%) | **121/136 (89.0%)** |
+
+**Priced secured bonds by company (54 total):** HCA (18), BHC (12), CHTR (4), EXC (4), DISH (3), NRG (3), LUMN (2), CCL (2), CZR (2), VAL (1), HTZ (1), KSS (1), THC (1)
+
+---
 
 ### 2026-02-04 (Session 30) - Finnhub Bond Linking Pipeline
 
