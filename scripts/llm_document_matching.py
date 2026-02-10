@@ -75,6 +75,20 @@ async def call_deepseek(prompt: str, max_tokens: int = 500) -> Optional[str]:
             return data["choices"][0]["message"]["content"]
 
 
+def convert_rate_to_percent(rate_value) -> str:
+    """Convert rate from basis points (stored as integer) to percent string."""
+    if rate_value is None:
+        return None
+    try:
+        # Rate is stored in basis points (e.g., 175 = 1.75%)
+        rate_float = float(rate_value) / 100
+        # Format without trailing zeros: 1.75, 5.5, 3.0
+        formatted = f"{rate_float:.3f}".rstrip('0').rstrip('.')
+        return formatted
+    except (ValueError, TypeError):
+        return None
+
+
 def extract_relevant_snippet(content: str, instrument: dict, max_length: int = 4000) -> str:
     """Extract the most relevant snippet from document content for the instrument."""
     import re
@@ -86,9 +100,15 @@ def extract_relevant_snippet(content: str, instrument: dict, max_length: int = 4
     rate = instrument.get('coupon', 'N/A')
     maturity = instrument.get('maturity', 'N/A')
 
-    # Extract rate value (e.g., "1.800%" -> "1.8")
-    rate_match = re.search(r'([\d.]+)%', rate)
-    rate_val = rate_match.group(1) if rate_match else None
+    # Extract rate value - handle both "1.75%" format and basis points
+    rate_val = None
+    if rate and rate != 'N/A':
+        rate_match = re.search(r'([\d.]+)%', str(rate))
+        if rate_match:
+            rate_val = rate_match.group(1)
+        else:
+            # Try converting from basis points
+            rate_val = convert_rate_to_percent(rate)
 
     # Extract year (e.g., "2031-01-15" -> "2031")
     year_match = re.search(r'(\d{4})', str(maturity))
@@ -132,19 +152,29 @@ def filter_relevant_documents(documents: list[dict], instrument: dict) -> list[d
     rate = instrument.get('coupon', 'N/A')
     maturity = instrument.get('maturity', 'N/A')
     inst_name = instrument.get('name', '')
+    inst_type = instrument.get('type', '').lower()
 
-    # Extract rate value
-    rate_match = re.search(r'([\d.]+)%', rate)
-    rate_val = rate_match.group(1) if rate_match else None
+    # Extract rate value - handle both "1.75%" format and basis points
+    rate_val = None
+    if rate and rate != 'N/A':
+        rate_match = re.search(r'([\d.]+)%', str(rate))
+        if rate_match:
+            rate_val = rate_match.group(1)
+        else:
+            rate_val = convert_rate_to_percent(rate)
 
     # Extract year
     year_match = re.search(r'(\d{4})', str(maturity))
     year_val = year_match.group(1) if year_match else None
 
+    # Check if this is a credit facility
+    is_loan = any(kw in inst_type for kw in ['loan', 'revolver', 'credit', 'abl', 'facility'])
+
     relevant = []
     for doc in documents:
         content = doc.get('content', '') or ''
         title = doc.get('title', '') or ''
+        doc_type = doc.get('type', '').lower()
 
         # Skip "Description of Securities" documents (not debt indentures)
         if 'DESCRIPTION OF EACH REGISTRANT' in content[:1000]:
@@ -152,21 +182,27 @@ def filter_relevant_documents(documents: list[dict], instrument: dict) -> list[d
         if 'DESCRIPTION OF SECURITIES' in content[:1000]:
             continue
 
+        # For credit facilities, include ALL credit agreements (don't filter by content)
+        if is_loan and doc_type == 'credit_agreement':
+            relevant.append(doc)
+            continue
+
         # Check if document contains rate or year
         has_rate = rate_val and rate_val in content
         has_year = year_val and year_val in content
 
-        # For credit facilities, also check for facility keywords
-        inst_type = instrument.get('type', '').lower()
-        is_loan = 'loan' in inst_type or 'revolver' in inst_type or 'credit' in inst_type
-        has_facility_keyword = is_loan and (
-            'credit agreement' in content.lower() or
-            'credit facility' in content.lower() or
-            'revolving' in content.lower() or
-            'term loan' in content.lower()
-        )
-
-        if has_rate or has_year or has_facility_keyword:
+        # For notes/bonds with rate AND year, require both to match
+        if rate_val and year_val:
+            if has_rate or has_year:
+                relevant.append(doc)
+        elif rate_val:
+            if has_rate:
+                relevant.append(doc)
+        elif year_val:
+            if has_year:
+                relevant.append(doc)
+        else:
+            # No rate or year info - include recent documents
             relevant.append(doc)
 
     # Return up to 10 most relevant documents, prioritizing most recent
@@ -467,8 +503,10 @@ async def process_company(
         relevant_docs = filter_relevant_documents(all_docs_dict, instrument_dict)
 
         if not relevant_docs:
-            # Fallback to 5 most recent if no relevant found
-            relevant_docs = all_docs_dict[:5]
+            # Fallback to 8 most recent if no relevant found
+            relevant_docs = all_docs_dict[:8]
+            if relevant_docs:
+                print(f"    [Note: Using {len(relevant_docs)} most recent docs - no specific matches found]")
 
         matches = await match_instrument_with_llm(instrument_dict, relevant_docs)
         return (inst, matches)

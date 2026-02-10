@@ -29,7 +29,7 @@ curl "https://api.debtstack.ai/v1/companies?fields=ticker,name,net_leverage_rati
 
 **Expected Results:**
 - Returns companies sorted by leverage (highest first)
-- Top companies should include high-leverage names (CZR ~8x, LUMN ~7x, SPG ~6x)
+- Top companies should include high-leverage names (BA ~14x, DISH ~13x, CLF ~12x, HTZ ~10x)
 - At least 100 companies have `net_leverage_ratio` populated
 
 **Validation Checks:**
@@ -37,7 +37,7 @@ curl "https://api.debtstack.ai/v1/companies?fields=ticker,name,net_leverage_rati
 - [ ] At least 10 results returned
 - [ ] Results are sorted descending by `net_leverage_ratio`
 - [ ] All returned companies have non-null `net_leverage_ratio`
-- [ ] Leverage values are reasonable (0.1x to 20x range)
+- [ ] Leverage values are reasonable (0x to 100x range - high leverage is valid for distressed companies)
 
 ---
 
@@ -65,14 +65,14 @@ curl "https://api.debtstack.ai/v1/bonds?seniority=senior_secured&has_pricing=tru
 **Expected Results:**
 - Returns secured bonds with pricing data
 - Sorted by yield to maturity (highest first)
-- Should include energy/drilling companies (RIG, VAL) with high yields
+- Should include companies like BHC, CLF, HTZ with high yields on secured debt
 
 **Validation Checks:**
 - [ ] Response contains `data` array
 - [ ] All returned bonds have `seniority` = "senior_secured"
 - [ ] All returned bonds have `pricing` object with `ytm` field
 - [ ] Results are sorted descending by YTM
-- [ ] At least 10 priced secured bonds exist
+- [ ] At least 20 priced secured bonds exist
 
 ---
 
@@ -85,9 +85,9 @@ curl "https://api.debtstack.ai/v1/bonds?seniority=senior_secured&has_pricing=tru
 **Request Body:**
 ```json
 {
-  "start": {"type": "company", "ticker": "CHTR"},
-  "relationships": ["parent_of", "guarantees"],
-  "depth": 2
+  "start": {"type": "company", "id": "CHTR"},
+  "relationships": ["subsidiaries", "guarantees"],
+  "depth": 3
 }
 ```
 
@@ -96,12 +96,12 @@ curl "https://api.debtstack.ai/v1/bonds?seniority=senior_secured&has_pricing=tru
 curl -X POST "https://api.debtstack.ai/v1/entities/traverse" \
   -H "X-API-Key: $DEBTSTACK_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"start": {"type": "company", "ticker": "CHTR"}, "relationships": ["parent_of", "guarantees"], "depth": 2}'
+  -d '{"start": {"type": "company", "id": "CHTR"}, "relationships": ["subsidiaries", "guarantees"], "depth": 3}'
 ```
 
 **Expected Results:**
 - Returns hierarchical entity structure for Charter Communications
-- Shows parent-child relationships
+- Shows subsidiary relationships (parent → child traversal)
 - Includes guarantee relationships linking entities to debt
 
 **Validation Checks:**
@@ -162,7 +162,7 @@ curl "https://api.debtstack.ai/v1/documents/search?q=change+of+control&ticker=CH
 
 **Query:**
 ```
-?min_ytm=800
+?min_ytm=8
 &seniority=senior_secured
 &has_pricing=true
 &fields=name,ticker,cusip,ytm_pct,collateral
@@ -175,19 +175,19 @@ curl "https://api.debtstack.ai/v1/documents/search?q=change+of+control&ticker=CH
 
 ### Phase 2: Deep Dive
 
-After user selects a bond (e.g., RIG), search for specific information:
+After user selects a bond (e.g., BHC), search for specific information:
 
 **Endpoint:** `GET /v1/documents/search`
 
 **Query:**
 ```
 ?q=event+of+default
-&ticker=RIG
+&ticker=BHC
 &section_type=indenture
 ```
 
 **Expected Results:**
-- Specific covenant language from RIG's indentures
+- Specific covenant language from BHC's indentures
 - Agent can summarize default triggers for user
 
 **Validation Checks:**
@@ -231,7 +231,7 @@ curl "https://api.debtstack.ai/v1/companies/CHTR/maturity-waterfall" \
 
 **Query:**
 ```
-?min_ytm=800
+?min_ytm=8
 &seniority=senior_secured
 &has_pricing=true
 &fields=name,ticker,ytm_pct,collateral,maturity_date
@@ -246,14 +246,14 @@ curl "https://api.debtstack.ai/v1/companies/CHTR/maturity-waterfall" \
 
 **Example Request:**
 ```bash
-curl "https://api.debtstack.ai/v1/bonds?min_ytm=800&seniority=senior_secured&has_pricing=true&fields=name,ticker,ytm_pct,collateral,maturity_date&limit=50" \
+curl "https://api.debtstack.ai/v1/bonds?min_ytm=8&seniority=senior_secured&has_pricing=true&fields=name,ticker,ytm_pct,collateral,maturity_date&limit=50" \
   -H "X-API-Key: $DEBTSTACK_API_KEY"
 ```
 
 **Expected Results:**
-- Bonds from drilling companies (RIG, VAL) with equipment collateral
+- Bonds from drilling companies (RIG, VAL) with equipment/rig collateral
 - Airline bonds (AAL) with aircraft collateral
-- REIT bonds with real estate collateral
+- Bonds with real estate or general lien collateral
 
 **Validation Checks:**
 - [ ] At least 5 bonds have physical collateral types
@@ -306,7 +306,7 @@ curl "https://api.debtstack.ai/v1/bonds?seniority=senior_secured&has_pricing=tru
 | Scenario | Minimum Data Required |
 |----------|----------------------|
 | Leverage Leaderboard | 100+ companies with `net_leverage_ratio` |
-| Bond Screener | 10+ secured bonds with pricing |
+| Bond Screener | 20+ secured bonds with pricing |
 | Corporate Structure | CHTR with 5+ entities, guarantee links |
 | Document Search | 1,000+ indenture sections indexed |
 | AI Agent Workflow | Bonds + documents for same companies |

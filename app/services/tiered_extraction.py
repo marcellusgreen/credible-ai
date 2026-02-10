@@ -871,12 +871,12 @@ class TieredExtractionService:
         exhibit_21 = ""
 
         if self.sec_api and self.sec_api.query_api:
-            filings = await self.sec_api.get_all_relevant_filings(ticker)
+            filings, _ = await self.sec_api.get_all_relevant_filings(ticker)
             # Try to get Exhibit 21 specifically
             exhibit_21 = self.sec_api.get_exhibit_21(ticker)
 
         if not filings:
-            filings = await self.edgar.get_all_relevant_filings(cik)
+            filings, _ = await self.edgar.get_all_relevant_filings(cik)
 
         if not filings:
             raise ValueError(f"No filings found for {ticker}")

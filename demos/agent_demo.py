@@ -37,17 +37,17 @@ RESULTS_DIR = Path(__file__).parent.parent / "results"
 
 # Sample pricing data for offline demo
 SAMPLE_BONDS = [
-    {"ticker": "RIG", "company": "Transocean Ltd.", "name": "8.00% Senior Notes due 2027", "seniority": "senior_unsecured", "price": 96.50, "ytm_pct": 8.92, "spread_bps": 458, "benchmark": "5Y"},
-    {"ticker": "RIG", "company": "Transocean Ltd.", "name": "11.50% Senior Secured Notes due 2027", "seniority": "senior_secured", "price": 102.25, "ytm_pct": 10.85, "spread_bps": 651, "benchmark": "5Y"},
-    {"ticker": "RIG", "company": "Transocean Ltd.", "name": "8.75% Senior Notes due 2030", "seniority": "senior_unsecured", "price": 91.75, "ytm_pct": 10.15, "spread_bps": 581, "benchmark": "7Y"},
-    {"ticker": "ATUS", "company": "Altice USA, Inc.", "name": "5.50% Senior Notes due 2028", "seniority": "senior_unsecured", "price": 88.50, "ytm_pct": 8.75, "spread_bps": 441, "benchmark": "5Y"},
-    {"ticker": "ATUS", "company": "Altice USA, Inc.", "name": "5.875% Senior Secured Notes due 2027", "seniority": "senior_secured", "price": 95.25, "ytm_pct": 7.25, "spread_bps": 291, "benchmark": "5Y"},
-    {"ticker": "AAPL", "company": "Apple Inc.", "name": "3.25% Notes due 2029", "seniority": "senior_unsecured", "price": 98.50, "ytm_pct": 3.45, "spread_bps": 45, "benchmark": "5Y"},
-    {"ticker": "AAPL", "company": "Apple Inc.", "name": "2.65% Notes due 2030", "seniority": "senior_unsecured", "price": 95.75, "ytm_pct": 3.25, "spread_bps": 35, "benchmark": "7Y"},
-    {"ticker": "CRWV", "company": "CoreWeave, Inc.", "name": "7.50% Senior Secured Notes due 2029", "seniority": "senior_secured", "price": 99.25, "ytm_pct": 7.65, "spread_bps": 365, "benchmark": "5Y"},
+    {"ticker": "RIG", "company": "Transocean Ltd.", "name": "8.25% Senior Notes due 2029", "seniority": "senior_unsecured", "price": 104.48, "ytm_pct": 6.79, "spread_bps": 250, "benchmark": "5Y"},
+    {"ticker": "RIG", "company": "Transocean Ltd.", "name": "8.75% Senior Notes due 2030", "seniority": "senior_unsecured", "price": 104.38, "ytm_pct": 7.58, "spread_bps": 320, "benchmark": "7Y"},
+    {"ticker": "RIG", "company": "Transocean Ltd.", "name": "8.50% Senior Notes due 2031", "seniority": "senior_unsecured", "price": 105.88, "ytm_pct": 7.18, "spread_bps": 280, "benchmark": "7Y"},
+    {"ticker": "AAPL", "company": "Apple Inc.", "name": "3.25% Notes due 2026", "seniority": "senior_unsecured", "price": 99.92, "ytm_pct": 3.41, "spread_bps": -94, "benchmark": "2Y"},
+    {"ticker": "AAPL", "company": "Apple Inc.", "name": "3.35% Notes due 2027", "seniority": "senior_unsecured", "price": 99.76, "ytm_pct": 3.59, "spread_bps": -57, "benchmark": "3Y"},
+    {"ticker": "AAPL", "company": "Apple Inc.", "name": "2.90% Notes due 2027", "seniority": "senior_unsecured", "price": 98.93, "ytm_pct": 3.45, "spread_bps": -79, "benchmark": "3Y"},
+    {"ticker": "CRWV", "company": "CoreWeave, Inc.", "name": "9.25% Senior Notes due 2030", "seniority": "senior_unsecured", "price": 97.63, "ytm_pct": 9.91, "spread_bps": 553, "benchmark": "5Y"},
+    {"ticker": "CRWV", "company": "CoreWeave, Inc.", "name": "9.00% Senior Notes due 2031", "seniority": "senior_unsecured", "price": 95.75, "ytm_pct": 10.10, "spread_bps": 572, "benchmark": "7Y"},
 ]
 
-DEMO_COMPANIES = {"rig": "Transocean Ltd.", "atus": "Altice USA, Inc.", "aapl": "Apple Inc.", "crwv": "CoreWeave, Inc."}
+DEMO_COMPANIES = {"rig": "Transocean Ltd.", "aapl": "Apple Inc.", "crwv": "CoreWeave, Inc."}
 
 # Tool definitions for Claude
 TOOLS = [

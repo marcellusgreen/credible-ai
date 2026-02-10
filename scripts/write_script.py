@@ -1,0 +1,1 @@
+import base64; open("analyze_debt_docs_coverage.py","wb").write(base64.b64decode(open("script_b64.txt").read()))

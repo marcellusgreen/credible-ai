@@ -582,6 +582,96 @@ async def get_pricing_history_stats(session: AsyncSession) -> HistoryStats:
     )
 
 
+async def backfill_company_history(
+    session: AsyncSession,
+    company_id: UUID,
+    days: int = 365,
+    dry_run: bool = False,
+) -> dict:
+    """
+    Backfill historical prices for all bonds belonging to a company.
+
+    Args:
+        session: Database session
+        company_id: Company UUID
+        days: Number of days to backfill (default 365)
+        dry_run: If True, don't save to database
+
+    Returns:
+        Dict with backfill statistics
+    """
+    from sqlalchemy import text
+
+    stats = {
+        "bonds_processed": 0,
+        "bonds_with_data": 0,
+        "prices_found": 0,
+        "prices_saved": 0,
+        "errors": 0,
+    }
+
+    # Get all bonds with ISINs for this company
+    result = await session.execute(
+        text("""
+            SELECT di.id, di.isin, di.cusip, di.name, di.interest_rate, di.maturity_date
+            FROM debt_instruments di
+            JOIN entities e ON di.issuer_id = e.id
+            WHERE e.company_id = :company_id
+              AND di.isin IS NOT NULL
+              AND di.is_active = true
+        """),
+        {"company_id": company_id}
+    )
+    bonds = result.fetchall()
+
+    if not bonds:
+        return stats
+
+    to_date = date.today()
+    from_date = to_date - timedelta(days=days)
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for bond_row in bonds:
+            bond_id, isin, cusip, name, interest_rate, maturity_date = bond_row
+            stats["bonds_processed"] += 1
+
+            # Create a simple bond object for backfill_bond_history
+            class BondProxy:
+                def __init__(self):
+                    self.id = bond_id
+                    self.isin = isin
+                    self.cusip = cusip
+                    self.name = name
+                    self.interest_rate = interest_rate
+                    self.maturity_date = maturity_date
+
+            bond = BondProxy()
+
+            try:
+                result = await backfill_bond_history(
+                    session=session,
+                    bond=bond,
+                    from_date=from_date,
+                    to_date=to_date,
+                    client=client,
+                    dry_run=dry_run,
+                    calculate_yields=True,
+                )
+
+                if result.error:
+                    stats["errors"] += 1
+                else:
+                    stats["prices_found"] += result.prices_found
+                    stats["prices_saved"] += result.prices_saved
+                    if result.prices_found > 0:
+                        stats["bonds_with_data"] += 1
+
+            except Exception as e:
+                stats["errors"] += 1
+
+    return stats
+
+
 async def get_bond_price_history(
     session: AsyncSession,
     cusip: str = None,

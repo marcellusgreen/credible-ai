@@ -109,14 +109,14 @@ async def run_extraction_with_qa(
 
     if sec_api_key:
         sec_client = SecApiClient(sec_api_key)
-        filings = await sec_client.get_all_relevant_filings(ticker)
+        filings, _ = await sec_client.get_all_relevant_filings(ticker)
         exhibit_21 = sec_client.get_exhibit_21(ticker)
         if exhibit_21:
             filings['exhibit_21'] = exhibit_21
         print(f"    Downloaded {len(filings)} filings via SEC-API")
     else:
         edgar = SECEdgarClient()
-        filings = await edgar.get_all_relevant_filings(cik)
+        filings, _ = await edgar.get_all_relevant_filings(cik)
         await edgar.close()
         print(f"    Downloaded {len(filings)} filings via SEC EDGAR")
 

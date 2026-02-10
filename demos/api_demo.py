@@ -23,7 +23,6 @@ RESULTS_DIR = Path(__file__).parent.parent / "results"
 
 DEMO_COMPANIES = {
     "RIG": "Transocean Ltd.",
-    "ATUS": "Altice USA, Inc.",
     "AAPL": "Apple Inc.",
     "CRWV": "CoreWeave, Inc.",
 }
@@ -31,17 +30,18 @@ DEMO_COMPANIES = {
 # Sample pricing data for demo (in production this comes from the API)
 SAMPLE_PRICING = {
     "RIG": [
-        {"name": "8.00% Senior Notes due 2027", "price": 96.50, "ytm": 8.92, "spread_bps": 458},
-        {"name": "11.50% Senior Secured Notes due 2027", "price": 102.25, "ytm": 10.85, "spread_bps": 651},
-        {"name": "8.75% Senior Notes due 2030", "price": 91.75, "ytm": 10.15, "spread_bps": 581},
-    ],
-    "ATUS": [
-        {"name": "5.50% Senior Notes due 2028", "price": 88.50, "ytm": 8.75, "spread_bps": 441},
-        {"name": "5.875% Senior Secured Notes due 2027", "price": 95.25, "ytm": 7.25, "spread_bps": 291},
+        {"name": "8.25% Senior Notes due 2029", "price": 104.48, "ytm": 6.79, "spread_bps": 250},
+        {"name": "8.75% Senior Notes due 2030", "price": 104.38, "ytm": 7.58, "spread_bps": 320},
+        {"name": "8.50% Senior Notes due 2031", "price": 105.88, "ytm": 7.18, "spread_bps": 280},
     ],
     "AAPL": [
-        {"name": "3.25% Notes due 2029", "price": 98.50, "ytm": 3.45, "spread_bps": 45},
-        {"name": "2.65% Notes due 2030", "price": 95.75, "ytm": 3.25, "spread_bps": 35},
+        {"name": "3.25% Notes due 2026", "price": 99.92, "ytm": 3.41, "spread_bps": -94},
+        {"name": "3.35% Notes due 2027", "price": 99.76, "ytm": 3.59, "spread_bps": -57},
+        {"name": "2.90% Notes due 2027", "price": 98.93, "ytm": 3.45, "spread_bps": -79},
+    ],
+    "CRWV": [
+        {"name": "9.25% Senior Notes due 2030", "price": 97.63, "ytm": 9.91, "spread_bps": 553},
+        {"name": "9.00% Senior Notes due 2031", "price": 95.75, "ytm": 10.10, "spread_bps": 572},
     ],
 }
 
@@ -298,10 +298,8 @@ def demo_search_debt():
     """GET /v1/search/debt?min_spread_bps=400"""
     # Bonds with spread > 400bps from sample data
     results = [
-        {"ticker": "RIG", "name": "8.00% Senior Notes due 2027", "spread_bps": 458, "ytm": 8.92},
-        {"ticker": "RIG", "name": "11.50% Senior Secured Notes due 2027", "spread_bps": 651, "ytm": 10.85},
-        {"ticker": "RIG", "name": "8.75% Senior Notes due 2030", "spread_bps": 581, "ytm": 10.15},
-        {"ticker": "ATUS", "name": "5.50% Senior Notes due 2028", "spread_bps": 441, "ytm": 8.75},
+        {"ticker": "CRWV", "name": "9.00% Senior Notes due 2031", "spread_bps": 572, "ytm": 10.10},
+        {"ticker": "CRWV", "name": "9.25% Senior Notes due 2030", "spread_bps": 553, "ytm": 9.91},
     ]
 
     response = {
@@ -352,7 +350,7 @@ def interactive_menu():
     6. GET /v1/companies/{ticker}/pricing      - Bond pricing
     7. GET /v1/search/debt            - Search bonds by criteria
 
-  Available tickers: RIG, ATUS, AAPL, CRWV
+  Available tickers: RIG, AAPL, CRWV
 """)
 
     menu_handlers = {

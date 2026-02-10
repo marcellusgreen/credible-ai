@@ -16,11 +16,11 @@ USAGE
 
     # SEC-API.io (faster, no rate limits)
     client = SecApiClient(api_key="...")
-    filings = await client.get_all_relevant_filings("AAPL")
+    filings, filing_urls = await client.get_all_relevant_filings("AAPL")
 
     # Direct EDGAR (free, rate-limited)
     edgar = SECEdgarClient()
-    filings = await edgar.get_all_relevant_filings(cik="0000320193")
+    filings, filing_urls = await edgar.get_all_relevant_filings(cik="0000320193")
 """
 
 import asyncio
@@ -48,7 +48,7 @@ class SecApiClient:
     USAGE
     -----
         client = SecApiClient(api_key="your-key")
-        filings = await client.get_all_relevant_filings("AAPL")
+        filings, filing_urls = await client.get_all_relevant_filings("AAPL")
 
     Get your free API key at: https://sec-api.io/
     """
@@ -250,7 +250,7 @@ class SecApiClient:
         ticker: str,
         include_exhibits: bool = True,
         cik: str = None
-    ) -> dict[str, str]:
+    ) -> tuple[dict[str, str], dict[str, str]]:
         """
         Get all relevant filings for comprehensive extraction.
 
@@ -265,10 +265,13 @@ class SecApiClient:
 
         RETURNS
         -------
-        dict[str, str]
-            Filing content keyed by type and date
+        tuple[dict[str, str], dict[str, str]]
+            Tuple of (filings_content, filing_urls) where:
+            - filings_content: Filing content keyed by type and date
+            - filing_urls: SEC filing URLs keyed by same keys
         """
         filings_content = {}
+        filing_urls = {}
 
         ten_k_filings = self.get_filings_by_ticker(ticker, form_types=["10-K"], max_filings=1, cik=cik)
         other_filings = self.get_filings_by_ticker(ticker, form_types=["10-Q", "8-K"], max_filings=30, cik=cik)
@@ -323,7 +326,7 @@ class SecApiClient:
                 loop = asyncio.get_event_loop()
                 content = await loop.run_in_executor(None, self.get_filing_content, url)
                 if content:
-                    return (key, content, is_exhibit)
+                    return (key, content, url, is_exhibit)
             except Exception:
                 pass
             return None
@@ -341,14 +344,15 @@ class SecApiClient:
 
         for result in results:
             if result and not isinstance(result, Exception):
-                key, content, is_exhibit = result
+                key, content, url, is_exhibit = result
                 filings_content[key] = content
+                filing_urls[key] = url
                 if is_exhibit:
                     print(f"      [OK] Downloaded {key}")
                 else:
                     print(f"    [OK] Downloaded {key}")
 
-        return filings_content
+        return filings_content, filing_urls
 
 
 class SECEdgarClient:
@@ -500,7 +504,7 @@ class SECEdgarClient:
         self,
         cik: str,
         include_exhibits: bool = True
-    ) -> dict[str, str]:
+    ) -> tuple[dict[str, str], dict[str, str]]:
         """
         Get all relevant filings for comprehensive extraction.
 
@@ -513,10 +517,13 @@ class SECEdgarClient:
 
         RETURNS
         -------
-        dict[str, str]
-            Filing content keyed by type and date
+        tuple[dict[str, str], dict[str, str]]
+            Tuple of (filings_content, filing_urls) where:
+            - filings_content: Filing content keyed by type and date
+            - filing_urls: SEC filing URLs keyed by same keys
         """
         filings_content = {}
+        filing_urls = {}
 
         filings = await self.get_recent_filings(
             cik,
@@ -529,10 +536,13 @@ class SECEdgarClient:
 
         for filing in filings:
             key = f"{filing.form_type}_{filing.filing_date}"
+            accession_no_dashes = filing.accession_number.replace("-", "")
+            doc_url = f"{self.ARCHIVES_URL}/{cik}/{accession_no_dashes}/{filing.primary_document}"
             try:
                 await asyncio.sleep(0.15)  # Rate limiting
                 content = await self.download_filing(cik, filing)
                 filings_content[key] = content
+                filing_urls[key] = doc_url
                 print(f"    [OK] Downloaded {key}")
 
                 if include_exhibits and filing.form_type == "8-K":
@@ -543,6 +553,7 @@ class SECEdgarClient:
                             ex_content = await self.download_exhibit(exhibit["url"])
                             ex_key = f"exhibit_{filing.filing_date}_{exhibit['name']}"
                             filings_content[ex_key] = ex_content
+                            filing_urls[ex_key] = exhibit["url"]
                             print(f"      [OK] Downloaded exhibit: {exhibit['name']}")
                         except Exception:
                             print(f"      [FAIL] Failed to download exhibit: {exhibit['name']}")
@@ -550,4 +561,4 @@ class SECEdgarClient:
             except Exception as e:
                 print(f"    [FAIL] Failed to download {key}: {e}")
 
-        return filings_content
+        return filings_content, filing_urls
