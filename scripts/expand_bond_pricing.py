@@ -314,14 +314,26 @@ async def phase2_derive_isins_from_cusips(
         for i, row in enumerate(instruments):
             inst_id, cusip, name, rate, maturity, ticker = row
 
-            # Derive ISIN from CUSIP
-            derived_isin = cusip_to_isin(cusip)
+            # Derive ISIN from CUSIP, using foreign country code if applicable
+            country = FOREIGN_ISSUER_COUNTRIES.get(ticker, "US")
+            derived_isin = cusip_to_isin(cusip, country=country)
             if not derived_isin:
-                print(f"[{i+1}/{len(instruments)}] {ticker} {cusip}: Invalid CUSIP format")
-                continue
+                # If foreign country failed, try US as fallback
+                if country != "US":
+                    derived_isin = cusip_to_isin(cusip, country="US")
+                if not derived_isin:
+                    print(f"[{i+1}/{len(instruments)}] {ticker} {cusip}: Invalid CUSIP format")
+                    continue
 
-            # Validate with Finnhub
+            # Validate with Finnhub - try both foreign and US ISIN if needed
             is_valid, profile = await fetch_and_validate_isin(client, derived_isin)
+            if not is_valid and country != "US":
+                # Try US ISIN as fallback (subsidiary may be US-incorporated)
+                us_isin = cusip_to_isin(cusip, country="US")
+                if us_isin:
+                    is_valid, profile = await fetch_and_validate_isin(client, us_isin)
+                    if is_valid:
+                        derived_isin = us_isin
 
             if is_valid:
                 stats["valid_isin"] += 1
@@ -471,11 +483,14 @@ async def phase3_discover_isins_from_sec(
 
         discovered_isins = set()
         discovered_cusips = set()
+        # Accept ISINs with any country prefix (US, CA, KY, BM, PA, GB, LR, XS, etc.)
+        # to find bonds from foreign-incorporated issuers
+        valid_isin_prefixes = {"US", "CA", "KY", "BM", "PA", "GB", "LR", "XS", "DE", "IE", "NL", "LU"}
         for content, section_type, filing_date in sections:
             if content:
-                # Find ISINs
+                # Find ISINs - accept all valid country prefixes, not just US
                 for isin in isin_pattern.findall(content):
-                    if isin.startswith("US") and validate_isin(isin):
+                    if isin[:2] in valid_isin_prefixes and validate_isin(isin):
                         discovered_isins.add(isin)
 
                 # Find CUSIPs
@@ -486,18 +501,26 @@ async def phase3_discover_isins_from_sec(
                         if not is_part_of_isin:
                             discovered_cusips.add(cusip)
 
-        # Convert CUSIPs to ISINs
+        # Convert CUSIPs to ISINs, using foreign country code if applicable
         for cusip in discovered_cusips:
-            derived_isin = cusip_to_isin(cusip)
+            country = FOREIGN_ISSUER_COUNTRIES.get(company_ticker, "US")
+            derived_isin = cusip_to_isin(cusip, country=country)
             if derived_isin and validate_isin(derived_isin):
                 discovered_isins.add(derived_isin)
+
+        # Also add known foreign ISINs for this company
+        if company_ticker in KNOWN_FOREIGN_ISINS:
+            for isin in KNOWN_FOREIGN_ISINS[company_ticker]:
+                if validate_isin(isin):
+                    discovered_isins.add(isin)
 
         # Also use the identifier utility for more robust extraction
         for content, section_type, filing_date in sections:
             if content:
                 ids = extract_identifiers_from_text(content)
                 for isin in ids["isins"]:
-                    if isin.startswith("US"):
+                    # Accept all valid country prefixes, not just US
+                    if isin[:2] in valid_isin_prefixes:
                         discovered_isins.add(isin)
 
         if discovered_isins:
@@ -728,20 +751,69 @@ KNOWN_ISSUER_CODES = {
 # These are scanned in addition to the primary code in KNOWN_ISSUER_CODES
 ADDITIONAL_ISSUER_CODES = {
     "RIG": ["G90073", "G9008B"],  # Transocean Inc (Cayman), other subsidiary
-    "CHTR": ["16117P"],           # Charter Communications Holdings
+    "CHTR": ["16117P", "16117L"],  # Charter Communications Holdings, other subsidiary
     "ATUS": ["12686C"],           # CSC Holdings
     "BX": ["09253U", "09261H", "09261X"],  # Legacy LP, Private Credit Fund, Secured Lending Fund
-    "CAR": ["U05375"],            # Avis Budget (Reg S)
+    "CAR": ["U05375", "U1336P"],  # Avis Budget (Reg S), subsidiary
     "HTZ": ["U42804"],            # Hertz (Reg S, post-bankruptcy bonds)
     "NEE": ["65339F"],            # NextEra Energy parent
     "WFC": ["33738M", "92976G"],  # Wells Fargo Bank subsidiaries
-    "WYNN": ["983133"],           # Wynn Resorts Finance LLC
+    "WYNN": ["983133", "U98347"],  # Wynn Resorts Finance LLC, 144A bonds
     "DAL": ["247367", "U24740"],  # Delta securitization, older bonds
     "APA": ["03746A", "U0379Q"],  # APA different bond tranches
     "CEG": ["30161M"],            # Constellation Energy older bonds
     "GEHC": ["U36364"],           # GE Healthcare Holding
     "TSLA": ["U8810L"],           # Tesla bonds (different from stock CUSIP)
     "AAL": ["023771", "U02413"],  # American Airlines bonds
+    # Subsidiary issuer codes for companies with missing senior secured bonds
+    "HCA": ["404122", "U24788", "197677"],  # HCA Inc variants, 144A, subsidiary
+    "BHC": ["91911K", "91911X", "C07885", "C6900Q"],  # Valeant/Bausch subsidiaries (CA/intl)
+    "THC": ["88033W"],            # Tenet Healthcare subsidiary
+    "LUMN": ["52729K"],           # Level 3 Financing (Lumen subsidiary)
+    "CLF": ["18683K"],            # Cleveland-Cliffs subsidiary
+    "MGM": ["59318P", "U5928T", "55301H"],  # MGM subsidiaries, 144A
+    "SLG": ["75625A", "78440X"],  # SL Green subsidiaries
+    "DO": ["G2863Y"],             # Diamond Offshore (Cayman)
+    "VAL": ["29358Q"],            # Ensco/Valaris subsidiary
+    "UAL": ["910051"],            # United Airlines subsidiary
+    "NRG": ["629390"],            # NRG subsidiary
+    "CVNA": ["12690M"],           # Carvana Auto Receivables
+    "EXC": ["30161N"],            # Exelon subsidiary
+    "FYBR": ["35908X"],           # Frontier subsidiary
+    "IHRT": ["45174J"],           # iHeartMedia subsidiary
+    "AMC": ["00165H"],            # AMC subsidiary
+    "DISH": ["25470X"],           # DISH subsidiary
+    "FUN": ["150191", "78462G"],  # Cedar Fair / Six Flags entities
+    "CNK": ["17243W"],            # Cinemark subsidiary
+}
+
+# Foreign issuer country codes for non-US incorporated issuers
+# Used when constructing ISINs from CUSIPs found via Finnhub
+# Key: ticker, Value: ISO 3166-1 alpha-2 country code
+FOREIGN_ISSUER_COUNTRIES = {
+    "RIG": "KY",    # Transocean Ltd - Cayman Islands
+    "NE": "KY",     # Noble Corporation - Cayman Islands
+    "DO": "KY",     # Diamond Offshore - Cayman Islands
+    "NCLH": "BM",   # Norwegian Cruise Line - Bermuda
+    "VAL": "BM",    # Valaris Ltd - Bermuda
+    "CCL": "PA",    # Carnival Corporation - Panama
+    "BHC": "CA",    # Bausch Health Companies - Canada
+    "RCL": "LR",    # Royal Caribbean - Liberia
+}
+
+# Known non-US ISINs discovered from SEC filing document sections
+# These are validated ISINs for foreign-incorporated issuers
+KNOWN_FOREIGN_ISINS = {
+    "BHC": [
+        "CAC07885AA18",  # Bausch Health Canada bonds
+        "XS1206091651",  # Bausch Health Eurobond
+        "XS1205619288",  # Bausch Health Eurobond
+    ],
+    "CCL": [
+        "XS2066744231",  # Carnival Eurobond
+        "XS3111860865",  # Carnival Eurobond
+        "XS3111861244",  # Carnival Eurobond
+    ],
 }
 
 
