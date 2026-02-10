@@ -206,6 +206,10 @@ IMPORTANT:
 - Extract the EXACT numbers as shown in the filing tables
 - DO NOT convert or multiply the numbers - just extract them as presented
 - The filing header will say "in millions" or "in thousands" - we handle conversion separately
+- For 10-Q filings, extract QUARTERLY data (3 months ended)
+- For 10-K filings (annual reports), the income statement shows FULL YEAR figures.
+  To get Q4 data: Look for the comparative quarterly table showing "Three Months Ended December 31"
+  or "Fourth Quarter" figures. If not available, we need full year minus 9-month YTD.
 - Return null (not 0) for missing data
 """
 
@@ -226,6 +230,11 @@ BANK_FINANCIAL_SECTIONS_KEYWORDS = [
     "loans and leases",
     "total assets",
     "stockholders' equity",
+    # Investment bank terminology
+    "net revenues",
+    "institutional securities",
+    "wealth management",
+    "investment management",
 ]
 
 FINANCIAL_SECTIONS_KEYWORDS = [
@@ -815,31 +824,20 @@ async def extract_ttm_financials(
     sec_client = SecApiClient(api_key=sec_api_key)
     results = []
 
-    # Fetch recent 10-Qs (up to 3 for Q1, Q2, Q3)
+    # Fetch 8 10-Qs (2 years of quarterly data)
     print(f"\n--- Fetching 10-Q filings for {ticker} ---")
     filings_10q = sec_client.get_filings_by_ticker(
         ticker,
         form_types=["10-Q"],
-        max_filings=3,
-        cik=cik,
-    )
-
-    # Fetch most recent 10-K (for Q4)
-    print(f"--- Fetching 10-K filings for {ticker} ---")
-    filings_10k = sec_client.get_filings_by_ticker(
-        ticker,
-        form_types=["10-K"],
-        max_filings=1,
+        max_filings=8,
         cik=cik,
     )
 
     all_filings = []
     for f in filings_10q:
         all_filings.append(("10-Q", f))
-    for f in filings_10k:
-        all_filings.append(("10-K", f))
 
-    print(f"Found {len(filings_10q)} 10-Qs and {len(filings_10k)} 10-Ks")
+    print(f"Found {len(filings_10q)} 10-Qs")
 
     for filing_type, filing in all_filings:
         filing_date = filing.get("filedAt", "")[:10]
@@ -1142,6 +1140,7 @@ if __name__ == "__main__":
     import argparse
     import sys
 
+    from dotenv import load_dotenv
     from sqlalchemy import select, func
     from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
     from sqlalchemy.orm import sessionmaker
@@ -1153,19 +1152,23 @@ if __name__ == "__main__":
     # Add parent to path for imports
     sys.path.insert(0, str(__file__).replace('app/services/financial_extraction.py', ''))
 
+    # Load environment variables from .env file
+    load_dotenv()
+
     from app.core.config import get_settings
 
     async def main():
         parser = argparse.ArgumentParser(description="Extract financial data from SEC filings")
         parser.add_argument("--ticker", help="Company ticker")
         parser.add_argument("--all", action="store_true", help="Process all companies")
+        parser.add_argument("--banks-only", action="store_true", help="Process only financial institutions")
         parser.add_argument("--limit", type=int, help="Limit companies")
         parser.add_argument("--ttm", action="store_true", help="Extract TTM (4 quarters)")
         parser.add_argument("--save-db", action="store_true", help="Save to database")
         parser.add_argument("--claude", action="store_true", help="Use Claude instead of Gemini")
         args = parser.parse_args()
 
-        if not args.ticker and not args.all:
+        if not args.ticker and not args.all and not args.banks_only:
             print("Usage: python -m app.services.financial_extraction --ticker CHTR --ttm --save-db")
             print("       python -m app.services.financial_extraction --all --limit 10 --ttm --save-db")
             return
@@ -1182,6 +1185,16 @@ if __name__ == "__main__":
                     select(Company).where(Company.ticker == args.ticker.upper())
                 )
                 companies = [result.scalar_one_or_none()]
+            elif args.banks_only:
+                # Get all financial institutions
+                result = await db.execute(
+                    select(Company)
+                    .where(Company.is_financial_institution == True)
+                    .order_by(Company.ticker)
+                )
+                companies = list(result.scalars())
+                if args.limit:
+                    companies = companies[:args.limit]
             else:
                 # Get companies without recent financials
                 result = await db.execute(
@@ -1206,9 +1219,13 @@ if __name__ == "__main__":
             cik = company.cik or ''
 
             if args.ttm:
-                # Extract 4 quarters
+                # Extract 4 quarters (auto-detect bank from is_financial_institution flag)
+                is_bank = getattr(company, 'is_financial_institution', False)
+                if is_bank:
+                    print(f"  [BANK] Using bank-specific extraction")
                 financials = await extract_ttm_financials(
-                    company.ticker, cik, use_claude=args.claude
+                    company.ticker, cik, use_claude=args.claude,
+                    is_financial_institution=is_bank,
                 )
                 if financials:
                     print(f"  Extracted {len(financials)} quarters")

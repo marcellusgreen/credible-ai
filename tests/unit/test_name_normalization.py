@@ -11,7 +11,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from app.services.guarantee_extraction import _normalize_name
+from app.services.identifier_utils import normalize_entity_name as _normalize_name
 
 
 class TestNormalizeName:
@@ -73,7 +73,7 @@ class TestNormalizeName:
     @pytest.mark.unit
     def test_remove_corp_suffix(self):
         """', Corp.' and variations are removed."""
-        assert _normalize_name("Microsoft Corporation") == "microsoft corporation"  # Note: only removes Corp, not Corporation
+        assert _normalize_name("Microsoft Corporation") == "microsoft"  # normalize_entity_name removes Corporation suffix too
         assert _normalize_name("Microsoft, Corp.") == "microsoft"
         assert _normalize_name("Microsoft, Corp") == "microsoft"
         assert _normalize_name("Microsoft Corp.") == "microsoft"

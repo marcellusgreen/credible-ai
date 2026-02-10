@@ -12,7 +12,7 @@ from uuid import uuid4, UUID
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from app.services.guarantee_extraction import _fuzzy_match_entity, _normalize_name
+from app.services.identifier_utils import fuzzy_match_entity as _fuzzy_match_entity, normalize_entity_name as _normalize_name
 
 
 class TestFuzzyMatchEntity:
