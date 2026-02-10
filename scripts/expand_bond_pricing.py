@@ -745,6 +745,16 @@ KNOWN_ISSUER_CODES = {
     "CRWV": "21873S",   # CoreWeave
     "DDOG": "23804J",   # Datadog (convertible notes)
     "TEAM": "04930M",   # Atlassian (convertible notes)
+    # Tier 1 companies (Feb 2026)
+    "CMCSA": "20030N",  # Comcast Corporation
+    "DUK": "26441C",    # Duke Energy Corporation
+    "CVS": "126650",    # CVS Health Corporation
+    "SO": "842587",     # Southern Company
+    "TFC": "89832Q",    # Truist Financial Corporation
+    "ET": "29273R",     # Energy Transfer LP
+    "PNC": "693475",    # PNC Financial Services
+    "PCG": "69331C",    # PG&E Corporation
+    "BMY": "110122",    # Bristol-Myers Squibb
 }
 
 # Companies with multiple issuer codes (subsidiaries, foreign entities, etc.)
