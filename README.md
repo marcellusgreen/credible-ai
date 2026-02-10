@@ -19,9 +19,9 @@ Corporate structure and debt analysis is complex. Even with AI, achieving accura
 
 ## Current Database
 
-**201 companies | 26,771 entities | 3,056 debt instruments | 2,359 Finnhub bonds (2,017 with pricing) | 13,862 document sections | 3,831 guarantees | 626 collateral records | 13,970 treasury yields**
+**200+ companies** covering S&P 100 and NASDAQ 100, with thousands of debt instruments, real-time bond pricing, and searchable SEC filing sections. Expanding to 1,000+ companies in 2026.
 
-Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
+Coverage spans all major sectors:
 
 | Sector | Sample Companies |
 |--------|------------------|
@@ -37,10 +37,13 @@ Coverage includes S&P 100 and NASDAQ 100 companies across all sectors:
 
 ## Features
 
-- **Primitives API**: 11 core endpoints optimized for AI agents with field selection
-- **Authentication**: API key auth with credit-based usage tracking
+- **Primitives API**: 11 core endpoints optimized for AI agents with field selection and filtering
+- **Three-Tier Pricing**: Pay-as-You-Go ($0 + per-call), Pro ($199/mo unlimited), Business ($499/mo full access)
+- **Authentication**: API key auth with tier-based access control and credit tracking
+- **Observability**: Sentry error tracking, PostHog analytics, Slack alerting
 - **Iterative QA Extraction**: 5 automated verification checks with targeted fixes until 85%+ quality threshold
 - **Individual Debt Instruments**: Each bond, note, and credit facility extracted separately (not just totals)
+- **Structured Covenants**: 1,181 covenants (financial, negative, protective) linked to specific instruments
 - **Guarantee Relationships**: 3,831 guarantee records linking debt to guarantor subsidiaries
 - **Collateral Tracking**: 626 collateral records with asset types (equipment, vehicles, real estate, etc.)
 - **Corporate Ownership Hierarchy**: Nested parent-child structures from SEC Exhibit 21 and indenture parsing
@@ -220,19 +223,21 @@ All other endpoints require an API key passed via `X-API-Key` header.
 
 ### Primitives API (Optimized for AI Agents)
 
-These 9 endpoints are designed for agents writing code - simple REST, field selection, powerful filtering.
+These 11 endpoints are designed for agents writing code - simple REST, field selection, powerful filtering.
 
-| Endpoint | Credits | Description |
-|----------|---------|-------------|
-| `GET /v1/companies` | 1 | Search companies with field selection and 15+ filters |
-| `GET /v1/bonds` | 1 | Search/screen bonds with pricing, filters for yield, seniority, maturity |
-| `GET /v1/bonds/resolve` | 1 | Map bond identifiers - free-text to CUSIP (e.g., "RIG 8% 2027") |
-| `GET /v1/financials` | 1 | Quarterly financial statements (income, balance sheet, cash flow) |
-| `GET /v1/collateral` | 1 | Collateral securing debt (types, values, priority) |
-| `GET /v1/companies/{ticker}/changes` | 2 | Diff against historical snapshots |
-| `POST /v1/entities/traverse` | 3 | Graph traversal for guarantor chains, org structure |
-| `GET /v1/documents/search` | 3 | Full-text search across SEC filings |
-| `POST /v1/batch` | Sum | Execute multiple primitives in parallel |
+| Endpoint | Cost (Pay-as-You-Go) | Description |
+|----------|---------------------|-------------|
+| `GET /v1/companies` | $0.05 | Search companies with field selection and 15+ filters |
+| `GET /v1/bonds` | $0.05 | Search/screen bonds with pricing, filters for yield, seniority, maturity |
+| `GET /v1/bonds/resolve` | $0.05 | Map bond identifiers - free-text to CUSIP (e.g., "RIG 8% 2027") |
+| `GET /v1/financials` | $0.05 | Quarterly financial statements (income, balance sheet, cash flow) |
+| `GET /v1/collateral` | $0.05 | Collateral securing debt (types, values, priority) |
+| `GET /v1/covenants` | $0.05 | Search structured covenant data (financial, negative, protective) |
+| `GET /v1/covenants/compare` | Business only | Compare covenants across multiple companies |
+| `GET /v1/companies/{ticker}/changes` | $0.10 | Diff against historical snapshots |
+| `POST /v1/entities/traverse` | $0.15 | Graph traversal for guarantor chains, org structure |
+| `GET /v1/documents/search` | $0.15 | Full-text search across SEC filings |
+| `POST /v1/batch` | Sum of ops | Execute multiple primitives in parallel |
 
 **Example - Field Selection:**
 ```bash
@@ -462,9 +467,15 @@ docker-compose up -d
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
+| `REDIS_URL` | Optional | Redis cache (Upstash) |
 | `ANTHROPIC_API_KEY` | Yes | Claude API for escalation |
 | `GEMINI_API_KEY` | Recommended | Gemini API for extraction |
 | `SEC_API_KEY` | Recommended | SEC-API.io for filing retrieval |
+| `FINNHUB_API_KEY` | Optional | Finnhub for bond pricing (FINRA TRACE) |
+| `STRIPE_API_KEY` | Optional | Stripe for payment processing |
+| `STRIPE_WEBHOOK_SECRET` | Optional | Stripe webhook verification |
+| `SENTRY_DSN` | Optional | Sentry error tracking |
+| `SLACK_WEBHOOK_URL` | Optional | Slack alerts for error spikes |
 
 ## Extraction
 
@@ -558,12 +569,21 @@ Key utilities:
 credible/
 ├── app/
 │   ├── api/
-│   │   ├── routes.py              # Legacy FastAPI endpoints
-│   │   └── primitives.py          # Primitives API (9 core endpoints)
+│   │   ├── primitives.py          # Primitives API (11 core endpoints)
+│   │   ├── auth.py                # Auth API (signup, user info)
+│   │   ├── pricing_api.py         # Pricing API (tiers, credits, usage)
+│   │   ├── historical_pricing.py  # Historical bond pricing (Business)
+│   │   ├── export.py              # Bulk export (Business)
+│   │   ├── usage.py               # Usage analytics (Business)
+│   │   └── routes.py              # Legacy REST endpoints
 │   ├── core/
 │   │   ├── config.py              # Configuration
 │   │   ├── database.py            # Database connection
-│   │   └── cache.py               # Redis cache client
+│   │   ├── cache.py               # Redis cache client
+│   │   ├── auth.py                # API key generation, validation, tier config
+│   │   ├── monitoring.py          # Redis-based API metrics
+│   │   ├── alerting.py            # Slack webhook alerts
+│   │   └── scheduler.py           # APScheduler (pricing + alert jobs)
 │   ├── models/schema.py           # SQLAlchemy models
 │   └── services/
 │       ├── # UTILITIES (stateless helpers)
@@ -580,6 +600,7 @@ credible/
 │       ├── hierarchy_extraction.py  # Exhibit 21 parsing, ownership
 │       ├── guarantee_extraction.py  # Guarantee relationships
 │       ├── collateral_extraction.py # Collateral for secured debt
+│       ├── covenant_extraction.py   # Structured covenant extraction
 │       ├── qa_agent.py              # 5-check verification system
 │       ├── financial_extraction.py  # Quarterly financials
 │       ├── bond_pricing.py          # Pricing calculations
