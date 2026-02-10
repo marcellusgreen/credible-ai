@@ -67,7 +67,7 @@ python scripts/backfill_pricing_history.py --all --days 1095 --with-spreads
 #### Then: SDK & Documentation
 1. SDK publication to PyPI
 2. Mintlify docs deployment to docs.debtstack.ai
-3. Set up Railway cron job for daily pricing collection
+3. ~~Set up Railway cron job for daily pricing collection~~ ✅ Done — APScheduler in-process (11 AM / 3 PM / 9 PM ET)
 
 ### Company Expansion: Next 87 Companies (2026-02-09)
 
@@ -511,7 +511,7 @@ Add functions:
 - ✅ Added `--with-spreads` flag to use historical treasury yields for accurate spread calculations
 - ⬜ TODO: Configure Finnhub premium API key
 - ⬜ TODO: Run bond pricing backfill once API key available
-- ⬜ TODO: Set up Railway cron job (daily at 6 PM ET)
+- ✅ DONE: APScheduler in-process scheduler (11 AM / 3 PM / 9 PM ET) — replaces external cron job
 
 ---
 
@@ -565,7 +565,7 @@ Create `tests/test_pricing_tiers.py`:
 - [x] Update website with new pricing page
 - [x] Test tier enforcement on staging environment
 - [x] Test Stripe checkout flow end-to-end (14/14 tests passing)
-- [ ] Set up daily pricing collection cron job
+- [x] Set up daily pricing collection cron job (APScheduler in-process)
 - [ ] Update API documentation with tier requirements
 - [ ] Test historical pricing endpoint with Business user
 - [ ] Announce new pricing to existing users (grandfather free users)
@@ -1349,7 +1349,7 @@ Implemented API key-based authentication (simpler than OAuth for API-first produ
 | 3. CUSIP → ISIN conversion | Finnhub uses ISIN; add "US" prefix + check digit | ⬜ TODO |
 | 4. Update pricing script | Modify `scripts/update_pricing.py` for Finnhub API | ⬜ TODO |
 | 5. Batch lookup | Query 591 CUSIPs, update `bond_pricing` | ⬜ TODO |
-| 6. Daily refresh | Railway cron or external scheduler | ⬜ TODO |
+| 6. Daily refresh | APScheduler in-process (11 AM / 3 PM / 9 PM ET) | ✅ DONE |
 
 **API Notes:**
 - Finnhub Bond Price API: `GET /bond/price?isin={ISIN}`
@@ -2104,7 +2104,7 @@ When starting a new session, read this file first, then:
 **Next Steps:**
 1. Configure Finnhub premium API key in Railway
 2. Run bond pricing backfill: `python scripts/backfill_pricing_history.py --all --with-spreads`
-3. Set up Railway cron job for daily pricing collection
+3. ~~Set up Railway cron job for daily pricing collection~~ ✅ Done — APScheduler in-process
 
 ---
 

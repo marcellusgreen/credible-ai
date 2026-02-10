@@ -25,6 +25,7 @@ from app.core.config import get_settings
 from app.core.cache import check_rate_limit, DEFAULT_RATE_LIMIT, DEFAULT_RATE_WINDOW
 from app.core.monitoring import record_request, record_rate_limit_hit
 from app.core.auth import hash_api_key
+from app.core.scheduler import start_scheduler, stop_scheduler
 
 settings = get_settings()
 
@@ -49,8 +50,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     """Application lifespan manager."""
     # Startup
     logger.info("Starting DebtStack.ai API", version=settings.api_version)
+    start_scheduler()
     yield
     # Shutdown
+    stop_scheduler()
     logger.info("Shutting down DebtStack.ai API")
 
 
