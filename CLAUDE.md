@@ -195,6 +195,16 @@ Different industries use different primary profitability metrics. The `company_f
 - Banks/Financial Institutions: `companies.is_financial_institution = true` (12 companies: AXP, BAC, C, COF, GS, JPM, MS, PNC, SCHW, TFC, USB, WFC)
 - Industry-specific fields in `company_financials`: `net_interest_income`, `non_interest_income`, `non_interest_expense`, `provision_for_credit_losses`
 
+**Bank Sub-Types (extraction differences):**
+| Type | Examples | Income Statement Structure | Notes |
+|------|----------|---------------------------|-------|
+| Commercial Banks | BAC, JPM, WFC, PNC, USB, TFC, C, COF | NII + Non-Interest Income - Non-Interest Expense | Standard bank prompt works well |
+| Credit Card / Consumer Finance | AXP, COF | Similar to commercial banks | May show "Net Interest Income" differently |
+| Investment Banks | GS, MS | "Net Revenues" by segment (Institutional, Wealth Mgmt) | Different terminology - "Net Revenues" not "NII" |
+| Brokerages | SCHW | Mix of NII and fee income | Works with bank prompt |
+
+**Known Limitation:** Investment banks (GS, MS) may have lower extraction success rate for bank-specific fields due to different income statement structure. They use "Net Revenues" and segment-based reporting rather than traditional NII/Non-Interest Income breakdown.
+
 **To add a new industry type:**
 1. Add flag to `companies` table (e.g., `is_reit`) or use `sector` detection
 2. Add industry-specific columns to `company_financials` in schema.py
@@ -557,11 +567,19 @@ DebtStack extracts from the latest SEC filings (Oct-Dec 2025), while LLMs like G
 
 ### TTM Financial Extraction
 
-For accurate leverage ratios, use `--ttm` to extract 4 quarters of financial data:
-- Fetches most recent 3 10-Qs (Q1, Q2, Q3) + 1 10-K (full year as Q4 proxy)
+For accurate leverage ratios, use `--ttm` to extract 8 quarters (2 years) of financial data:
+- Fetches 8 10-Qs (NOT 10-Ks) for clean quarterly data
 - Uses `periodOfReport` from SEC API to determine fiscal quarter
-- Stores `filing_type` field ("10-K" or "10-Q") for each record
+- Stores `filing_type` field ("10-Q") for each record
 - If fewer than 4 quarters available, annualizes what's available
+
+**Why 8 10-Qs instead of 10-K + 10-Qs:**
+- 10-K contains ANNUAL figures, not Q4 quarterly data
+- Extracting Q4 from 10-K requires subtracting 9-month YTD from annual (error-prone)
+- Using 8 10-Qs gives clean quarterly data without math
+- Also provides 2 years of data for YoY comparisons and trend analysis
+
+**Target: 8 quarters per company** for full coverage (TTM + YoY comparison)
 
 ### Financial Data Quality Control
 
@@ -1038,6 +1056,22 @@ See `docs/operations/QA_TROUBLESHOOTING.md` for detailed debugging guides.
 3. **Pattern matching beats LLM for large docs** - Search for "Term A-6" directly rather than asking LLM
 4. **Fix data quality first** - Many matches fail due to NULL rates/maturities that can be extracted from names
 5. **Lower confidence is better than no link** - 60% confidence base indenture link is more useful than nothing
+
+### Financial Extraction Issues
+
+| Symptom | Root Cause | Solution |
+|---------|------------|----------|
+| Q4 data missing or wrong | Tried to extract Q4 from 10-K (has annual data) | Use 8 10-Qs instead - gives clean quarterly data |
+| Bank EBITDA shows as 0 or NULL | Banks don't have EBITDA - they use PPNR | Check `is_financial_institution` flag, use bank prompt |
+| Investment bank fields NULL | GS/MS use "Net Revenues" not "NII" | Known limitation - different income statement structure |
+| Partial quarters extracted | Gemini rate limits (429 errors) | Script handles with 60s waits; re-run to fill gaps |
+
+**Key Learnings from Financial Extraction Work:**
+1. **Never use 10-K for quarterly data** - 10-K has annual figures; extracting Q4 requires subtracting 9-month YTD (error-prone)
+2. **Use 8 10-Qs for 2 years of clean data** - Simpler, more reliable, enables YoY comparisons
+3. **Banks need special handling** - Different income statement structure (NII, PPNR vs Revenue, EBITDA)
+4. **Investment banks are different from commercial banks** - GS/MS may not extract cleanly with bank prompt
+5. **CLI scripts need `load_dotenv()`** - When running `python -m app.services.X`, env vars aren't loaded automatically
 
 ### Scale Error Issues
 

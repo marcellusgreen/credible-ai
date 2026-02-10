@@ -16,7 +16,7 @@ STEPS (16 total):
   3. Save to DB - uses merge logic to preserve existing data
   4. Document sections - skip if count > 5
   5. Document linking - skip if 50%+ of instruments already linked
-  6. TTM financials - skip if latest_quarter is current
+  6. Financials (8 quarters) - skip if latest_quarter is current; uses 8 10-Qs (not 10-K)
   7. Ownership hierarchy - skip if status='no_data' (no Exhibit 21)
   8. Guarantees - skip if guarantee_count > 0 OR status='no_data'
   9. Collateral - skip if collateral_count > 0 OR status='no_data'
@@ -27,6 +27,9 @@ STEPS (16 total):
   14. Current bond pricing - skip unless --full
   15. Historical pricing - skip unless --full
   16. Completeness check - always run
+
+NOTE: Financial extraction uses 8 10-Qs (2 years) instead of 3 10-Qs + 1 10-K.
+This gives clean quarterly data without needing to parse annual 10-K figures.
 
 The extraction_status field in company_cache tracks step attempts:
   - "success": Step completed with data (includes metadata like latest_quarter)
@@ -535,7 +538,7 @@ async def run_iterative_extraction(
                 print(f"  [SKIP] TTM financials (have {existing_data.get('financials_count', 0)} quarters)")
 
         if not skip_ttm_financials and company_id:
-            print(f"\n[6/16] Extracting TTM financials (4 quarters)...")
+            print(f"\n[6/16] Extracting financials (8 quarters / 2 years)...")
             try:
                 from app.services.financial_extraction import extract_ttm_financials, save_financials_to_db
 
@@ -930,13 +933,13 @@ async def check_company_completeness(session, company_id, ticker: str) -> dict:
     )
     checks['document_links'] = result.scalar()
 
-    # 5. Financials
+    # 5. Financials (target: 8 quarters, minimum: 4 for TTM)
     result = await session.execute(
         text("SELECT COUNT(*) FROM company_financials WHERE company_id = :id"),
         {"id": company_id}
     )
     checks['financials_quarters'] = result.scalar()
-    if checks['financials_quarters'] < 4:
+    if checks['financials_quarters'] < 4:  # Minimum for TTM calculations
         issues.append('incomplete_financials')
 
     # 6. Guarantees
