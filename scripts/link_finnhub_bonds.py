@@ -916,6 +916,80 @@ async def print_coverage_stats(session):
 
 
 # =============================================================================
+# Single-company linking (for use by extract_iterative.py)
+# =============================================================================
+
+async def link_finnhub_bonds_for_company(session, company_id, ticker: str) -> dict:
+    """
+    Link Finnhub-discovered bonds to documents for a single company.
+
+    This is the entry point for extract_iterative.py to call after Finnhub discovery.
+    Runs the full linking pipeline: pattern match -> heuristic -> base indenture fallback.
+
+    Args:
+        session: Database session
+        company_id: Company UUID
+        ticker: Stock ticker
+
+    Returns:
+        Dict with linking stats:
+        - pattern_matched: int
+        - heuristic_matched: int
+        - fallback_linked: int
+        - total_linked: int
+    """
+    from sqlalchemy import text
+
+    stats = {
+        'pattern_matched': 0,
+        'heuristic_matched': 0,
+        'fallback_linked': 0,
+        'total_linked': 0,
+    }
+
+    # Get unlinked Finnhub bonds for this company
+    result = await session.execute(text('''
+        SELECT COUNT(*) FROM debt_instruments di
+        WHERE di.company_id = :cid
+          AND di.instrument_type = 'bond'
+          AND di.is_active = true
+          AND di.id NOT IN (SELECT DISTINCT debt_instrument_id FROM debt_instrument_documents)
+          AND (di.attributes->>'source' = 'finnhub_discovery'
+               OR (di.cusip IS NOT NULL AND di.isin IS NOT NULL))
+    '''), {'cid': company_id})
+    unlinked_count = result.scalar()
+
+    if unlinked_count == 0:
+        return stats
+
+    # Step 1: Pattern matching (quick, uses rate+maturity patterns)
+    try:
+        count = await step_pattern_match(session, ticker=ticker, dry_run=False)
+        stats['pattern_matched'] = count
+        stats['total_linked'] += count
+    except Exception as e:
+        print(f"    Pattern match error: {e}")
+
+    # Step 2: Heuristic matching (score-based)
+    try:
+        count = await step_heuristic_match(session, ticker=ticker, dry_run=False)
+        stats['heuristic_matched'] = count
+        stats['total_linked'] += count
+    except Exception as e:
+        print(f"    Heuristic match error: {e}")
+
+    # Step 3: Base indenture fallback (for remaining unlinked)
+    try:
+        count = await step_base_indenture_fallback(session, ticker=ticker, dry_run=False)
+        stats['fallback_linked'] = count
+        stats['total_linked'] += count
+    except Exception as e:
+        print(f"    Base indenture fallback error: {e}")
+
+    return stats
+
+
+# =============================================================================
 # Main
 # =============================================================================
 

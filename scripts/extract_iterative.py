@@ -10,18 +10,23 @@ IDEMPOTENT: Safe to re-run for existing companies. Skips steps where:
   - Source data is unavailable (e.g., no Exhibit 21) - tracked via extraction_status
 Use --force to override skip logic.
 
-Skip conditions:
+STEPS (16 total):
   1. Download filings - never skipped
   2. Core extraction - skip if entity_count > 20 AND debt_count > 0
   3. Save to DB - uses merge logic to preserve existing data
   4. Document sections - skip if count > 5
-  5. Document linking - skip if 50%+ of instruments already linked OR no linkable documents
-  6. TTM financials - skip if latest_quarter is current (checks if 60+ days past next quarter end)
-  7. Ownership hierarchy - skip if entity_count > 50 OR status='no_data' (no Exhibit 21)
+  5. Document linking - skip if 50%+ of instruments already linked
+  6. TTM financials - skip if latest_quarter is current
+  7. Ownership hierarchy - skip if status='no_data' (no Exhibit 21)
   8. Guarantees - skip if guarantee_count > 0 OR status='no_data'
   9. Collateral - skip if collateral_count > 0 OR status='no_data'
   10. Metrics computation - always run
-  11. QC validation
+  11. Covenants - skip if covenant_count > 0
+  12. Finnhub bond discovery - skip unless --full (slow: ~5 min)
+  13. Link Finnhub bonds - ALWAYS runs if unlinked Finnhub bonds exist
+  14. Current bond pricing - skip unless --full
+  15. Historical pricing - skip unless --full
+  16. Completeness check - always run
 
 The extraction_status field in company_cache tracks step attempts:
   - "success": Step completed with data (includes metadata like latest_quarter)
@@ -33,10 +38,13 @@ Financials tracking example:
   - If current date is 60+ days past next quarter end, will re-extract for new data
 
 Usage:
-    # Single company
+    # Single company (steps 1-11, fast ~3-5 min)
     python scripts/extract_iterative.py --ticker AAPL --cik 0000320193 --save-db
 
-    # Single company with force (re-run all steps)
+    # Single company FULL (steps 1-16, includes Finnhub/pricing ~10 min)
+    python scripts/extract_iterative.py --ticker AAPL --cik 0000320193 --save-db --full
+
+    # Force re-run all steps
     python scripts/extract_iterative.py --ticker AAPL --cik 0000320193 --save-db --force
 
     # All companies (batch mode)
@@ -53,6 +61,7 @@ Environment variables:
     ANTHROPIC_API_KEY - Optional, for Claude escalation
     SEC_API_KEY - Optional, for faster filing retrieval
     DATABASE_URL - Required for --save-db
+    FINNHUB_API_KEY - Required for --full (bond discovery/pricing)
 """
 
 import argparse
@@ -79,32 +88,41 @@ from app.services.collateral_extraction import extract_collateral
 from app.services.document_linking import link_documents, link_documents_heuristic
 from app.services.metrics import recompute_metrics_for_company
 from app.services.qc import run_qc_checks
+from app.services.covenant_extraction import extract_covenants
 
 
 # =============================================================================
 # FILING DOWNLOAD
 # =============================================================================
 
-async def download_filings(ticker: str, cik: str, sec_api_key: str = None) -> dict[str, str]:
-    """Download all relevant filings."""
+async def download_filings(ticker: str, cik: str, sec_api_key: str = None) -> tuple[dict[str, str], dict[str, str]]:
+    """Download all relevant filings.
+
+    Returns:
+        Tuple of (filings_content, filing_urls) where:
+        - filings_content: Filing content keyed by type and date
+        - filing_urls: SEC filing URLs keyed by same keys
+    """
     filings = {}
+    filing_urls = {}
 
     if sec_api_key:
         print(f"  Downloading filings via SEC-API...")
         sec_client = SecApiClient(sec_api_key)
-        filings = await sec_client.get_all_relevant_filings(ticker, cik=cik)
+        filings, filing_urls = await sec_client.get_all_relevant_filings(ticker, cik=cik)
         exhibit_21 = sec_client.get_exhibit_21(ticker)
         if exhibit_21:
             filings['exhibit_21'] = exhibit_21
+            # exhibit_21 URL is not available from get_exhibit_21, but it's okay
         print(f"    Downloaded {len(filings)} filings")
     else:
         print(f"  Downloading filings via SEC EDGAR...")
         edgar = SECEdgarClient()
-        filings = await edgar.get_all_relevant_filings(cik)
+        filings, filing_urls = await edgar.get_all_relevant_filings(cik)
         await edgar.close()
         print(f"    Downloaded {len(filings)} filings")
 
-    return filings
+    return filings, filing_urls
 
 
 # =============================================================================
@@ -178,6 +196,8 @@ async def run_iterative_extraction(
     skip_enrichment: bool = False,
     core_only: bool = False,
     force: bool = False,
+    full: bool = False,
+    finnhub_api_key: str = None,
 ) -> IterativeExtractionResult:
     """
     Run complete extraction pipeline (idempotent).
@@ -194,6 +214,11 @@ async def run_iterative_extraction(
         save_to_db: Save to database
         database_url: Database connection string
         skip_financials: Skip TTM financial extraction
+        skip_enrichment: Skip guarantees, collateral, document linking
+        core_only: Only run core extraction (fastest)
+        force: Force re-run all steps (ignore skip conditions)
+        full: Run ALL steps including Finnhub discovery and pricing (slow)
+        finnhub_api_key: Finnhub API key (required for --full)
         skip_enrichment: Skip guarantees, collateral, document linking
         core_only: Only run core extraction (fastest)
         force: Force re-run all steps (ignore skip conditions)
@@ -311,8 +336,8 @@ async def run_iterative_extraction(
             print(f"  [SKIP] Document linking (no linkable documents - previously attempted)")
 
     # Download filings (always done, needed for various steps)
-    print(f"\n[1/11] Downloading SEC filings...")
-    filings = await download_filings(ticker, cik, sec_api_key)
+    print(f"\n[1/16] Downloading SEC filings...")
+    filings, filing_urls = await download_filings(ticker, cik, sec_api_key)
 
     if not filings:
         print("Error: No filings found")
@@ -321,7 +346,7 @@ async def run_iterative_extraction(
     # Core extraction with QA loop
     result = None
     if not skip_core:
-        print(f"\n[2/11] Running core extraction (entities + debt)...")
+        print(f"\n[2/16] Running core extraction (entities + debt)...")
         service = IterativeExtractionService(
             gemini_api_key=gemini_api_key,
             anthropic_api_key=anthropic_api_key,
@@ -353,7 +378,7 @@ async def run_iterative_extraction(
                 json.dump(result.extraction, f, indent=2, default=str)
             print(f"    - Saved to {extraction_path}")
     else:
-        print(f"\n[2/11] Skipping core extraction (data exists)")
+        print(f"\n[2/16] Skipping core extraction (data exists)")
         # Create a dummy result for compatibility
         from datetime import datetime
         from app.services.qa_agent import QAReport
@@ -388,7 +413,7 @@ async def run_iterative_extraction(
         # Save core extraction (use merge if data exists)
         if not skip_core and result.extraction.get('entities'):
             async with async_session() as session:
-                print(f"\n[3/11] Saving to database...")
+                print(f"\n[3/16] Saving to database...")
                 extraction_result = convert_to_extraction_result(result.extraction, ticker)
 
                 if existing_data.get('exists') and not force:
@@ -402,13 +427,13 @@ async def run_iterative_extraction(
                     print(f"    [OK] Saved core extraction")
 
         else:
-            print(f"\n[3/11] Skipping save (no new core data)")
+            print(f"\n[3/16] Skipping save (no new core data)")
 
         await engine.dispose()
 
         # Document sections
         if not skip_document_sections and company_id:
-            print(f"\n[4/11] Extracting document sections...")
+            print(f"\n[4/16] Extracting document sections...")
             engine = create_async_engine(database_url, echo=False)
             async_session = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -418,6 +443,7 @@ async def run_iterative_extraction(
                         db=session,
                         company_id=company_id,
                         filings_content=filings,
+                        filing_urls=filing_urls,
                     )
                     print(f"    [OK] Stored {sections_stored} document sections")
                 except Exception as e:
@@ -425,12 +451,12 @@ async def run_iterative_extraction(
 
             await engine.dispose()
         else:
-            print(f"\n[4/11] Skipping document sections")
+            print(f"\n[4/16] Skipping document sections")
 
         # Document linking - link debt instruments to their source documents
         # This MUST run before guarantees/collateral so they can use linked docs
         if not skip_document_linking and company_id:
-            print(f"\n[5/11] Linking documents to debt instruments...")
+            print(f"\n[5/16] Linking documents to debt instruments...")
             engine = create_async_engine(database_url, echo=False)
             async_session = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -463,7 +489,7 @@ async def run_iterative_extraction(
 
             await engine.dispose()
         else:
-            print(f"\n[5/11] Skipping document linking")
+            print(f"\n[5/16] Skipping document linking")
 
         # TTM Financials - check if new quarters might be available
         if not skip_ttm_financials and existing_data.get('has_financials') and not force:
@@ -508,7 +534,7 @@ async def run_iterative_extraction(
                 print(f"  [SKIP] TTM financials (have {existing_data.get('financials_count', 0)} quarters)")
 
         if not skip_ttm_financials and company_id:
-            print(f"\n[6/11] Extracting TTM financials (4 quarters)...")
+            print(f"\n[6/16] Extracting TTM financials (4 quarters)...")
             try:
                 from app.services.financial_extraction import extract_ttm_financials, save_financials_to_db
 
@@ -565,11 +591,11 @@ async def run_iterative_extraction(
                     except:
                         pass
         else:
-            print(f"\n[6/11] Skipping TTM financials")
+            print(f"\n[6/16] Skipping TTM financials")
 
         # Ownership hierarchy (FULL Exhibit 21 integration)
         if not skip_hierarchy and company_id:
-            print(f"\n[7/11] Extracting ownership hierarchy from Exhibit 21...")
+            print(f"\n[7/16] Extracting ownership hierarchy from Exhibit 21...")
             engine = create_async_engine(database_url, echo=False)
             async_session = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -607,11 +633,11 @@ async def run_iterative_extraction(
 
             await engine.dispose()
         else:
-            print(f"\n[7/11] Skipping ownership hierarchy")
+            print(f"\n[7/16] Skipping ownership hierarchy")
 
         # Guarantees
         if not skip_guarantees and company_id:
-            print(f"\n[8/11] Extracting guarantees...")
+            print(f"\n[8/16] Extracting guarantees...")
             engine = create_async_engine(database_url, echo=False)
             async_session = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -637,11 +663,11 @@ async def run_iterative_extraction(
 
             await engine.dispose()
         else:
-            print(f"\n[8/11] Skipping guarantees")
+            print(f"\n[8/16] Skipping guarantees")
 
         # Collateral
         if not skip_collateral and company_id:
-            print(f"\n[9/11] Extracting collateral...")
+            print(f"\n[9/16] Extracting collateral...")
             engine = create_async_engine(database_url, echo=False)
             async_session = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -667,11 +693,11 @@ async def run_iterative_extraction(
 
             await engine.dispose()
         else:
-            print(f"\n[9/11] Skipping collateral")
+            print(f"\n[9/16] Skipping collateral")
 
         # Metrics computation (always run)
         if company_id:
-            print(f"\n[10/11] Computing metrics...")
+            print(f"\n[10/16] Computing metrics...")
             engine = create_async_engine(database_url, echo=False)
             async_session = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -682,21 +708,156 @@ async def run_iterative_extraction(
                 except Exception as e:
                     print(f"    [WARN] Metrics computation failed: {e}")
 
-                # QC checks
-                print(f"\n[11/11] Running QC checks...")
-                qc_results = await run_qc_checks(session, company_id, ticker)
-                print(f"    - Entities: {qc_results['entities']}")
-                print(f"    - Debt instruments: {qc_results['debt_instruments']}")
-                print(f"    - Guarantees: {qc_results['guarantees']}")
-                print(f"    - Financials: {qc_results['financials']} quarters")
-                if qc_results['issues']:
-                    print(f"    - Issues: {', '.join(qc_results['issues'])}")
+            await engine.dispose()
+
+        # Step 11: Covenants
+        if company_id and not skip_enrichment and not core_only:
+            engine = create_async_engine(database_url, echo=False)
+            async_session = async_sessionmaker(engine, expire_on_commit=False)
+
+            async with async_session() as session:
+                # Check existing covenants
+                from sqlalchemy import text
+                result_cov = await session.execute(
+                    text("SELECT COUNT(*) FROM covenants WHERE company_id = :id"),
+                    {"id": company_id}
+                )
+                covenant_count = result_cov.scalar()
+
+                if covenant_count > 0 and not force:
+                    print(f"\n[11/16] Skipping covenants (have {covenant_count} existing)")
                 else:
-                    print(f"    - Status: PASSED")
+                    print(f"\n[11/16] Extracting covenants...")
+                    try:
+                        count = await extract_covenants(session, company_id, ticker, force=force)
+                        print(f"    [OK] Extracted {count} covenants")
+                    except Exception as e:
+                        print(f"    [WARN] Covenant extraction failed: {e}")
+
+            await engine.dispose()
+
+        # Step 12: Finnhub bond discovery (only with --full, slow ~5 min)
+        if full and company_id:
+            if not finnhub_api_key:
+                print(f"\n[12/16] Skipping Finnhub discovery (FINNHUB_API_KEY not set)")
+            else:
+                print(f"\n[12/16] Discovering bonds from Finnhub (this takes ~5 minutes)...")
+                try:
+                    from scripts.expand_bond_pricing import phase4_discover_from_finnhub
+                    os.environ['FINNHUB_API_KEY'] = finnhub_api_key
+
+                    engine = create_async_engine(database_url, echo=False)
+                    async_session = async_sessionmaker(engine, expire_on_commit=False)
+
+                    await phase4_discover_from_finnhub(async_session, ticker=ticker)
+                    await engine.dispose()
+                    print(f"    [OK] Finnhub discovery complete")
+                except Exception as e:
+                    print(f"    [WARN] Finnhub discovery failed: {e}")
+        else:
+            print(f"\n[12/16] Skipping Finnhub discovery (use --full to enable)")
+
+        # Step 13: Link Finnhub bonds to documents (ALWAYS runs if unlinked bonds exist)
+        # This ensures bonds discovered in previous --full runs get linked
+        if company_id and not skip_enrichment and not core_only:
+            engine = create_async_engine(database_url, echo=False)
+            async_session = async_sessionmaker(engine, expire_on_commit=False)
+
+            async with async_session() as session:
+                # Check for unlinked Finnhub bonds
+                from sqlalchemy import text as sa_text
+                result = await session.execute(sa_text('''
+                    SELECT COUNT(*) FROM debt_instruments di
+                    WHERE di.company_id = :cid
+                      AND di.instrument_type = 'bond'
+                      AND di.is_active = true
+                      AND di.id NOT IN (SELECT DISTINCT debt_instrument_id FROM debt_instrument_documents)
+                      AND (di.attributes->>'source' = 'finnhub_discovery'
+                           OR (di.cusip IS NOT NULL AND di.isin IS NOT NULL))
+                '''), {'cid': company_id})
+                unlinked_count = result.scalar()
+
+                if unlinked_count > 0:
+                    print(f"\n[13/16] Linking {unlinked_count} Finnhub bonds to documents...")
+                    try:
+                        from scripts.link_finnhub_bonds import link_finnhub_bonds_for_company
+                        link_stats = await link_finnhub_bonds_for_company(session, company_id, ticker)
+                        total = link_stats['total_linked']
+                        print(f"    [OK] Linked {total} Finnhub bonds "
+                              f"(pattern: {link_stats['pattern_matched']}, "
+                              f"heuristic: {link_stats['heuristic_matched']}, "
+                              f"fallback: {link_stats['fallback_linked']})")
+                    except Exception as e:
+                        print(f"    [WARN] Finnhub bond linking failed: {e}")
+                else:
+                    print(f"\n[13/16] Skipping Finnhub bond linking (no unlinked bonds)")
+
+            await engine.dispose()
+        else:
+            print(f"\n[13/16] Skipping Finnhub bond linking")
+
+        # Steps 14-15: Bond pricing (only with --full)
+        if full and company_id and finnhub_api_key:
+            # Step 14: Current bond pricing
+            print(f"\n[14/16] Fetching current bond pricing...")
+            try:
+                from app.services.bond_pricing import update_company_pricing
+                engine = create_async_engine(database_url, echo=False)
+                async_session = async_sessionmaker(engine, expire_on_commit=False)
+
+                async with async_session() as session:
+                    results = await update_company_pricing(session, ticker)
+                    print(f"    [OK] Priced {results.get('prices_found', 0)} bonds")
+
+                await engine.dispose()
+            except Exception as e:
+                print(f"    [WARN] Bond pricing failed: {e}")
+
+            # Step 15: Historical pricing backfill
+            print(f"\n[15/16] Backfilling historical pricing...")
+            try:
+                from app.services.pricing_history import backfill_company_history
+                engine = create_async_engine(database_url, echo=False)
+                async_session = async_sessionmaker(engine, expire_on_commit=False)
+
+                async with async_session() as session:
+                    stats = await backfill_company_history(session, company_id, days=365)
+                    print(f"    [OK] Backfilled {stats.get('prices_saved', 0)} historical prices")
+
+                await engine.dispose()
+            except Exception as e:
+                print(f"    [WARN] Historical pricing backfill failed: {e}")
+        else:
+            print(f"\n[14-15/16] Skipping bond pricing (use --full to enable)")
+
+        # Step 16: Completeness check
+        if company_id:
+            print(f"\n[16/16] Running completeness check...")
+            engine = create_async_engine(database_url, echo=False)
+            async_session = async_sessionmaker(engine, expire_on_commit=False)
+
+            async with async_session() as session:
+                completeness = await check_company_completeness(session, company_id, ticker)
+                print(f"    - Entities: {completeness['entities']}")
+                print(f"    - Debt instruments: {completeness['debt_instruments']}")
+                print(f"    - Document sections: {completeness['document_sections']}")
+                print(f"    - Document links: {completeness['document_links']}")
+                print(f"    - Financials: {completeness['financials_quarters']} quarters")
+                print(f"    - Guarantees: {completeness['guarantees']}")
+                print(f"    - Collateral: {completeness['collateral']}")
+                print(f"    - Metrics: {'Yes' if completeness['metrics'] else 'No'}")
+                print(f"    - Covenants: {completeness['covenants']}")
+                print(f"    - Bonds with pricing: {completeness['bonds_with_pricing']}")
+                print(f"    - Historical pricing: {completeness['historical_pricing_records']}")
+
+                if completeness['issues']:
+                    print(f"    - Issues: {', '.join(completeness['issues'])}")
+                else:
+                    print(f"    - Status: COMPLETE")
 
             await engine.dispose()
     else:
-        print(f"\n[3-11] Skipping database operations (--save-db not specified)")
+        print(f"\n[3-16] Skipping database operations (--save-db not specified)")
 
     # Final summary
     print(f"\n{'='*70}")
@@ -708,6 +869,137 @@ async def run_iterative_extraction(
         print(f"  Duration: {result.total_duration:.1f}s")
 
     return result
+
+
+# =============================================================================
+# COMPLETENESS CHECK
+# =============================================================================
+
+async def check_company_completeness(session, company_id, ticker: str) -> dict:
+    """Check data completeness for a company and return status dict."""
+    from sqlalchemy import text
+
+    checks = {}
+    issues = []
+
+    # 1. Entities
+    result = await session.execute(
+        text("SELECT COUNT(*) FROM entities WHERE company_id = :id"),
+        {"id": company_id}
+    )
+    checks['entities'] = result.scalar()
+    if checks['entities'] == 0:
+        issues.append('no_entities')
+
+    # 2. Debt instruments
+    result = await session.execute(
+        text("""
+            SELECT COUNT(*) FROM debt_instruments di
+            JOIN entities e ON di.issuer_id = e.id
+            WHERE e.company_id = :id AND di.is_active = true
+        """),
+        {"id": company_id}
+    )
+    checks['debt_instruments'] = result.scalar()
+
+    # 3. Document sections
+    result = await session.execute(
+        text("SELECT COUNT(*) FROM document_sections WHERE company_id = :id"),
+        {"id": company_id}
+    )
+    checks['document_sections'] = result.scalar()
+    if checks['document_sections'] == 0:
+        issues.append('no_documents')
+
+    # 4. Document links
+    result = await session.execute(
+        text("""
+            SELECT COUNT(*) FROM debt_instrument_documents did
+            JOIN debt_instruments di ON did.debt_instrument_id = di.id
+            JOIN entities e ON di.issuer_id = e.id
+            WHERE e.company_id = :id
+        """),
+        {"id": company_id}
+    )
+    checks['document_links'] = result.scalar()
+
+    # 5. Financials
+    result = await session.execute(
+        text("SELECT COUNT(*) FROM company_financials WHERE company_id = :id"),
+        {"id": company_id}
+    )
+    checks['financials_quarters'] = result.scalar()
+    if checks['financials_quarters'] < 4:
+        issues.append('incomplete_financials')
+
+    # 6. Guarantees
+    result = await session.execute(
+        text("""
+            SELECT COUNT(*) FROM guarantees g
+            JOIN debt_instruments di ON g.debt_instrument_id = di.id
+            JOIN entities e ON di.issuer_id = e.id
+            WHERE e.company_id = :id
+        """),
+        {"id": company_id}
+    )
+    checks['guarantees'] = result.scalar()
+
+    # 7. Collateral
+    result = await session.execute(
+        text("""
+            SELECT COUNT(*) FROM collateral col
+            JOIN debt_instruments di ON col.debt_instrument_id = di.id
+            JOIN entities e ON di.issuer_id = e.id
+            WHERE e.company_id = :id
+        """),
+        {"id": company_id}
+    )
+    checks['collateral'] = result.scalar()
+
+    # 8. Metrics
+    result = await session.execute(
+        text("SELECT COUNT(*) FROM company_metrics WHERE company_id = :id"),
+        {"id": company_id}
+    )
+    checks['metrics'] = result.scalar() > 0
+    if not checks['metrics']:
+        issues.append('no_metrics')
+
+    # 9. Covenants
+    result = await session.execute(
+        text("SELECT COUNT(*) FROM covenants WHERE company_id = :id"),
+        {"id": company_id}
+    )
+    checks['covenants'] = result.scalar()
+
+    # 10. Bond pricing
+    result = await session.execute(
+        text("""
+            SELECT COUNT(*) FROM bond_pricing bp
+            JOIN debt_instruments di ON bp.debt_instrument_id = di.id
+            JOIN entities e ON di.issuer_id = e.id
+            WHERE e.company_id = :id
+        """),
+        {"id": company_id}
+    )
+    checks['bonds_with_pricing'] = result.scalar()
+
+    # 11. Historical pricing
+    result = await session.execute(
+        text("""
+            SELECT COUNT(*) FROM bond_pricing_history bph
+            JOIN debt_instruments di ON bph.debt_instrument_id = di.id
+            JOIN entities e ON di.issuer_id = e.id
+            WHERE e.company_id = :id
+        """),
+        {"id": company_id}
+    )
+    checks['historical_pricing_records'] = result.scalar()
+    if checks['historical_pricing_records'] == 0 and checks['bonds_with_pricing'] > 0:
+        issues.append('no_historical_pricing')
+
+    checks['issues'] = issues
+    return checks
 
 
 async def run_batch_extraction(
@@ -876,6 +1168,8 @@ def main():
                        help="Start index for parallel batching (0-based)")
     parser.add_argument("--end-index", type=int, default=0,
                        help="End index for parallel batching (exclusive, 0=all)")
+    parser.add_argument("--full", action="store_true",
+                       help="Run ALL steps including Finnhub discovery and pricing (slow, ~10 min)")
 
     args = parser.parse_args()
 
@@ -922,6 +1216,10 @@ def main():
             )
         )
     else:
+        finnhub_api_key = os.getenv("FINNHUB_API_KEY")
+        if args.full and not finnhub_api_key:
+            print("Warning: --full specified but FINNHUB_API_KEY not set. Steps 12-15 will be skipped.")
+
         asyncio.run(
             run_iterative_extraction(
                 ticker=args.ticker,
@@ -938,6 +1236,8 @@ def main():
                 skip_enrichment=args.skip_enrichment,
                 core_only=args.core_only,
                 force=args.force,
+                full=args.full,
+                finnhub_api_key=finnhub_api_key,
             )
         )
 
