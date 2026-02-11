@@ -308,6 +308,38 @@ All require `X-API-Key` header.
 5. **Robust JSON parsing**: `parse_json_robust()` handles LLM output issues
 6. **Estimated data must be flagged**: When data cannot be extracted from source documents after repeated attempts and must be estimated/inferred, it MUST be clearly marked as estimated. Users should always know when they're seeing inferred data vs. extracted data. Example: `issue_date_estimated: true` indicates the date was inferred from maturity date and typical bond tenors, not extracted from SEC filings.
 7. **ALWAYS detect scale from source document**: SEC filings state their scale explicitly (e.g., "in millions", "in thousands", "$000"). NEVER assume scale - always extract it from the filing header. The `detect_filing_scale()` function in `financial_extraction.py` handles this. **Critical lesson**: When fixing apparent scale errors, ALWAYS verify against the source SEC filing first. Do not blindly multiply/divide - the extraction may be correct and the comparison data may be stale or from a different source.
+8. **Comprehensive debt instrument taxonomy**: Extract ALL types of corporate debt, not just bonds. See table below.
+
+### Debt Instrument Types
+
+The extraction uses a canonical taxonomy with normalization from 50+ LLM output variants:
+
+| Type | Description | Examples |
+|------|-------------|----------|
+| `senior_notes` | Investment-grade or high-yield bonds | 5.75% Senior Notes due 2029 |
+| `senior_secured_notes` | Secured bonds with collateral | 8.5% Senior Secured Notes due 2028 |
+| `subordinated_notes` | Junior/subordinated bonds | 6.25% Subordinated Notes due 2030 |
+| `convertible_notes` | Bonds convertible to equity | 6.50% Convertible Senior Notes |
+| `term_loan` | Bank term loans (A, B, or generic) | 2023 Term Loan Facility |
+| `revolver` | Revolving credit facilities | 2023 Revolving Credit Facility |
+| `abl` | Asset-based lending facilities | ABL Facility |
+| `commercial_paper` | Short-term unsecured notes | Commercial Paper Program |
+| `equipment_trust` | EETCs, equipment financing | Enhanced Equipment Trust Certificates |
+| `government_loan` | PSP notes, government-backed loans | PSP1 Promissory Note |
+| `finance_lease` | Capital/finance lease obligations | Finance Lease Obligations |
+| `mortgage` | Real estate secured debt | Mortgage Notes |
+| `bond` | Generic bonds (municipal, revenue, etc.) | Special Facility Revenue Bonds |
+| `debenture` | Unsecured debentures | Debentures due 2035 |
+| `preferred_stock` | Trust preferred, preferred securities | Trust Preferred Securities |
+| `other` | Catch-all for rare types | Structured liabilities, repos |
+
+**Commonly missed types** (now explicitly prompted):
+- Term Loans and Revolvers (bank debt, not capital markets)
+- Equipment Trust Certificates (aircraft/equipment financing)
+- Government/PSP Loans (CARES Act, Payroll Support Program)
+- Special Facility Revenue Bonds (airport, industrial revenue bonds)
+
+The validator in `extraction.py` normalizes 50+ variants (e.g., `eetc` → `equipment_trust`, `term_loan_b` → `term_loan`).
 
 ## Adding a New Company
 
@@ -347,7 +379,40 @@ This single command runs all 11 steps:
 --all              # Process all companies in database
 --resume           # Resume batch from last processed company
 --limit N          # Limit batch to N companies
+--step STEP        # Run only a specific step (see below)
 ```
+
+**Modular Execution with `--step`:**
+
+Run individual extraction steps for existing companies without the full pipeline:
+
+```bash
+# Re-extract financials only
+python scripts/extract_iterative.py --ticker AAL --step financials
+
+# Refresh cache after manual DB fixes
+python scripts/extract_iterative.py --ticker AAL --step cache
+
+# Re-run guarantees extraction
+python scripts/extract_iterative.py --ticker AAL --step guarantees
+
+# Update metrics after data changes
+python scripts/extract_iterative.py --ticker AAL --step metrics
+```
+
+| Step | Purpose | Requires |
+|------|---------|----------|
+| `core` | Re-run entity and debt extraction | GEMINI_API_KEY, CIK |
+| `financials` | Extract 8 quarters of financial data | GEMINI_API_KEY, CIK |
+| `hierarchy` | Extract ownership from Exhibit 21 | CIK |
+| `guarantees` | Extract guarantee relationships | CIK |
+| `collateral` | Extract collateral data | CIK |
+| `documents` | Link documents to instruments | - |
+| `covenants` | Extract covenant data | CIK |
+| `metrics` | Recompute derived metrics | - |
+| `finnhub` | Run Finnhub bond discovery | FINNHUB_API_KEY |
+| `pricing` | Update bond pricing | FINNHUB_API_KEY |
+| `cache` | Refresh company cache | - |
 
 **Idempotent Extraction:**
 
