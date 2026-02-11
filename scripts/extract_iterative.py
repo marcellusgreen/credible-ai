@@ -1184,7 +1184,7 @@ async def run_single_step(
             print(f"  Refreshing company cache...")
             from app.services.extraction import refresh_company_cache
             async with async_session() as session:
-                await refresh_company_cache(session, company_id)
+                await refresh_company_cache(session, company_id, ticker)
                 print(f"    Cache refreshed")
                 success = True
 
