@@ -161,7 +161,7 @@ Return JSON:
     {{
       "name": "Instrument name",
       "issuer_name": "Issuer entity name",
-      "instrument_type": "term_loan|revolver|senior_notes|commercial_paper|etc",
+      "instrument_type": "senior_notes|senior_secured_notes|term_loan|revolver|equipment_trust|government_loan|bond|etc",
       "seniority": "senior_secured|senior_unsecured|subordinated",
       "security_type": "first_lien|second_lien|unsecured",
       "principal": 100000000000,
@@ -252,7 +252,7 @@ FIX EVERYTHING in one response. Return JSON:
     {{
       "name": "Debt instrument name",
       "issuer_name": "Issuer entity name",
-      "instrument_type": "term_loan|revolver|senior_notes|subordinated_notes|commercial_paper",
+      "instrument_type": "senior_notes|senior_secured_notes|term_loan|revolver|equipment_trust|government_loan|bond|etc",
       "seniority": "senior_secured|senior_unsecured|subordinated",
       "security_type": "first_lien|second_lien|unsecured",
       "principal": 100000000000,

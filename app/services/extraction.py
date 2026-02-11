@@ -65,12 +65,28 @@ SUBSIDIARIES - Search for these patterns:
 4. Also check: "Significant Subsidiaries", "List of Subsidiaries", "Consolidated Subsidiaries"
 
 DEBT INSTRUMENTS - Search for these patterns:
-1. "Long-term debt" or "Long-Term Debt" table in Notes to Financial Statements
-2. "Debt and Credit Facilities" or "Notes Payable" sections
+1. "Long-term debt" or "Long-Term Debt" table in Notes to Financial Statements - THIS IS THE PRIMARY SOURCE
+2. "Debt and Credit Facilities" or "Borrowings" or "Notes Payable" sections
 3. "Liquidity and Capital Resources" in MD&A
 4. Tables showing: Principal Amount, Interest Rate, Maturity Date
 5. 8-K filings for new credit agreements (Exhibit 10.1)
-6. Look for: "Term Loan", "Revolving Credit", "Senior Notes", "Commercial Paper"
+6. Debt maturity schedule tables (often show ALL outstanding obligations)
+
+EXTRACT ALL TYPES OF DEBT - not just bonds. Look for:
+- Senior Notes / Bonds: Investment-grade or high-yield notes issued in capital markets
+- Secured Notes: Notes with collateral (first lien, second lien)
+- Subordinated Notes: Junior debt, mezzanine
+- Convertible Notes: Bonds convertible to equity
+- Term Loans: Bank term loans (Term Loan A, Term Loan B, etc.) - COMMONLY MISSED
+- Revolving Credit Facilities: Undrawn or partially drawn credit lines - track commitment AND outstanding
+- ABL Facilities: Asset-based lending secured by receivables/inventory
+- Commercial Paper: Short-term unsecured notes
+- Equipment Trust Certificates (EETCs): Aircraft, equipment financing - COMMONLY MISSED
+- Equipment Loans: Secured by machinery, vehicles, equipment
+- Government/PSP Loans: CARES Act, Payroll Support Program notes - COMMONLY MISSED
+- Finance Leases: Capital lease obligations
+- Mortgage Debt: Real estate secured loans
+- Special Facility Revenue Bonds: Airport, industrial revenue bonds - COMMONLY MISSED
 
 OUTSTANDING AMOUNTS - Critical for debt:
 1. Look for "carrying value", "principal amount", "aggregate principal", "outstanding balance"
@@ -115,8 +131,8 @@ Return a valid JSON object:
   ],
   "debt_instruments": [
     {{
-      "name": "Descriptive name (e.g., '3.75% Senior Notes due 2027' or 'Term Loan B')",
-      "instrument_type": "term_loan_b|term_loan_a|revolver|senior_notes|senior_secured_notes|subordinated_notes|abl|convertible_notes|commercial_paper",
+      "name": "Descriptive name (e.g., '3.75% Senior Notes due 2027' or '2023 Term Loan Facility')",
+      "instrument_type": "senior_notes|senior_secured_notes|subordinated_notes|convertible_notes|term_loan|revolver|abl|commercial_paper|equipment_trust|government_loan|finance_lease|mortgage|bond|debenture|other",
       "seniority": "senior_secured|senior_unsecured|subordinated|junior_subordinated",
       "security_type": "first_lien|second_lien|unsecured",
       "issuer_name": "Name of issuing entity (must match an entity name exactly)",
@@ -124,10 +140,10 @@ Return a valid JSON object:
       "principal": 150000000000,
       "outstanding": 150000000000,
       "currency": "USD",
-      "rate_type": "fixed|floating",
+      "rate_type": "fixed|floating|mixed",
       "interest_rate": 375,
       "spread_bps": null,
-      "benchmark": null,
+      "benchmark": "SOFR|LIBOR|Prime|Treasury",
       "floor_bps": null,
       "issue_date": "2020-05-15",
       "maturity_date": "2027-05-15",
@@ -311,12 +327,154 @@ class ExtractedDebtInstrument(BaseModel):
     @field_validator("instrument_type")
     @classmethod
     def validate_instrument_type(cls, v: Optional[str]) -> str:
+        """Normalize instrument types to a canonical taxonomy.
+
+        Canonical types (comprehensive coverage of all corporate debt):
+        - senior_notes: Investment-grade or high-yield bonds
+        - senior_secured_notes: Secured bonds with collateral
+        - subordinated_notes: Junior/subordinated bonds
+        - convertible_notes: Bonds convertible to equity
+        - term_loan: Bank term loans (A, B, or generic)
+        - revolver: Revolving credit facilities
+        - abl: Asset-based lending facilities
+        - commercial_paper: Short-term unsecured notes
+        - equipment_trust: EETCs, equipment financing
+        - government_loan: PSP notes, government-backed loans
+        - finance_lease: Capital/finance lease obligations
+        - mortgage: Real estate secured debt
+        - bond: Generic bonds (municipal, revenue, etc.)
+        - debenture: Unsecured debentures
+        - preferred_stock: Trust preferred, preferred securities
+        - other: Catch-all for rare types
+        """
         if v is None:
             return "senior_notes"
-        valid = {"senior_notes", "senior_secured_notes", "subordinated_notes", "term_loan", "revolver", "bond", "debenture", "other"}
-        if v.lower() not in valid:
-            return "senior_notes"
-        return v.lower()
+
+        v_lower = v.lower().strip()
+
+        # Canonical types - accept as-is
+        canonical = {
+            "senior_notes", "senior_secured_notes", "subordinated_notes",
+            "convertible_notes", "term_loan", "revolver", "abl",
+            "commercial_paper", "equipment_trust", "government_loan",
+            "finance_lease", "mortgage", "bond", "debenture",
+            "preferred_stock", "other"
+        }
+        if v_lower in canonical:
+            return v_lower
+
+        # Normalization mappings: variant -> canonical
+        mappings = {
+            # Notes variants -> senior_notes
+            "notes": "senior_notes",
+            "note": "senior_notes",
+            "senior notes": "senior_notes",
+            "senior_unsecured_notes": "senior_notes",
+            "medium_term_notes": "senior_notes",
+            "mtn_program": "senior_notes",
+            "structured_notes": "senior_notes",
+
+            # Secured notes variants
+            "secured_notes": "senior_secured_notes",
+            "first_lien_notes": "senior_secured_notes",
+            "first_lien": "senior_secured_notes",
+            "second_lien_notes": "senior_secured_notes",
+
+            # Subordinated variants
+            "junior_subordinated_notes": "subordinated_notes",
+            "junior_notes": "subordinated_notes",
+            "mezzanine": "subordinated_notes",
+
+            # Convertible variants
+            "convertible_bonds": "convertible_notes",
+            "convertibles": "convertible_notes",
+
+            # Term loan variants -> term_loan
+            "term_loan_a": "term_loan",
+            "term_loan_b": "term_loan",
+            "term_note": "term_loan",
+            "bank_loan": "term_loan",
+            "secured_loan": "term_loan",
+            "bridge_loan": "term_loan",
+            "credit_facility": "term_loan",
+            "long_term_debt": "term_loan",
+
+            # Revolver variants -> revolver
+            "revolving_credit_facility": "revolver",
+            "revolving credit facility": "revolver",
+            "rcf": "revolver",
+            "credit_line": "revolver",
+            "line_of_credit": "revolver",
+
+            # ABL variants
+            "asset_based_loan": "abl",
+            "receivables_facility": "abl",
+            "factoring": "abl",
+
+            # Commercial paper variants
+            "commercial_paper_program": "commercial_paper",
+            "cp": "commercial_paper",
+
+            # Equipment financing -> equipment_trust
+            "eetc": "equipment_trust",
+            "equipment_notes": "equipment_trust",
+            "equipment_loan": "equipment_trust",
+            "equipment_financing": "equipment_trust",
+
+            # Government/PSP loans
+            "psp_loan": "government_loan",
+            "government_backed": "government_loan",
+            "sba_loan": "government_loan",
+
+            # Lease obligations
+            "capital_lease": "finance_lease",
+            "operating_lease": "finance_lease",
+            "lease_obligation": "finance_lease",
+
+            # Real estate
+            "mortgage_loan": "mortgage",
+            "real_estate_loan": "mortgage",
+            "cmbs": "mortgage",
+
+            # Bond variants -> bond
+            "bonds": "bond",
+            "municipal_bond": "bond",
+            "revenue_bond": "bond",
+            "industrial_revenue_bond": "bond",
+            "special_facility_bond": "bond",
+            "capital_supplementary_bonds": "bond",
+
+            # Debenture variants
+            "debentures": "debenture",
+
+            # Preferred/hybrid
+            "trust_preferred": "preferred_stock",
+            "preferred_securities": "preferred_stock",
+            "hybrid_securities": "preferred_stock",
+
+            # Other/specialized
+            "repo": "other",
+            "repurchase_agreement": "other",
+            "structured_liabilities": "other",
+            "asset_backed_securities": "other",
+            "abs": "other",
+            "certificates_of_deposit": "other",
+            "advances": "other",
+            "notes_payable": "other",
+            "senior_secured": "senior_secured_notes",
+        }
+
+        # Check mappings
+        if v_lower in mappings:
+            return mappings[v_lower]
+
+        # Try with underscores replaced by spaces
+        v_normalized = v_lower.replace("_", " ")
+        if v_normalized in mappings:
+            return mappings[v_normalized]
+
+        # Default fallback
+        return "senior_notes"
 
     @field_validator("seniority")
     @classmethod
