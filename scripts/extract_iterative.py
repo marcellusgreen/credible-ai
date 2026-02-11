@@ -59,6 +59,15 @@ Usage:
     # Dry run (show what would be done)
     python scripts/extract_iterative.py --ticker AAPL --cik 0000320193
 
+    # Run a SINGLE STEP for an existing company (modular execution)
+    python scripts/extract_iterative.py --ticker AAL --step financials
+    python scripts/extract_iterative.py --ticker AAL --step guarantees
+    python scripts/extract_iterative.py --ticker AAL --step cache
+    python scripts/extract_iterative.py --ticker AAL --step metrics
+
+    # Valid steps: core, financials, hierarchy, guarantees, collateral,
+    #              documents, covenants, metrics, finnhub, pricing, cache
+
 Environment variables:
     GEMINI_API_KEY - Required for extraction
     ANTHROPIC_API_KEY - Optional, for Claude escalation
@@ -1012,6 +1021,210 @@ async def check_company_completeness(session, company_id, ticker: str) -> dict:
     return checks
 
 
+async def run_single_step(
+    ticker: str,
+    step: str,
+    database_url: str,
+    gemini_api_key: str = None,
+    anthropic_api_key: str = None,
+    sec_api_key: str = None,
+    cik: str = None,
+    finnhub_api_key: str = None,
+) -> bool:
+    """
+    Run a single extraction step for an existing company.
+
+    This allows re-running specific steps without the full pipeline.
+
+    Args:
+        ticker: Stock ticker
+        step: Step to run (core, financials, hierarchy, guarantees, collateral,
+              documents, covenants, metrics, finnhub, pricing, cache)
+        database_url: Database connection string
+        gemini_api_key: Gemini API key (required for some steps)
+        anthropic_api_key: Anthropic API key (optional)
+        sec_api_key: SEC-API.io key (optional)
+        cik: SEC CIK number (required for steps that need filings)
+        finnhub_api_key: Finnhub API key (required for finnhub/pricing steps)
+
+    Returns:
+        True if successful, False otherwise
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlalchemy import select, text
+    from app.models import Company
+    from uuid import UUID
+
+    print(f"\n{'='*70}")
+    print(f"SINGLE STEP: {step.upper()} for {ticker}")
+    print(f"{'='*70}")
+
+    engine = create_async_engine(database_url, echo=False)
+    async_session = async_sessionmaker(engine, expire_on_commit=False)
+
+    # Get company from database
+    async with async_session() as session:
+        result = await session.execute(
+            select(Company).where(Company.ticker == ticker.upper())
+        )
+        company = result.scalar_one_or_none()
+        if not company:
+            print(f"Error: Company {ticker} not found in database")
+            await engine.dispose()
+            return False
+
+        company_id = company.id
+        if not cik:
+            cik = company.cik
+
+    # Download filings if needed for certain steps
+    filings = {}
+    filing_urls = {}
+    steps_needing_filings = {"core", "financials", "hierarchy", "guarantees", "collateral", "covenants"}
+    if step in steps_needing_filings:
+        if not cik:
+            print(f"Error: CIK required for step '{step}'. Use --cik or ensure company has CIK in database.")
+            await engine.dispose()
+            return False
+        print(f"  Downloading filings...")
+        filings, filing_urls = await download_filings(ticker, cik, sec_api_key)
+        if not filings:
+            print(f"Error: Could not download filings")
+            await engine.dispose()
+            return False
+
+    success = False
+
+    try:
+        if step == "core":
+            if not gemini_api_key:
+                print("Error: GEMINI_API_KEY required for core extraction")
+                return False
+
+            print(f"  Running core extraction...")
+            service = IterativeExtractionService(
+                gemini_api_key=gemini_api_key,
+                anthropic_api_key=anthropic_api_key,
+                sec_api_key=sec_api_key,
+            )
+            result = await service.extract_with_feedback(ticker=ticker, cik=cik, filings=filings)
+            print(f"    Extracted: {len(result.extraction.get('entities', []))} entities, "
+                  f"{len(result.extraction.get('debt_instruments', []))} debt")
+
+            # Save to DB
+            from scripts.extract_tiered import convert_to_extraction_result
+            async with async_session() as session:
+                extraction_result = convert_to_extraction_result(result.extraction, ticker)
+                _, merge_stats = await merge_extraction_to_db(session, extraction_result, ticker, cik=cik)
+                print(f"    Merged: +{merge_stats['entities_added']} entities, +{merge_stats['debt_added']} debt")
+            success = True
+
+        elif step == "financials":
+            print(f"  Extracting financials (8 quarters)...")
+            from app.services.financial_extraction import extract_ttm_financials, save_financials_to_db
+
+            async with async_session() as session:
+                financials = await extract_ttm_financials(filings, gemini_api_key, ticker)
+                if financials:
+                    count = await save_financials_to_db(session, company_id, financials)
+                    print(f"    Saved {count} quarters of financial data")
+                    success = True
+                else:
+                    print(f"    No financials extracted")
+
+        elif step == "hierarchy":
+            print(f"  Extracting ownership hierarchy...")
+            async with async_session() as session:
+                exhibit_21 = filings.get('exhibit_21', '')
+                if not exhibit_21:
+                    print(f"    No Exhibit 21 available")
+                else:
+                    links = await extract_ownership_hierarchy(session, company_id, exhibit_21)
+                    print(f"    Created {links} ownership links")
+                    success = True
+
+        elif step == "guarantees":
+            print(f"  Extracting guarantees...")
+            async with async_session() as session:
+                count = await extract_guarantees(session, company_id, filings)
+                print(f"    Extracted {count} guarantees")
+                success = True
+
+        elif step == "collateral":
+            print(f"  Extracting collateral...")
+            async with async_session() as session:
+                count = await extract_collateral(session, company_id, filings)
+                print(f"    Extracted {count} collateral records")
+                success = True
+
+        elif step == "documents":
+            print(f"  Linking documents to instruments...")
+            async with async_session() as session:
+                count = await link_documents_to_instruments(session, company_id, ticker, use_llm=False)
+                print(f"    Created {count} document links")
+                success = True
+
+        elif step == "covenants":
+            print(f"  Extracting covenants...")
+            async with async_session() as session:
+                count = await extract_covenants(session, company_id, filings)
+                print(f"    Extracted {count} covenants")
+                success = True
+
+        elif step == "metrics":
+            print(f"  Recomputing metrics...")
+            async with async_session() as session:
+                success = await recompute_metrics(session, company_id, ticker)
+                if success:
+                    print(f"    Metrics updated")
+                else:
+                    print(f"    Metrics computation failed")
+
+        elif step == "cache":
+            print(f"  Refreshing company cache...")
+            from app.services.extraction import refresh_company_cache
+            async with async_session() as session:
+                await refresh_company_cache(session, company_id)
+                print(f"    Cache refreshed")
+                success = True
+
+        elif step == "finnhub":
+            if not finnhub_api_key:
+                print("Error: FINNHUB_API_KEY required for Finnhub step")
+                return False
+
+            print(f"  Running Finnhub bond discovery...")
+            from scripts.finnhub_bonds import discover_and_link_bonds
+            async with async_session() as session:
+                discovered = await discover_and_link_bonds(session, ticker, finnhub_api_key)
+                print(f"    Discovered {discovered} bonds from Finnhub")
+                success = True
+
+        elif step == "pricing":
+            if not finnhub_api_key:
+                print("Error: FINNHUB_API_KEY required for pricing step")
+                return False
+
+            print(f"  Updating bond pricing...")
+            from scripts.finnhub_bonds import update_bond_pricing
+            async with async_session() as session:
+                updated = await update_bond_pricing(session, ticker, finnhub_api_key)
+                print(f"    Updated pricing for {updated} bonds")
+                success = True
+
+        else:
+            print(f"Error: Unknown step '{step}'")
+
+    except Exception as e:
+        print(f"  Error: {e}")
+        import traceback
+        traceback.print_exc()
+        success = False
+
+    await engine.dispose()
+    return success
+
+
 async def run_batch_extraction(
     database_url: str,
     gemini_api_key: str,
@@ -1180,6 +1393,9 @@ def main():
                        help="End index for parallel batching (exclusive, 0=all)")
     parser.add_argument("--full", action="store_true",
                        help="Run ALL steps including Finnhub discovery and pricing (slow, ~10 min)")
+    parser.add_argument("--step", type=str, default=None,
+                       help="Run only a specific step. Valid steps: core, financials, hierarchy, "
+                            "guarantees, collateral, documents, covenants, metrics, finnhub, pricing, cache")
 
     args = parser.parse_args()
 
@@ -1188,24 +1404,60 @@ def main():
         print("Error: Must specify --ticker or --all")
         sys.exit(1)
 
-    if args.ticker and not args.cik:
-        print("Error: --cik is required when using --ticker")
+    if args.ticker and not args.cik and not args.step:
+        print("Error: --cik is required when using --ticker (unless using --step with existing company)")
+        # Allow --step without --cik for existing companies
+        pass
+
+    # Validate --step argument
+    valid_steps = {"core", "financials", "hierarchy", "guarantees", "collateral",
+                   "documents", "covenants", "metrics", "finnhub", "pricing", "cache"}
+    if args.step and args.step not in valid_steps:
+        print(f"Error: Invalid step '{args.step}'. Valid steps: {', '.join(sorted(valid_steps))}")
         sys.exit(1)
 
     # Load environment
     load_dotenv()
 
     gemini_api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+    sec_api_key = os.getenv("SEC_API_KEY")
+    database_url = os.getenv("DATABASE_URL")
+    finnhub_api_key = os.getenv("FINNHUB_API_KEY")
+
+    # Single step mode
+    if args.step:
+        if not database_url:
+            print("Error: DATABASE_URL required for --step mode")
+            sys.exit(1)
+
+        # Only require gemini key for steps that need it
+        steps_needing_gemini = {"core", "financials"}
+        if args.step in steps_needing_gemini and not gemini_api_key:
+            print(f"Error: GEMINI_API_KEY required for step '{args.step}'")
+            sys.exit(1)
+
+        success = asyncio.run(
+            run_single_step(
+                ticker=args.ticker,
+                step=args.step,
+                database_url=database_url,
+                gemini_api_key=gemini_api_key,
+                anthropic_api_key=anthropic_api_key,
+                sec_api_key=sec_api_key,
+                cik=args.cik,
+                finnhub_api_key=finnhub_api_key,
+            )
+        )
+        sys.exit(0 if success else 1)
+
+    # Full pipeline requires gemini key
     if not gemini_api_key:
         print("Error: GEMINI_API_KEY required")
         sys.exit(1)
 
-    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
     if not anthropic_api_key:
         print("Warning: ANTHROPIC_API_KEY not set, Claude escalation disabled")
-
-    sec_api_key = os.getenv("SEC_API_KEY")
-    database_url = os.getenv("DATABASE_URL")
 
     if args.all:
         if not database_url:
@@ -1226,7 +1478,6 @@ def main():
             )
         )
     else:
-        finnhub_api_key = os.getenv("FINNHUB_API_KEY")
         if args.full and not finnhub_api_key:
             print("Warning: --full specified but FINNHUB_API_KEY not set. Steps 12-15 will be skipped.")
 
