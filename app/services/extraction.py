@@ -34,7 +34,7 @@ from uuid import UUID, uuid4
 
 import anthropic
 import httpx
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -274,6 +274,39 @@ class ExtractedDebtInstrument(BaseModel):
     maturity_date: Optional[str] = None
     guarantor_names: list[str] = Field(default_factory=list)
     attributes: dict = Field(default_factory=dict)
+
+    @model_validator(mode='before')
+    @classmethod
+    def normalize_field_names(cls, data: Any) -> Any:
+        """Normalize field names from LLM output variants to expected names."""
+        if not isinstance(data, dict):
+            return data
+
+        # Field name mappings: LLM variant -> expected name
+        field_mappings = {
+            # Debt instrument fields
+            'instrument_name': 'name',
+            'principal_amount': 'principal',
+            'outstanding_amount': 'outstanding',
+            'interest_rate_bps': 'interest_rate',
+            'interest_rate_type': 'rate_type',
+            # Guarantor field variants
+            'guarantors': 'guarantor_names',
+        }
+
+        normalized = {}
+        for key, value in data.items():
+            # Check if this key should be mapped
+            new_key = field_mappings.get(key, key)
+
+            # Handle guarantors list format (list of dicts with guarantor_name)
+            if new_key == 'guarantor_names' and isinstance(value, list):
+                if value and isinstance(value[0], dict) and 'guarantor_name' in value[0]:
+                    value = [g.get('guarantor_name') for g in value if g.get('guarantor_name')]
+
+            normalized[new_key] = value
+
+        return normalized
 
     @field_validator("instrument_type")
     @classmethod
@@ -1321,6 +1354,16 @@ async def refresh_company_cache(
     )
     debt_instruments = result.scalars().all()
 
+    # Get latest financials for total_debt fallback
+    result = await db.execute(
+        select(CompanyFinancials)
+        .where(CompanyFinancials.company_id == company_id)
+        .order_by(CompanyFinancials.fiscal_year.desc(), CompanyFinancials.fiscal_quarter.desc())
+        .limit(1)
+    )
+    latest_financials = result.scalar_one_or_none()
+    financials_total_debt = latest_financials.total_debt if latest_financials else None
+
     # Build entity lookup
     entity_by_id = {e.id: e for e in entities}
 
@@ -1334,6 +1377,27 @@ async def refresh_company_cache(
         guarantees_by_debt[debt.id] = [g.guarantor_id for g in guarantees]
 
     # ==========================================================================
+    # Compute total_debt with fallback to financials
+    # ==========================================================================
+    instruments_total_debt = sum(d.outstanding or 0 for d in debt_instruments)
+
+    # Use financials total_debt if instruments sum is missing or significantly different
+    # "Significantly different" = instruments < 50% of financials (meaning we're missing a lot)
+    if financials_total_debt and financials_total_debt > 0:
+        if instruments_total_debt == 0:
+            # No instrument data - use financials
+            total_debt = financials_total_debt
+        elif instruments_total_debt < financials_total_debt * 0.5:
+            # Instruments capture less than 50% of total - use financials
+            total_debt = financials_total_debt
+        else:
+            # Instruments are in the ballpark - use instrument sum for accuracy
+            total_debt = instruments_total_debt
+    else:
+        # No financials - use instruments
+        total_debt = instruments_total_debt
+
+    # ==========================================================================
     # Build response_company
     # ==========================================================================
     response_company = {
@@ -1343,7 +1407,7 @@ async def refresh_company_cache(
         "cik": company.cik,
         "entity_count": len(entities),
         "debt_instrument_count": len(debt_instruments),
-        "total_debt": sum(d.outstanding or 0 for d in debt_instruments),
+        "total_debt": total_debt,
         "as_of_date": filing_date.isoformat() if filing_date else None,
     }
 
@@ -1469,7 +1533,7 @@ async def refresh_company_cache(
             "guarantor_count": sum(1 for e in entities if e.is_guarantor),
             "restricted_count": sum(1 for e in entities if e.is_restricted),
             "unrestricted_count": sum(1 for e in entities if e.is_unrestricted),
-            "total_debt": sum(d.outstanding or 0 for d in debt_instruments),
+            "total_debt": total_debt,
         },
         "ownership_coverage": {
             "known_relationships": len(entities_with_known_parent),
@@ -1527,7 +1591,7 @@ async def refresh_company_cache(
     response_debt = {
         "company": {"ticker": ticker, "name": company.name},
         "summary": {
-            "total_debt": sum(d.outstanding or 0 for d in debt_instruments),
+            "total_debt": total_debt,
             "debt_by_seniority": debt_by_seniority,
             "instrument_count": len(debt_instruments),
             "nearest_maturity": min(
@@ -1564,7 +1628,7 @@ async def refresh_company_cache(
         cache.etag = etag
         cache.computed_at = datetime.utcnow()
         cache.source_filing_date = filing_date
-        cache.total_debt = sum(d.outstanding or 0 for d in debt_instruments)
+        cache.total_debt = total_debt
         cache.entity_count = len(entities)
         cache.sector = company.sector
     else:
@@ -1576,7 +1640,7 @@ async def refresh_company_cache(
             response_debt=response_debt,
             etag=etag,
             source_filing_date=filing_date,
-            total_debt=sum(d.outstanding or 0 for d in debt_instruments),
+            total_debt=total_debt,
             entity_count=len(entities),
             sector=company.sector,
         )
@@ -1585,7 +1649,7 @@ async def refresh_company_cache(
     # ==========================================================================
     # Save to company_metrics
     # ==========================================================================
-    total_debt = sum(d.outstanding or 0 for d in debt_instruments)
+    # total_debt already computed above with financials fallback
     secured_debt = sum(d.outstanding or 0 for d in debt_instruments if d.seniority == "senior_secured")
     unsecured_debt = total_debt - secured_debt
 
