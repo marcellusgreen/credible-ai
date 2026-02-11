@@ -48,6 +48,8 @@ PRIMITIVE_MAP = {
     "entities": "test_entities_traverse.py",
     "documents": "test_documents_search.py",
     "workflows": "test_workflows.py",
+    "batch": "test_batch.py",
+    "changes": "test_changes.py",
 }
 
 

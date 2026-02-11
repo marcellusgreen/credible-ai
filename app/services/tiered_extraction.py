@@ -93,6 +93,8 @@ KNOWN_COMPLEX = {
     "GE", "UTX", "HON",  # Multi-tier holdco structures
     "DLTR", "DG",  # Retail with complex debt
     "RIG", "DO", "NE", "VAL",  # Offshore drilling with complex debt
+    "AAL", "DAL", "UAL", "LUV", "ALK", "JBLU", "SAVE",  # Airlines with EETCs, loyalty financing
+    "T", "VZ", "CHTR", "CMCSA", "TMUS",  # Telecom with complex capital structures
 }
 
 KNOWN_SIMPLE = {
@@ -314,6 +316,51 @@ CRITICAL REMINDERS:
 - EVERY company with public filings has some form of debt - find it!
 - If you see amounts like "$98.3 billion" in debt, that's 9830000000000 cents
 - For bonds/notes: Extract CUSIP (9 chars, e.g., "037833EP2") and ISIN (12 chars, e.g., "US037833EP27") if disclosed in the filing. These are often in debt footnotes or prospectuses. CUSIP can be derived from US ISIN by removing "US" prefix and last check digit.
+
+=== SECTOR-SPECIFIC EXTRACTION GUIDANCE ===
+
+AIRLINES (AAL, DAL, UAL, LUV, etc.):
+Airlines have unique debt structures. Extract ALL of these categories:
+1. **Loyalty Program Financing** (AAdvantage, SkyMiles, MileagePlus):
+   - Senior secured notes backed by loyalty program IP and revenues
+   - Term loan facilities secured by loyalty program
+   - Look for: "AAdvantage Financing", "Loyalty Co", "Miles purchase agreement"
+   - These are typically senior secured, first lien
+2. **Aircraft Financing**:
+   - EETCs (Enhanced Equipment Trust Certificates) - pass-through trusts
+   - Equipment notes secured by specific aircraft
+   - Aircraft-backed term loans and revolvers
+   - Look for: "EETC", "equipment trust", "pass-through trust", "aircraft collateral"
+3. **Slot/Route/Gate (SGR) Secured Debt**:
+   - Debt secured by airport slots, international routes, and gate leaseholds
+   - Look for: "SGR collateral", "slots and routes", "gate leasehold"
+4. **General Corporate Debt**:
+   - Unsecured senior notes (typically at holdco level)
+   - Term loan facilities (often at opco level)
+   - Revolving credit facilities
+5. **Government/CARES Act Financing** (if applicable):
+   - Treasury loans, payroll support loans
+   - Look for: "CARES Act", "Treasury loan", "PSP"
+
+For airlines, the MD&A section "Liquidity and Capital Resources" and "Note X - Debt" footnotes contain detailed breakdowns. Extract EACH instrument separately.
+
+OFFSHORE DRILLING / ENERGY (RIG, DO, VAL, NE):
+1. **Rig-specific financing**: Debt secured by individual drilling rigs
+2. **Senior secured credit facilities**: First-lien bank debt
+3. **High-yield notes**: Often unsecured at holdco level
+4. **Convertible notes**: Common in distressed situations
+
+TELECOM/CABLE (T, VZ, CHTR, CMCSA):
+1. **Operating company debt**: Debt at cable system level
+2. **Spectrum-backed financing**: Debt secured by spectrum licenses
+3. **Tower/infrastructure financing**: Debt at infrastructure subsidiaries
+4. **Convertible preferreds**: Hybrid securities
+
+REITs (real estate companies):
+1. **Mortgage debt**: Property-level secured debt
+2. **Credit facilities**: Corporate revolvers and term loans
+3. **Senior unsecured notes**: Typical REIT capital structure
+4. **Preferred equity**: Often has debt-like features
 
 Return ONLY the JSON object."""
 

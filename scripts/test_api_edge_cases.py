@@ -9,16 +9,20 @@ Usage:
     python scripts/test_api_edge_cases.py [--base-url URL]
 
 Tests performed:
-1. Empty/missing parameters
-2. Invalid tickers
-3. Invalid field names
-4. Large result sets
-5. Malformed JSON
-6. Non-existent identifiers
-7. SQL injection attempts
-8. Rate limiting behavior
+1. Health endpoints
+2. Empty/missing parameters
+3. Invalid tickers
+4. Invalid field names
+5. Large result sets
+6. Malformed JSON
+7. Non-existent identifiers
+8. SQL injection attempts
 9. Content negotiation (JSON/CSV)
 10. Error response format
+11. Batch endpoint edge cases
+12. Changes endpoint edge cases
+13. Business tier edge cases
+14. Webhook handler edge cases
 """
 
 import argparse
@@ -59,7 +63,7 @@ class APITester:
 
     async def test_health_endpoints(self, client: httpx.AsyncClient):
         """Test health check endpoints."""
-        print("\n[1/10] Testing health endpoints...")
+        print("\n[1/14] Testing health endpoints...")
 
         # /v1/ping
         resp = await client.get(f"{self.base_url}/v1/ping")
@@ -81,7 +85,7 @@ class APITester:
 
     async def test_empty_parameters(self, client: httpx.AsyncClient):
         """Test empty/missing parameters."""
-        print("\n[2/10] Testing empty/missing parameters...")
+        print("\n[2/14] Testing empty/missing parameters...")
 
         # Empty ticker filter should return all companies (or paginated subset)
         resp = await client.get(f"{self.base_url}/v1/companies", params={"ticker": ""})
@@ -113,7 +117,7 @@ class APITester:
 
     async def test_invalid_tickers(self, client: httpx.AsyncClient):
         """Test invalid ticker handling."""
-        print("\n[3/10] Testing invalid tickers...")
+        print("\n[3/14] Testing invalid tickers...")
 
         # Non-existent ticker
         resp = await client.get(f"{self.base_url}/v1/companies", params={"ticker": "XXXXX"})
@@ -145,7 +149,7 @@ class APITester:
 
     async def test_invalid_fields(self, client: httpx.AsyncClient):
         """Test invalid field name handling."""
-        print("\n[4/10] Testing invalid field names...")
+        print("\n[4/14] Testing invalid field names...")
 
         # Invalid field in fields parameter
         resp = await client.get(f"{self.base_url}/v1/companies", params={
@@ -173,7 +177,7 @@ class APITester:
 
     async def test_pagination(self, client: httpx.AsyncClient):
         """Test pagination and large result sets."""
-        print("\n[5/10] Testing pagination...")
+        print("\n[5/14] Testing pagination...")
 
         # Large limit - API caps at 100
         resp = await client.get(f"{self.base_url}/v1/bonds", params={"limit": 1000})
@@ -205,7 +209,7 @@ class APITester:
 
     async def test_malformed_json(self, client: httpx.AsyncClient):
         """Test malformed JSON handling."""
-        print("\n[6/10] Testing malformed JSON...")
+        print("\n[6/14] Testing malformed JSON...")
 
         # Malformed JSON to batch endpoint
         resp = await client.post(
@@ -247,7 +251,7 @@ class APITester:
 
     async def test_nonexistent_identifiers(self, client: httpx.AsyncClient):
         """Test non-existent identifier handling."""
-        print("\n[7/10] Testing non-existent identifiers...")
+        print("\n[7/14] Testing non-existent identifiers...")
 
         # Non-existent CUSIP - API does fuzzy matching, so it may return results
         # The important thing is it handles gracefully and returns 200
@@ -271,7 +275,7 @@ class APITester:
 
     async def test_sql_injection(self, client: httpx.AsyncClient):
         """Test SQL injection prevention."""
-        print("\n[8/10] Testing SQL injection prevention...")
+        print("\n[8/14] Testing SQL injection prevention...")
 
         # SQL injection in ticker
         malicious_inputs = [
@@ -305,7 +309,7 @@ class APITester:
 
     async def test_content_negotiation(self, client: httpx.AsyncClient):
         """Test content negotiation (JSON/CSV)."""
-        print("\n[9/10] Testing content negotiation...")
+        print("\n[9/14] Testing content negotiation...")
 
         # JSON format (default)
         resp = await client.get(f"{self.base_url}/v1/companies", params={
@@ -343,9 +347,309 @@ class APITester:
             resp.status_code
         )
 
+    async def test_batch_edge_cases(self, client: httpx.AsyncClient):
+        """Test batch endpoint edge cases."""
+        print("\n[11/14] Testing batch edge cases...")
+
+        # Empty operations array
+        resp = await client.post(
+            f"{self.base_url}/v1/batch",
+            json={"operations": []}
+        )
+        self.log_result(
+            "Batch: empty operations",
+            resp.status_code == 422,
+            "Empty operations should return 422",
+            resp.status_code
+        )
+
+        # Over limit (11 operations)
+        ops = [{"primitive": "search.companies", "params": {"ticker": "AAPL"}} for _ in range(11)]
+        resp = await client.post(
+            f"{self.base_url}/v1/batch",
+            json={"operations": ops}
+        )
+        self.log_result(
+            "Batch: over limit (11 ops)",
+            resp.status_code == 422,
+            "11 operations should return 422",
+            resp.status_code
+        )
+
+        # Invalid primitive name
+        resp = await client.post(
+            f"{self.base_url}/v1/batch",
+            json={"operations": [{"primitive": "fake.nonexistent", "params": {}}]}
+        )
+        self.log_result(
+            "Batch: invalid primitive",
+            resp.status_code == 200,
+            "Invalid primitive should return 200 with error in result",
+            resp.status_code
+        )
+
+        # SQL injection in params
+        resp = await client.post(
+            f"{self.base_url}/v1/batch",
+            json={"operations": [{"primitive": "search.companies", "params": {"ticker": "'; DROP TABLE companies;--"}}]}
+        )
+        self.log_result(
+            "Batch: SQL injection in params",
+            resp.status_code in (200, 400, 422),
+            "SQL injection should be handled gracefully",
+            resp.status_code
+        )
+
+        # Empty params
+        resp = await client.post(
+            f"{self.base_url}/v1/batch",
+            json={"operations": [{"primitive": "search.companies", "params": {}}]}
+        )
+        self.log_result(
+            "Batch: empty params",
+            resp.status_code == 200,
+            "Empty params should succeed",
+            resp.status_code
+        )
+
+        # Missing operations key
+        resp = await client.post(
+            f"{self.base_url}/v1/batch",
+            json={"not_operations": []}
+        )
+        self.log_result(
+            "Batch: missing operations key",
+            resp.status_code == 422,
+            "Missing operations key should return 422",
+            resp.status_code
+        )
+
+    async def test_changes_edge_cases(self, client: httpx.AsyncClient):
+        """Test changes endpoint edge cases."""
+        print("\n[12/14] Testing changes edge cases...")
+
+        # Missing since parameter
+        resp = await client.get(f"{self.base_url}/v1/companies/AAPL/changes")
+        self.log_result(
+            "Changes: missing since",
+            resp.status_code == 422,
+            "Missing since should return 422",
+            resp.status_code
+        )
+
+        # Invalid date format
+        resp = await client.get(
+            f"{self.base_url}/v1/companies/AAPL/changes",
+            params={"since": "not-a-date"}
+        )
+        self.log_result(
+            "Changes: invalid date",
+            resp.status_code == 422,
+            "Invalid date format should return 422",
+            resp.status_code
+        )
+
+        # Very old since date
+        resp = await client.get(
+            f"{self.base_url}/v1/companies/AAPL/changes",
+            params={"since": "2000-01-01"}
+        )
+        self.log_result(
+            "Changes: very old date",
+            resp.status_code in (200, 404),
+            "Very old date should return 404 NO_SNAPSHOT or data",
+            resp.status_code
+        )
+
+        # Future since date
+        resp = await client.get(
+            f"{self.base_url}/v1/companies/AAPL/changes",
+            params={"since": "2030-01-01"}
+        )
+        self.log_result(
+            "Changes: future date",
+            resp.status_code in (200, 404),
+            "Future date should return 404 or data",
+            resp.status_code
+        )
+
+        # SQL injection in ticker path
+        resp = await client.get(
+            f"{self.base_url}/v1/companies/'; DROP TABLE companies;--/changes",
+            params={"since": "2025-01-01"}
+        )
+        self.log_result(
+            "Changes: SQL injection ticker",
+            resp.status_code in (404, 422),
+            "SQL injection in path should return 404 or 422",
+            resp.status_code
+        )
+
+        # Non-existent company
+        resp = await client.get(
+            f"{self.base_url}/v1/companies/ZZZZZZZ/changes",
+            params={"since": "2025-01-01"}
+        )
+        self.log_result(
+            "Changes: non-existent company",
+            resp.status_code == 404,
+            "Non-existent company should return 404",
+            resp.status_code
+        )
+
+    async def test_business_tier_edge_cases(self, client: httpx.AsyncClient):
+        """Test business-tier endpoint edge cases."""
+        print("\n[13/14] Testing business tier edge cases...")
+
+        # Historical pricing invalid CUSIP
+        resp = await client.get(
+            f"{self.base_url}/v1/bonds/ZZZZZZZZ9/pricing/history",
+            params={"from": "2025-01-01", "to": "2026-01-01"}
+        )
+        self.log_result(
+            "Pricing: invalid CUSIP",
+            resp.status_code in (403, 404),
+            "Invalid CUSIP should return 403 or 404",
+            resp.status_code
+        )
+
+        # Export missing data_type
+        resp = await client.get(f"{self.base_url}/v1/export")
+        self.log_result(
+            "Export: missing data_type",
+            resp.status_code in (403, 422),
+            "Missing data_type should return 403 or 422",
+            resp.status_code
+        )
+
+        # Export invalid format
+        resp = await client.get(
+            f"{self.base_url}/v1/export",
+            params={"data_type": "companies", "format": "xml"}
+        )
+        self.log_result(
+            "Export: invalid format (xml)",
+            resp.status_code in (400, 403, 422),
+            "Invalid format should return 400, 403, or 422",
+            resp.status_code
+        )
+
+        # Usage analytics days=0
+        resp = await client.get(
+            f"{self.base_url}/v1/usage/analytics",
+            params={"days": 0}
+        )
+        self.log_result(
+            "Analytics: days=0",
+            resp.status_code in (403, 422),
+            "days=0 should return 403 or 422",
+            resp.status_code
+        )
+
+        # Usage analytics days=9999
+        resp = await client.get(
+            f"{self.base_url}/v1/usage/analytics",
+            params={"days": 9999}
+        )
+        self.log_result(
+            "Analytics: days=9999",
+            resp.status_code in (200, 403, 422),
+            "Extreme days value should be handled",
+            resp.status_code
+        )
+
+        # Historical pricing inverted date range
+        resp = await client.get(
+            f"{self.base_url}/v1/bonds/76825DAJ7/pricing/history",
+            params={"from": "2026-01-01", "to": "2025-01-01"}
+        )
+        self.log_result(
+            "Pricing: inverted range",
+            resp.status_code in (400, 403, 422),
+            "Inverted date range should return 400 or 403",
+            resp.status_code
+        )
+
+        # Historical pricing 3-year range (exceeds max)
+        resp = await client.get(
+            f"{self.base_url}/v1/bonds/76825DAJ7/pricing/history",
+            params={"from": "2022-01-01", "to": "2026-01-01"}
+        )
+        self.log_result(
+            "Pricing: 3-year range",
+            resp.status_code in (200, 400, 403, 422),
+            "3-year range should be handled (may exceed 2yr limit)",
+            resp.status_code
+        )
+
+    async def test_webhook_edge_cases(self, client: httpx.AsyncClient):
+        """Test Stripe webhook handler edge cases."""
+        print("\n[14/14] Testing webhook edge cases...")
+
+        # Webhook endpoints (try common webhook paths)
+        webhook_paths = ["/v1/webhooks/stripe", "/webhooks/stripe", "/stripe/webhook"]
+
+        for path in webhook_paths:
+            # No body
+            resp = await client.post(f"{self.base_url}{path}", content="")
+            if resp.status_code != 404:
+                self.log_result(
+                    f"Webhook: no body ({path})",
+                    resp.status_code in (400, 401, 403),
+                    "No body should return 400/401/403",
+                    resp.status_code
+                )
+
+                # Invalid JSON
+                resp = await client.post(
+                    f"{self.base_url}{path}",
+                    content="not json",
+                    headers={"Content-Type": "application/json"}
+                )
+                self.log_result(
+                    f"Webhook: invalid JSON ({path})",
+                    resp.status_code in (400, 401, 403, 422),
+                    "Invalid JSON should return error",
+                    resp.status_code
+                )
+
+                # No stripe-signature header
+                resp = await client.post(
+                    f"{self.base_url}{path}",
+                    json={"type": "checkout.session.completed"}
+                )
+                self.log_result(
+                    f"Webhook: no signature ({path})",
+                    resp.status_code in (400, 401, 403),
+                    "Missing stripe-signature should fail",
+                    resp.status_code
+                )
+
+                # Empty event type
+                resp = await client.post(
+                    f"{self.base_url}{path}",
+                    json={"type": ""},
+                    headers={"stripe-signature": "t=1,v1=fake"}
+                )
+                self.log_result(
+                    f"Webhook: empty event type ({path})",
+                    resp.status_code in (400, 401, 403),
+                    "Empty event type should fail",
+                    resp.status_code
+                )
+                break  # Found the right path
+        else:
+            # No webhook endpoint found at any path - log info
+            self.log_result(
+                "Webhook: endpoint discovery",
+                True,
+                "No webhook endpoint found at standard paths (may use different path)",
+                None
+            )
+
     async def test_error_response_format(self, client: httpx.AsyncClient):
         """Test error response format consistency."""
-        print("\n[10/10] Testing error response format...")
+        print("\n[10/14] Testing error response format...")
 
         # 404 error
         resp = await client.get(f"{self.base_url}/v1/nonexistent/endpoint")
@@ -402,6 +706,10 @@ class APITester:
             await self.test_sql_injection(client)
             await self.test_content_negotiation(client)
             await self.test_error_response_format(client)
+            await self.test_batch_edge_cases(client)
+            await self.test_changes_edge_cases(client)
+            await self.test_business_tier_edge_cases(client)
+            await self.test_webhook_edge_cases(client)
 
         # Summary
         print("\n" + "=" * 60)

@@ -552,7 +552,45 @@ class QCMaster:
                 sample_ids=[f"{r[0]}: {r[1]} ({r[3]}x)" for r in rows[:5]]
             )
 
-        # 3.6 Entity belongs to different company than its parent
+        # 3.6 Snapshots missing debt data
+        result = await self.db.execute(text('''
+            SELECT c.ticker
+            FROM company_snapshots cs
+            JOIN companies c ON c.id = cs.company_id
+            WHERE cs.debt_snapshot IS NULL OR jsonb_array_length(cs.debt_snapshot) = 0
+        '''))
+        rows = result.fetchall()
+        if rows:
+            self.add_issue(
+                severity='warning',
+                category='consistency',
+                table='company_snapshots',
+                check_name='snapshot_missing_debt',
+                description='Company snapshots with NULL or empty debt_snapshot',
+                affected_count=len(rows),
+                sample_ids=[r[0] for r in rows[:5]]
+            )
+
+        # 3.7 Snapshots missing entities data
+        result = await self.db.execute(text('''
+            SELECT c.ticker
+            FROM company_snapshots cs
+            JOIN companies c ON c.id = cs.company_id
+            WHERE cs.entities_snapshot IS NULL OR jsonb_array_length(cs.entities_snapshot) = 0
+        '''))
+        rows = result.fetchall()
+        if rows:
+            self.add_issue(
+                severity='warning',
+                category='consistency',
+                table='company_snapshots',
+                check_name='snapshot_missing_entities',
+                description='Company snapshots with NULL or empty entities_snapshot',
+                affected_count=len(rows),
+                sample_ids=[r[0] for r in rows[:5]]
+            )
+
+        # 3.8 Entity belongs to different company than its parent
         result = await self.db.execute(text('''
             SELECT c1.ticker as child_company, e.name as entity,
                    c2.ticker as parent_company, p.name as parent
@@ -860,7 +898,70 @@ class QCMaster:
                 sample_ids=[f"{r[0]}: {r[1]}" for r in rows[:5]]
             )
 
-        # 5.6 Debt instruments missing document links (indenture/credit agreement)
+        # 5.6 Companies without any snapshots
+        result = await self.db.execute(text('''
+            SELECT c.ticker
+            FROM companies c
+            LEFT JOIN company_snapshots cs ON cs.company_id = c.id
+            GROUP BY c.id, c.ticker
+            HAVING COUNT(cs.id) = 0
+        '''))
+        rows = result.fetchall()
+        if rows:
+            self.add_issue(
+                severity='info',
+                category='completeness',
+                table='company_snapshots',
+                check_name='company_no_snapshots',
+                description='Companies without any snapshots (changes endpoint will not work)',
+                affected_count=len(rows),
+                sample_ids=[r[0] for r in rows[:5]]
+            )
+
+        # 5.7 Bonds with pricing but no pricing history
+        result = await self.db.execute(text('''
+            SELECT c.ticker, COUNT(*) as cnt
+            FROM debt_instruments di
+            JOIN entities e ON e.id = di.issuer_id
+            JOIN companies c ON c.id = e.company_id
+            JOIN bond_pricing bp ON bp.debt_instrument_id = di.id
+            LEFT JOIN bond_pricing_history bph ON bph.debt_instrument_id = di.id
+            WHERE bph.id IS NULL
+            GROUP BY c.ticker
+        '''))
+        rows = result.fetchall()
+        if rows:
+            total = sum(r[1] for r in rows)
+            self.add_issue(
+                severity='info',
+                category='completeness',
+                table='bond_pricing_history',
+                check_name='missing_pricing_history',
+                description='Bonds with current pricing but no historical pricing snapshots',
+                affected_count=total,
+                sample_ids=[f"{r[0]}: {r[1]} bonds" for r in rows[:5]]
+            )
+
+        # 5.8 Companies without metrics (needed for export)
+        result = await self.db.execute(text('''
+            SELECT c.ticker
+            FROM companies c
+            LEFT JOIN company_metrics cm ON cm.company_id = c.id
+            WHERE cm.id IS NULL
+        '''))
+        rows = result.fetchall()
+        if rows:
+            self.add_issue(
+                severity='warning',
+                category='completeness',
+                table='company_metrics',
+                check_name='missing_metrics_for_export',
+                description='Companies without computed metrics (export/screening will lack data)',
+                affected_count=len(rows),
+                sample_ids=[r[0] for r in rows[:5]]
+            )
+
+        # 5.9 Debt instruments missing document links (indenture/credit agreement)
         # Notes and bonds should have indentures, credit facilities should have credit agreements
         result = await self.db.execute(text('''
             SELECT c.ticker, di.name, di.instrument_type

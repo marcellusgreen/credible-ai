@@ -417,6 +417,154 @@ async def check_scale_sanity(db: AsyncSession) -> list[dict]:
     return issues
 
 
+async def check_pricing_history_quality(db: AsyncSession) -> list[dict]:
+    """
+    Check bond pricing history data quality.
+
+    Returns list of issues found (each with ticker, issue, severity, field, period).
+    """
+    issues = []
+
+    # 6.1 Impossible prices: price < 0 or price > 300 (% of par)
+    result = await db.execute(text('''
+        SELECT c.ticker, di.name, bph.price, bph.price_date
+        FROM bond_pricing_history bph
+        JOIN debt_instruments di ON di.id = bph.debt_instrument_id
+        JOIN entities e ON e.id = di.issuer_id
+        JOIN companies c ON c.id = e.company_id
+        WHERE bph.price < 0 OR bph.price > 300
+        ORDER BY bph.price_date DESC
+        LIMIT 20
+    '''))
+    for row in result.fetchall():
+        issues.append({
+            'ticker': row[0],
+            'issue': f"Impossible price {float(row[2]):.2f} for {row[1]} on {row[3]}",
+            'severity': 'error',
+            'field': 'price',
+            'period': str(row[3])
+        })
+
+    # 6.2 Future price dates
+    result = await db.execute(text('''
+        SELECT c.ticker, di.name, bph.price_date
+        FROM bond_pricing_history bph
+        JOIN debt_instruments di ON di.id = bph.debt_instrument_id
+        JOIN entities e ON e.id = di.issuer_id
+        JOIN companies c ON c.id = e.company_id
+        WHERE bph.price_date > CURRENT_DATE
+        LIMIT 20
+    '''))
+    for row in result.fetchall():
+        issues.append({
+            'ticker': row[0],
+            'issue': f"Future price date {row[2]} for {row[1]}",
+            'severity': 'error',
+            'field': 'price_date',
+            'period': str(row[2])
+        })
+
+    # 6.3 Extreme YTM: ytm_bps > 10000 (>100%)
+    result = await db.execute(text('''
+        SELECT c.ticker, di.name, bph.ytm_bps, bph.price_date
+        FROM bond_pricing_history bph
+        JOIN debt_instruments di ON di.id = bph.debt_instrument_id
+        JOIN entities e ON e.id = di.issuer_id
+        JOIN companies c ON c.id = e.company_id
+        WHERE bph.ytm_bps > 10000
+        LIMIT 20
+    '''))
+    for row in result.fetchall():
+        issues.append({
+            'ticker': row[0],
+            'issue': f"Extreme YTM {float(row[2])/100:.1f}% for {row[1]} on {row[3]}",
+            'severity': 'warning',
+            'field': 'ytm_bps',
+            'period': str(row[3])
+        })
+
+    # 6.4 Extreme negative spreads: spread_bps < -100
+    result = await db.execute(text('''
+        SELECT c.ticker, di.name, bph.spread_bps, bph.price_date
+        FROM bond_pricing_history bph
+        JOIN debt_instruments di ON di.id = bph.debt_instrument_id
+        JOIN entities e ON e.id = di.issuer_id
+        JOIN companies c ON c.id = e.company_id
+        WHERE bph.spread_bps < -100
+        LIMIT 20
+    '''))
+    for row in result.fetchall():
+        issues.append({
+            'ticker': row[0],
+            'issue': f"Extreme negative spread {float(row[2])}bps for {row[1]} on {row[3]}",
+            'severity': 'info',
+            'field': 'spread_bps',
+            'period': str(row[3])
+        })
+
+    # 6.5 Duplicate date per bond
+    result = await db.execute(text('''
+        SELECT c.ticker, di.name, bph.price_date, COUNT(*) as cnt
+        FROM bond_pricing_history bph
+        JOIN debt_instruments di ON di.id = bph.debt_instrument_id
+        JOIN entities e ON e.id = di.issuer_id
+        JOIN companies c ON c.id = e.company_id
+        GROUP BY c.ticker, di.name, bph.debt_instrument_id, bph.price_date
+        HAVING COUNT(*) > 1
+        ORDER BY COUNT(*) DESC
+        LIMIT 20
+    '''))
+    for row in result.fetchall():
+        issues.append({
+            'ticker': row[0],
+            'issue': f"Duplicate price date {row[2]} for {row[1]} ({row[3]} entries)",
+            'severity': 'error',
+            'field': 'price_date',
+            'period': str(row[2])
+        })
+
+    # 6.6 Day-over-day price jump >20%
+    result = await db.execute(text('''
+        WITH price_pairs AS (
+            SELECT
+                bph.debt_instrument_id,
+                bph.price_date,
+                bph.price,
+                LAG(bph.price) OVER (
+                    PARTITION BY bph.debt_instrument_id
+                    ORDER BY bph.price_date
+                ) as prev_price,
+                LAG(bph.price_date) OVER (
+                    PARTITION BY bph.debt_instrument_id
+                    ORDER BY bph.price_date
+                ) as prev_date
+            FROM bond_pricing_history bph
+        )
+        SELECT c.ticker, di.name, pp.price_date, pp.price, pp.prev_price,
+               ABS(pp.price - pp.prev_price) / NULLIF(pp.prev_price, 0) * 100 as pct_change
+        FROM price_pairs pp
+        JOIN debt_instruments di ON di.id = pp.debt_instrument_id
+        JOIN entities e ON e.id = di.issuer_id
+        JOIN companies c ON c.id = e.company_id
+        WHERE pp.prev_price IS NOT NULL
+        AND pp.prev_price > 0
+        AND ABS(pp.price - pp.prev_price) / pp.prev_price > 0.20
+        AND pp.price_date - pp.prev_date <= 3
+        ORDER BY ABS(pp.price - pp.prev_price) / pp.prev_price DESC
+        LIMIT 20
+    '''))
+    for row in result.fetchall():
+        issues.append({
+            'ticker': row[0],
+            'issue': f"Price jump {float(row[5]):.1f}% for {row[1]}: {float(row[4]):.2f} -> {float(row[3]):.2f} on {row[2]}",
+            'severity': 'warning',
+            'field': 'price',
+            'period': str(row[2])
+        })
+
+    return issues
+
+
 async def run_audit(
     db: AsyncSession,
     tickers: Optional[list[str]] = None,
@@ -446,6 +594,25 @@ async def run_audit(
             print(f"  [{severity}] {issue['ticker']} ({issue['period']}): {issue['issue']}")
     else:
         print("  No mathematical impossibilities found.")
+
+    # Step 1b: Pricing history quality
+    print(f"\n[1b/2] Checking pricing history quality...")
+    pricing_issues = await check_pricing_history_quality(db)
+
+    pricing_errors = sum(1 for i in pricing_issues if i['severity'] == 'error')
+    pricing_warnings = sum(1 for i in pricing_issues if i['severity'] == 'warning')
+    pricing_info = sum(1 for i in pricing_issues if i['severity'] == 'info')
+
+    if pricing_issues:
+        print(f"\n  Found {len(pricing_issues)} pricing history issues ({pricing_errors} errors, {pricing_warnings} warnings, {pricing_info} info):\n")
+        for issue in pricing_issues[:20]:
+            severity = issue['severity'].upper()
+            print(f"  [{severity}] {issue['ticker']}: {issue['issue']}")
+    else:
+        print("  No pricing history quality issues found.")
+
+    error_count += pricing_errors
+    warning_count += pricing_warnings
 
     # Step 2: Source document validation (if tickers specified or sampling)
     print(f"\n[2/2] Validating against source SEC filings...")

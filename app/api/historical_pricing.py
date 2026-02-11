@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Path
 from pydantic import BaseModel
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.auth import require_auth, check_tier_access
 from app.core.database import get_db
@@ -91,9 +92,11 @@ async def get_historical_pricing(
     if (to_date - from_date) > max_range:
         raise HTTPException(status_code=400, detail="Date range cannot exceed 2 years")
 
-    # Find bond by CUSIP
+    # Find bond by CUSIP (eager-load company to avoid async lazy-load error)
     bond_result = await db.execute(
-        select(DebtInstrument).where(DebtInstrument.cusip == cusip)
+        select(DebtInstrument)
+        .where(DebtInstrument.cusip == cusip)
+        .options(selectinload(DebtInstrument.company))
     )
     bond = bond_result.scalar_one_or_none()
 

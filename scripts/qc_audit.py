@@ -9,16 +9,19 @@ Usage:
     python scripts/qc_audit.py [--fix] [--verbose]
 
 Checks performed:
-1. Debt instrument vs. financial mismatch (sum of instruments vs total_debt)
-2. Entity count sanity (companies with 0 entities)
-3. Debt without issuer (debt instruments with NULL issuer_id)
-4. Orphan guarantees (guarantees referencing non-existent entities)
-5. Maturity date sanity (bonds matured but still active)
-6. Duplicate debt instruments (same name + issuer + maturity)
+1. Entity count sanity (companies with 0 entities)
+2. Debt without issuer (debt instruments with NULL issuer_id)
+3. Orphan guarantees (guarantees referencing non-existent entities)
+4. Maturity date sanity (bonds matured but still active)
+5. Duplicate debt instruments (same name + issuer + maturity)
+6. Debt instrument vs. financial mismatch (sum of instruments vs total_debt)
 7. Missing debt amounts (instruments with NULL principal/outstanding)
 8. Companies without financials
 9. Invalid leverage ratios (negative or extremely high)
 10. ISIN/CUSIP format validation
+11. Export data completeness (sector, CUSIP, financials, covenants)
+12. Snapshot completeness (for changes endpoint)
+13. Pricing data completeness (CUSIP coverage, history gaps)
 """
 
 import argparse
@@ -67,7 +70,7 @@ class QCAudit:
 
     async def check_entity_count(self):
         """Check for companies with 0 entities."""
-        print("\n[1/10] Checking entity counts...")
+        print("\n[1/13] Checking entity counts...")
 
         result = await self.db.execute(text('''
             SELECT c.ticker, c.name
@@ -91,7 +94,7 @@ class QCAudit:
 
     async def check_debt_without_issuer(self):
         """Check for debt instruments without issuer_id."""
-        print("\n[2/10] Checking debt instruments without issuer...")
+        print("\n[2/13] Checking debt instruments without issuer...")
 
         result = await self.db.execute(text('''
             SELECT c.ticker, d.name
@@ -114,7 +117,7 @@ class QCAudit:
 
     async def check_orphan_guarantees(self):
         """Check for guarantees referencing non-existent entities."""
-        print("\n[3/10] Checking for orphan guarantees...")
+        print("\n[3/13] Checking for orphan guarantees...")
 
         result = await self.db.execute(text('''
             SELECT g.id, g.guarantor_id, g.debt_instrument_id
@@ -151,7 +154,7 @@ class QCAudit:
 
     async def check_matured_bonds(self):
         """Check for bonds that have matured but are still active."""
-        print("\n[4/10] Checking for matured but active bonds...")
+        print("\n[4/13] Checking for matured but active bonds...")
 
         today = date.today()
         result = await self.db.execute(text('''
@@ -188,7 +191,7 @@ class QCAudit:
 
     async def check_duplicate_instruments(self):
         """Check for duplicate debt instruments."""
-        print("\n[5/10] Checking for duplicate debt instruments...")
+        print("\n[5/13] Checking for duplicate debt instruments...")
 
         result = await self.db.execute(text('''
             SELECT c.ticker, d.name, d.maturity_date, COUNT(*) as cnt
@@ -214,7 +217,7 @@ class QCAudit:
 
     async def check_debt_financial_mismatch(self):
         """Check for large mismatches between debt instruments and financials."""
-        print("\n[6/10] Checking debt instrument vs. financial total_debt mismatch...")
+        print("\n[6/13] Checking debt instrument vs. financial total_debt mismatch...")
 
         result = await self.db.execute(text('''
             WITH instrument_totals AS (
@@ -263,7 +266,7 @@ class QCAudit:
 
     async def check_missing_amounts(self):
         """Check for debt instruments missing amounts."""
-        print("\n[7/10] Checking for missing debt amounts...")
+        print("\n[7/13] Checking for missing debt amounts...")
 
         result = await self.db.execute(text('''
             SELECT c.ticker, COUNT(*) as missing_count, COUNT(*) FILTER (WHERE d.outstanding IS NOT NULL) as has_amount
@@ -300,7 +303,7 @@ class QCAudit:
 
     async def check_companies_without_financials(self):
         """Check for companies without financial data."""
-        print("\n[8/10] Checking for companies without financials...")
+        print("\n[8/13] Checking for companies without financials...")
 
         result = await self.db.execute(text('''
             SELECT c.ticker, c.name
@@ -323,7 +326,7 @@ class QCAudit:
 
     async def check_invalid_leverage(self):
         """Check for invalid leverage ratios."""
-        print("\n[9/10] Checking for invalid leverage ratios...")
+        print("\n[9/13] Checking for invalid leverage ratios...")
 
         result = await self.db.execute(text('''
             SELECT c.ticker, cm.leverage_ratio, cm.net_leverage_ratio, cm.interest_coverage
@@ -349,7 +352,7 @@ class QCAudit:
 
     async def check_isin_cusip_format(self):
         """Check for malformed ISINs and CUSIPs."""
-        print("\n[10/10] Checking ISIN/CUSIP format validity...")
+        print("\n[10/13] Checking ISIN/CUSIP format validity...")
 
         # ISIN should be 12 chars: 2 letter country + 9 alphanum + 1 check digit
         result = await self.db.execute(text('''
@@ -375,6 +378,177 @@ class QCAudit:
         else:
             print("  [OK] All ISINs and CUSIPs have valid format")
 
+    async def check_export_data_completeness(self):
+        """Check data completeness for export endpoint quality."""
+        print("\n[11/13] Checking export data completeness...")
+
+        # Companies without sector
+        result = await self.db.execute(text('''
+            SELECT c.ticker, c.name
+            FROM companies c
+            WHERE c.sector IS NULL OR c.sector = ''
+        '''))
+        rows = result.fetchall()
+        if rows:
+            details = [f"{r[0]}: {r[1]}" for r in rows]
+            self.log_issue(
+                "export_completeness",
+                "WARNING",
+                f"{len(rows)} companies without sector (export quality impacted)",
+                details
+            )
+        else:
+            print("  [OK] All companies have sector data")
+
+        # Active bonds without CUSIP
+        result = await self.db.execute(text('''
+            SELECT c.ticker, COUNT(*) as cnt
+            FROM debt_instruments di
+            JOIN entities e ON e.id = di.issuer_id
+            JOIN companies c ON c.id = e.company_id
+            WHERE di.is_active = true AND (di.cusip IS NULL OR di.cusip = '')
+            GROUP BY c.ticker
+            HAVING COUNT(*) >= 3
+        '''))
+        rows = result.fetchall()
+        if rows:
+            details = [f"{r[0]}: {r[1]} bonds without CUSIP" for r in rows]
+            self.log_issue(
+                "export_completeness",
+                "INFO",
+                f"{len(rows)} companies have 3+ active bonds without CUSIP",
+                details
+            )
+
+        # Financial records with all key values NULL
+        result = await self.db.execute(text('''
+            SELECT c.ticker, cf.fiscal_year, cf.fiscal_quarter
+            FROM company_financials cf
+            JOIN companies c ON c.id = cf.company_id
+            WHERE cf.revenue IS NULL
+            AND cf.ebitda IS NULL
+            AND cf.total_debt IS NULL
+            AND cf.total_assets IS NULL
+        '''))
+        rows = result.fetchall()
+        if rows:
+            details = [f"{r[0]} Q{r[2]} {r[1]}" for r in rows]
+            self.log_issue(
+                "export_completeness",
+                "WARNING",
+                f"{len(rows)} financial records have all key values NULL (empty extraction)",
+                details
+            )
+
+        # Covenants without covenant_type
+        result = await self.db.execute(text('''
+            SELECT c.ticker, cov.covenant_name
+            FROM covenants cov
+            JOIN companies c ON c.id = cov.company_id
+            WHERE cov.covenant_type IS NULL OR cov.covenant_type = ''
+        '''))
+        rows = result.fetchall()
+        if rows:
+            details = [f"{r[0]}: {r[1]}" for r in rows]
+            self.log_issue(
+                "export_completeness",
+                "WARNING",
+                f"{len(rows)} covenants without covenant_type",
+                details
+            )
+
+    async def check_snapshot_completeness(self):
+        """Check snapshot data for changes endpoint."""
+        print("\n[12/13] Checking snapshot completeness...")
+
+        # Companies without any snapshots
+        result = await self.db.execute(text('''
+            SELECT c.ticker, c.name
+            FROM companies c
+            LEFT JOIN company_snapshots cs ON cs.company_id = c.id
+            WHERE cs.id IS NULL
+        '''))
+        rows = result.fetchall()
+        if rows:
+            details = [f"{r[0]}: {r[1]}" for r in rows]
+            self.log_issue(
+                "snapshot_completeness",
+                "INFO",
+                f"{len(rows)} companies without any snapshots (changes endpoint unavailable)",
+                details
+            )
+        else:
+            print("  [OK] All companies have at least one snapshot")
+
+        # Stale snapshots (oldest > 90 days)
+        result = await self.db.execute(text('''
+            SELECT c.ticker, MAX(cs.created_at) as latest
+            FROM companies c
+            JOIN company_snapshots cs ON cs.company_id = c.id
+            GROUP BY c.ticker
+            HAVING MAX(cs.created_at) < NOW() - INTERVAL '90 days'
+        '''))
+        rows = result.fetchall()
+        if rows:
+            details = [f"{r[0]}: latest snapshot {r[1]}" for r in rows]
+            self.log_issue(
+                "snapshot_completeness",
+                "WARNING",
+                f"{len(rows)} companies have stale snapshots (>90 days old)",
+                details
+            )
+
+    async def check_pricing_data_completeness(self):
+        """Check pricing data completeness."""
+        print("\n[13/13] Checking pricing data completeness...")
+
+        # Bonds with CUSIP but no current pricing
+        result = await self.db.execute(text('''
+            SELECT c.ticker, COUNT(*) as cnt
+            FROM debt_instruments di
+            JOIN entities e ON e.id = di.issuer_id
+            JOIN companies c ON c.id = e.company_id
+            LEFT JOIN bond_pricing bp ON bp.debt_instrument_id = di.id
+            WHERE di.cusip IS NOT NULL AND di.cusip != ''
+            AND di.is_active = true
+            AND bp.id IS NULL
+            GROUP BY c.ticker
+        '''))
+        rows = result.fetchall()
+        if rows:
+            total = sum(r[1] for r in rows)
+            details = [f"{r[0]}: {r[1]} bonds" for r in rows[:10]]
+            self.log_issue(
+                "pricing_completeness",
+                "INFO",
+                f"{total} bonds with CUSIP but no current pricing across {len(rows)} companies",
+                details
+            )
+        else:
+            print("  [OK] All bonds with CUSIPs have pricing data")
+
+        # Bonds with current pricing but no history
+        result = await self.db.execute(text('''
+            SELECT c.ticker, COUNT(*) as cnt
+            FROM bond_pricing bp
+            JOIN debt_instruments di ON di.id = bp.debt_instrument_id
+            JOIN entities e ON e.id = di.issuer_id
+            JOIN companies c ON c.id = e.company_id
+            LEFT JOIN bond_pricing_history bph ON bph.debt_instrument_id = di.id
+            WHERE bph.id IS NULL
+            GROUP BY c.ticker
+        '''))
+        rows = result.fetchall()
+        if rows:
+            total = sum(r[1] for r in rows)
+            details = [f"{r[0]}: {r[1]} bonds" for r in rows[:10]]
+            self.log_issue(
+                "pricing_completeness",
+                "INFO",
+                f"{total} bonds with current pricing but no historical pricing across {len(rows)} companies",
+                details
+            )
+
     async def run_all_checks(self):
         """Run all QC checks."""
         print("=" * 60)
@@ -396,6 +570,9 @@ class QCAudit:
         await self.check_companies_without_financials()
         await self.check_invalid_leverage()
         await self.check_isin_cusip_format()
+        await self.check_export_data_completeness()
+        await self.check_snapshot_completeness()
+        await self.check_pricing_data_completeness()
 
         # Summary
         print("\n" + "=" * 60)
