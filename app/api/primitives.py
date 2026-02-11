@@ -1,6 +1,8 @@
 """
 Primitives API for DebtStack.ai
 
+NOTE: Pricing data only includes actual TRACE market data, not estimated values.
+
 9 core primitives optimized for AI agents:
 1. GET /v1/companies - Horizontal company search
 2. GET /v1/bonds - Horizontal bond search (includes pricing)
@@ -457,7 +459,9 @@ async def search_bonds(
         if max_spread is not None:
             filters.append(BondPricing.spread_to_treasury_bps <= max_spread)
         if has_pricing is True:
+            # Only actual TRACE pricing, not estimated
             filters.append(BondPricing.last_price.isnot(None))
+            filters.append(BondPricing.price_source == "TRACE")
         elif has_pricing is False:
             filters.append(or_(BondPricing.last_price.is_(None), BondPricing.id.is_(None)))
 
@@ -574,8 +578,8 @@ async def search_bonds(
             "collateral_data_confidence": d.collateral_data_confidence,
         }
 
-        # Add pricing data (always included, null if no pricing exists)
-        if pricing and pricing.last_price is not None:
+        # Add pricing data (only actual TRACE pricing, not estimated)
+        if pricing and pricing.last_price is not None and pricing.price_source == "TRACE":
             bond_data["pricing"] = {
                 "last_price": float(pricing.last_price) if pricing.last_price else None,
                 "last_trade_date": pricing.last_trade_date.isoformat() if pricing.last_trade_date else None,
@@ -1223,7 +1227,9 @@ async def search_pricing(
         DebtInstrument, BondPricing.debt_instrument_id == DebtInstrument.id
     ).join(
         Company, DebtInstrument.company_id == Company.id
-    ).where(BondPricing.last_price.isnot(None))
+    ).where(BondPricing.last_price.isnot(None)).where(
+        BondPricing.price_source == "TRACE"  # Only actual market data, not estimated
+    )
 
     filters = []
 
@@ -1949,7 +1955,9 @@ async def _batch_search_bonds(params: dict, db: AsyncSession) -> dict:
         if max_ytm is not None:
             filters.append(BondPricing.ytm_bps <= int(max_ytm * 100))
         if has_pricing is True:
+            # Only actual TRACE pricing, not estimated
             filters.append(BondPricing.last_price.isnot(None))
+            filters.append(BondPricing.price_source == "TRACE")
 
     if filters:
         query = query.where(and_(*filters))
@@ -1979,7 +1987,8 @@ async def _batch_search_bonds(params: dict, db: AsyncSession) -> dict:
             "outstanding": d.outstanding,
         }
 
-        if pricing:
+        # Only include actual TRACE pricing, not estimated
+        if pricing and pricing.price_source == "TRACE":
             bond_data["pricing"] = {
                 "last_price": float(pricing.last_price) if pricing.last_price else None,
                 "ytm": pricing.ytm_bps / 100 if pricing.ytm_bps else None,
@@ -2143,7 +2152,9 @@ async def _batch_search_pricing(params: dict, db: AsyncSession) -> dict:
         DebtInstrument, BondPricing.debt_instrument_id == DebtInstrument.id
     ).join(
         Company, DebtInstrument.company_id == Company.id
-    ).where(BondPricing.last_price.isnot(None))
+    ).where(BondPricing.last_price.isnot(None)).where(
+        BondPricing.price_source == "TRACE"  # Only actual market data, not estimated
+    )
 
     filters = []
 
