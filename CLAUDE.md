@@ -6,7 +6,7 @@ Context for AI assistants working on the DebtStack.ai codebase.
 
 ## What's Next
 
-**Immediate**: Phase 7 EXCESS cleanup complete — EXCESS_SIGNIFICANT reduced from 27→5, OK companies back to 73. Phase 7 Step 7 used Claude Sonnet to review 19 remaining EXCESS companies ($0.42 cost), deactivating 49 instruments and clearing 45 wrong amounts (aggregates, face values, revolver capacity). ETN and PLD need amounts re-extracted (moved to MISSING_ALL after clearing wrong values). Next: tackle remaining MISSING_SIGNIFICANT (53 companies), fix THC/PAYX total_debt financials. See WORKPLAN.md.
+**Immediate**: Phase 7.5 EXCESS cleanup complete — OK companies 73→96, EXCESS_SOME 53→15, EXCESS_SIGNIFICANT steady at 5. Step 8 cleared 36 revolver/ABL capacity amounts ($55B, $0 cost). LLM review at 1.5x threshold reviewed 95 companies ($2.01 cost), deactivating 180 instruments and clearing 91 wrong amounts. Remaining 15 EXCESS_SOME include 3 banks (BAC, C, JPM — structural) and 12 others with minor excess. 5 EXCESS_SIGNIFICANT have known root causes (DO pre-reorg bonds, NEM face values, PAYX/ETN wrong total_debt, UBER wrong backfill amounts). Next: tackle remaining MISSING_SIGNIFICANT (60 companies), fix THC/PAYX total_debt financials. See WORKPLAN.md.
 
 **Then**:
 1. Continue company expansion (211 → 288, Tier 2-5 remaining)
@@ -28,7 +28,7 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 **Company Expansion**: 211 companies (up from 201) — added 10 Tier 1 massive-debt issuers (CMCSA, DUK, CVS, USB, SO, TFC, ET, PNC, PCG, BMY)
 
-**Debt Coverage Gaps**: 65/211 companies (31%) have instrument outstanding within 80-120% of total debt. Phases 1-6 updated 1,013+ instruments. MISSING_ALL reduced to 4 (PANW, PG, TTD, USB — structural gaps). 50 MISSING_SIGNIFICANT remain. 27 EXCESS_SIGNIFICANT (up from 14 — Phase 6 amounts sometimes overshoot, e.g. face value vs outstanding).
+**Debt Coverage Gaps**: 96/211 companies (46%) have instrument outstanding within 80-120% of total debt ("OK"). Phases 1-7.5 updated 1,013+ instruments, deactivated 180+ duplicates/aggregates, cleared 127 wrong amounts. EXCESS reduced from 58→20 (15 EXCESS_SOME + 5 EXCESS_SIGNIFICANT). MISSING_ALL at 8 (FTNT, META, ON, PANW, PG, TTD, USB, VAL). 60 MISSING_SIGNIFICANT remain. 5 EXCESS_SIGNIFICANT have known root causes (DO, NEM, PAYX, ETN, UBER).
 
 **Pricing Coverage**: 4,712 bonds with pricing via Finnhub/FINRA TRACE.
 
@@ -143,7 +143,7 @@ This separation keeps business logic testable and reusable while scripts handle 
 | `scripts/recompute_metrics.py` | Metrics recomputation CLI (thin wrapper) |
 | `scripts/backfill_amounts_from_docs.py` | Phase 6: Multi-doc targeted outstanding amount backfill |
 | `scripts/backfill_outstanding_from_filings.py` | Phase 2/4: Outstanding amount backfill from single footnote |
-| `scripts/fix_excess_instruments.py` | Phase 3: Dedup by rate+year, deactivate matured |
+| `scripts/fix_excess_instruments.py` | Phase 3/7/7.5: Dedup, deactivate matured, LLM review, revolver clears |
 | `scripts/analyze_gaps_v2.py` | Debt coverage gap analysis (MISSING_ALL/SIGNIFICANT/EXCESS) |
 | `scripts/script_utils.py` | Shared CLI utilities (DB sessions, parsers, progress) |
 | `app/models/schema.py` | SQLAlchemy models (includes User, UserCredits, UsageLog) |
@@ -1093,7 +1093,7 @@ if __name__ == "__main__":
 
 ## Debt Coverage Backfill (Phases 1-6)
 
-Six-phase effort to populate `outstanding` amounts on debt instruments. Progress: 32 → 73 OK companies.
+Multi-phase effort to populate `outstanding` amounts on debt instruments. Progress: 32 → 96 OK companies.
 
 ### Phase Summary
 
@@ -1105,6 +1105,8 @@ Six-phase effort to populate `outstanding` amounts on debt instruments. Progress
 | 4 | `backfill_outstanding_from_filings.py` | Re-extraction with broader section search | 30 | ~$0.10 |
 | 5 | `extract_iterative.py --step core` | Full re-extraction for MISSING_ALL | 13/14 companies | ~$0.50 |
 | 6 | `backfill_amounts_from_docs.py` | Multi-doc targeted extraction | 440 | ~$2.00 |
+| 7 | `fix_excess_instruments.py --fix-llm-review` | Claude reviews EXCESS_SIGNIFICANT (>200%) | 49 deactivated, 45 cleared | ~$0.42 |
+| 7.5 | `fix_excess_instruments.py` | Step 8 revolver clears + LLM review at 1.5x | 36 revolver clears + 180 deactivated, 91 cleared | ~$2.01 |
 
 ### Backfill Scripts
 

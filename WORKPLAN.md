@@ -1,10 +1,10 @@
 # DebtStack Work Plan
 
-Last Updated: 2026-02-12 (ETN/PLD fix)
+Last Updated: 2026-02-12 (Phase 7.5 EXCESS cleanup)
 
 ## Current Status
 
-**Database**: 211 companies | ~4,663 active debt instruments (1,304 deactivated in Phase 3, 49 in Phase 7 Step 7) | 2,926 with CUSIP | 4,712 with pricing | 14,511 document sections | 4,165 guarantees | 713 collateral records | 1,247 covenants | 28,128 entities | 1,816 financial quarters
+**Database**: 211 companies | ~4,495 active debt instruments (1,304 deactivated in Phase 3, 49 in Phase 7, 180 in Phase 7.5 + 127 amounts cleared) | 2,926 with CUSIP | 4,712 with pricing | 14,511 document sections | 4,165 guarantees | 713 collateral records | 1,247 covenants | 28,128 entities | 1,816 financial quarters
 **Deployment**: Live at `https://credible-ai-production.up.railway.app` and `https://api.debtstack.ai`
 **Infrastructure**: Railway + Neon PostgreSQL + Upstash Redis (complete)
 **Pricing Coverage**: 4,712 bonds with pricing (up from 2,618)
@@ -17,21 +17,26 @@ Last Updated: 2026-02-12 (ETN/PLD fix)
 **Data Quality**: QC audit passing - 0 critical, 0 errors, 4 warnings (2026-01-26). Fixed 38 mislabeled seniority records (2026-02-06).
 **Eval Suite**: 121/136 tests passing (89.0%)
 
-### Debt Coverage Gaps (2026-02-12, updated after ETN/PLD fix)
+### Debt Coverage Gaps (2026-02-12, updated after Phase 7.5)
 
 Analysis of `SUM(debt_instruments.outstanding)` vs `company_financials.total_debt`:
 
-| Status | Before | After P1+2 | After P3 | After P4 | After P5 | After P6 | After P6 all-missing | After P7 Steps 4-6 | After P7 Step 7 | After ETN/PLD fix | Description |
-|--------|--------|------------|----------|----------|----------|----------|---------------------|--------------------|--------------------|---------------------|-------------|
-| OK | 32 | 51 | 71 | 72 | 73 | 73 | 65 | 65 | 73 | **82** | Within 80-120% of total debt |
-| EXCESS_SOME | 30 | 43 | 30 | 30 | 30 | 30 | 45 | 45 | 53 | **42** | 120-200% (slight over-count) |
-| EXCESS_SIGNIFICANT | 67 | 35 | 14 | 14 | 14 | 14 | 27 | 19 | 5 | **5** | >200% (duplicates, historical, or unit issues) |
-| MISSING_SOME | 12 | 16 | 19 | 19 | 19 | 19 | 13 | 13 | 13 | **15** | 50-80% (slightly under) |
-| MISSING_SIGNIFICANT | 39 | 44 | 54 | 54 | 56 | 54 | 50 | 50 | 53 | **55** | <50% (missing outstanding amounts) |
-| MISSING_ALL | 24 | 15 | 16 | 14 | 12 | 9 | 4 | 4 | 7 | **5** | $0 outstanding despite having instruments |
-| NO_FINANCIALS | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | **7** | No total debt figure to compare against |
+| Status | Before | After P1+2 | After P3 | After P4 | After P5 | After P6 | After P6 all-missing | After P7 Steps 4-6 | After P7 Step 7 | After ETN/PLD fix | After P7.5 | Description |
+|--------|--------|------------|----------|----------|----------|----------|---------------------|--------------------|--------------------|---------------------|------------|-------------|
+| OK | 32 | 51 | 71 | 72 | 73 | 73 | 65 | 65 | 73 | 82 | **96** | Within 80-120% of total debt |
+| EXCESS_SOME | 30 | 43 | 30 | 30 | 30 | 30 | 45 | 45 | 53 | 42 | **15** | 120-200% (slight over-count) |
+| EXCESS_SIGNIFICANT | 67 | 35 | 14 | 14 | 14 | 14 | 27 | 19 | 5 | 5 | **5** | >200% (duplicates, historical, or unit issues) |
+| MISSING_SOME | 12 | 16 | 19 | 19 | 19 | 19 | 13 | 13 | 13 | 15 | **20** | 50-80% (slightly under) |
+| MISSING_SIGNIFICANT | 39 | 44 | 54 | 54 | 56 | 54 | 50 | 50 | 53 | 55 | **60** | <50% (missing outstanding amounts) |
+| MISSING_ALL | 24 | 15 | 16 | 14 | 12 | 9 | 4 | 4 | 7 | 5 | **8** | $0 outstanding despite having instruments |
+| NO_FINANCIALS | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | **7** | No total debt figure to compare against |
 
-**Note on ETN/PLD fix**: OK jumped 73→82 after fixing ETN and PLD. ETN re-extracted with Gemini 2.5 Pro (17/19 instruments, $9.70B — correct scale from "In millions" footnote). PLD required manual SEC filing fetch + debt note extraction via `scripts/fix_pld_debt_amounts.py` because all 7 stored `debt_footnote` sections were broken (contained entire filing truncated at 100K, never reaching actual debt note). PLD: 44/55 instruments, $28.84B. ETN moved to EXCESS_SIGNIFICANT (instrument amounts correct at ~$9.7B but financials.total_debt is stale at $1.9B). MISSING_ALL reduced 7→5.
+**Note on Phase 7.5**: OK jumped 82→96, EXCESS_SOME dropped 42→15. Two-step approach:
+1. **Step 8 — Revolver/ABL capacity clears** ($0 cost): Cleared 36 revolver/ABL instruments across 23 companies ($55.5B capacity shown as outstanding). Moved 11 companies from EXCESS to OK. Added `--fix-revolver-capacity` flag to `fix_excess_instruments.py`.
+2. **LLM review at 1.5x threshold** ($2.01 cost): Lowered `--excess-threshold` from 2.0 to 1.5, added bank exclusion (`is_financial_institution IS NOT TRUE`). Claude reviewed 95 companies, deactivated 180 instruments (duplicates, aggregates) and cleared 91 amounts (revolver capacity, face values). Key fixes: CHTR ($84B aggregates), NEE (9 deactivated + 3 cleared), BA ($10B revolvers), PFE ($9.7B aggregates).
+3. Some companies overcorrected from EXCESS to MISSING (CHTR 108%→-82%, PCAR 109%→-37%, PFE 111%→MISSING, DXCM 102%→-49%) — aggregates removed but individual amounts not yet populated. Also META, ON, VAL moved to MISSING_ALL after clearing wrong amounts.
+
+**Note on ETN/PLD fix**: ETN re-extracted with Gemini 2.5 Pro (17/19 instruments, $9.70B). PLD required manual SEC filing fetch via `scripts/fix_pld_debt_amounts.py` (44/55 instruments, $28.84B).
 
 **Phase 1 (fix from cache)**: 291 instruments updated across 68 companies — mapped 13+ field name variants
 **Phase 2 (SEC footnote extraction via Gemini)**: 282 instruments updated across 50 companies
@@ -66,10 +71,11 @@ Phase 6 `--all-missing` run (187 companies with any missing instruments):
 - **PLD**: All 7 stored `debt_footnote` sections were broken (contained entire filing from TOC, never reaching debt note). Created `scripts/fix_pld_debt_amounts.py` — fetches latest 10-K directly from SEC via SecApiClient, extracts debt note section using keyword search (bypassing broken regex), sends to Gemini 2.5 Pro. Result: 44/55 instruments, $28.84B total. PLD moved to OK status.
 - **Total: 61 instruments updated** (17 ETN + 44 PLD), MISSING_ALL reduced 7→5, OK increased 73→82
 
-**Remaining root causes (after ETN/PLD fix)**:
-- **MISSING_ALL (5 companies)**: PANW/TTD (revolvers with $0 drawn — correct), PG (aggregate-only footnote, 67 instruments), USB (no debt footnotes — bank), FTNT (structural gap)
-- **MISSING_SIGNIFICANT (55 companies)**: Large issuers where documents lack per-instrument detail. Biggest gaps: VZ (3/81), T (29/70, $3.7B vs $139B), UNH (12/69), CMCSA (8/79), ORCL (19/62), PEP (21/64 but still -69%), TFC (12 instruments, $6.6B vs $41.7B — bank)
-- **EXCESS_SIGNIFICANT (5 companies)**: ETN (instrument amounts correct at $9.7B, total_debt stale at $1.9B — needs financials fix), THC/PAYX (likely wrong total_debt in financials), DO (complex offshore driller), UBER (131% — borderline)
+**Remaining root causes (after Phase 7.5)**:
+- **MISSING_ALL (8 companies)**: PANW/TTD (revolvers with $0 drawn — correct), PG (aggregate-only footnote, 67 instruments), USB (no debt footnotes — bank), FTNT/META/ON/VAL (amounts cleared in Phase 7/7.5, need re-extraction)
+- **MISSING_SIGNIFICANT (60 companies)**: Large issuers where documents lack per-instrument detail. Biggest gaps: VZ (3/81), T (29/70, $3.7B vs $139B), UNH (12/69), CMCSA (8/79), ORCL (19/62), CHTR (11/40 after aggregate removal), PEP (21/64 but still -69%). Some overcorrected from EXCESS after aggregate removal (CHTR, PFE, LOW, MSFT).
+- **EXCESS_SIGNIFICANT (5 companies)**: DO (pre-reorg bonds), ETN (total_debt stale at $1.9B), PAYX (total_debt wrong post-Paycor), NEM (face values), UBER (borderline 121%)
+- **EXCESS_SOME (15 companies)**: 3 banks (BAC, C, JPM — structural), 12 others with minor excess (20-95%)
 - **Stored debt_footnote quality**: ~40% of `debt_footnote` sections contain entire 10-Q filings (truncated at 100K) instead of just the debt note. Need to re-extract with better section targeting.
 - **NO_FINANCIALS (7 companies)**: ANET, GEV, GFS, ISRG, LULU, PLTR, VRTX — minimal/no debt or no financial data
 
@@ -113,14 +119,49 @@ Step 7 results (19 companies, $0.42 total cost):
 - All changes tagged in `attributes` JSONB: `deactivation_reason`/`amount_cleared` = `llm_review_{reason}`, plus `llm_review_explanation` and `llm_review_at` timestamp
 - **EXCESS_SIGNIFICANT: 19 → 5** (exceeded goal of ~10)
 
-Remaining 5 EXCESS_SIGNIFICANT after Step 7:
-- **THC** (707%) — total_debt is $13M, likely wrong (should be ~$12B); needs financials fix, not instruments
+Remaining 5 EXCESS_SIGNIFICANT after Step 7 (see Phase 7.5 section above for current state):
+- **THC** (707%→MISSING_SIGNIFICANT after revolver clear) — total_debt is $13M, likely wrong (should be ~$12B)
 - **PAYX** (512%) — similar total_debt issue
 - **DO** (266%) — complex offshore driller with pre-reorg debt
-- **UBER** (131%) — borderline, close to target range after removing 2 duplicates
-- **NEM** (117%) — borderline, within range after clearing 2 revolvers
+- **UBER** (131%→121% after Phase 7.5) — borderline
+- **NEM** (117%) — face values vs current outstanding
 
-**MISSING_ALL increased 4→7**: ETN (all 17 amounts cleared — were 10x face value), PLD (59 amounts cleared in Step 4 — were $30.9B each), FTNT (still structural gap). These need correct amounts re-extracted via Phase 6 backfill.
+**MISSING_ALL increased 4→7→8**: After Phase 7 Step 7: ETN, PLD, FTNT moved in. After Phase 7.5: META, ON, VAL moved in after clearing wrong amounts. Current 8: FTNT, META, ON, PANW, PG, TTD, USB, VAL.
+
+**Phase 7.5 (EXCESS_SOME cleanup)** (2026-02-12): Two-step approach to reduce remaining 42 EXCESS_SOME companies:
+
+Step 8 — Revolver/ABL capacity clears ($0 cost):
+```bash
+# Added --fix-revolver-capacity flag
+python scripts/fix_excess_instruments.py --fix-revolver-capacity --dry-run --verbose
+python scripts/fix_excess_instruments.py --fix-revolver-capacity --verbose
+```
+
+Step 8 results: 36 instruments cleared across 23 companies ($55.5B capacity). Pattern: `instrument_type IN ('revolver', 'abl')` with `outstanding > 0` in EXCESS companies (>120%). Safety: name must contain revolver/credit facility/ABL keywords. Tagged `amount_cleared: "revolver_capacity"`. OK: 82→81→... (some moved to OK immediately).
+
+LLM review at 1.5x threshold ($2.01 cost):
+```bash
+# Added --excess-threshold parameter and bank exclusion
+python scripts/fix_excess_instruments.py --fix-llm-review --excess-threshold 1.5 --dry-run --verbose
+python scripts/fix_excess_instruments.py --fix-llm-review --excess-threshold 1.5 --verbose
+```
+
+LLM review results (95 companies):
+- **180 instruments deactivated** — aggregates (CHTR $84B, PFE $9.7B, NEE $15.5B), duplicates (SNPS 2 term loan tranches, XEL 6 revolvers, X 3 instruments), generic entries
+- **91 amounts cleared** — revolver capacity (BA $10B, NEE $3.1B, INTU $1.18B, XEL revolvers), face values
+- Banks excluded via `c.is_financial_institution IS NOT TRUE` (BAC, C, JPM, COF, GS, MS, PNC, SCHW, TFC, USB, WFC, AXP)
+- Combined result: **OK 82→96, EXCESS_SOME 42→15, EXCESS_SIGNIFICANT 5→5**
+
+Remaining 15 EXCESS_SOME after Phase 7.5:
+- **3 banks** (BAC 56%, C 92%, JPM 26%) — structural, `total_debt` doesn't include all public notes/wholesale funding
+- **12 others**: GILD (63%), NRG (63%), TTWO (95%), APP (86%), MA (39%), DISH (29%), DHR (31%), AMD (31%), KSS (30%), WELL (29%), PH (22%), RCL (20%)
+
+Remaining 5 EXCESS_SIGNIFICANT after Phase 7.5:
+- **DO** (266%) — pre-reorg bonds still active (4.875% due 2043, 5.70% due 2039)
+- **ETN** (411%) — instrument amounts correct at $9.7B, `total_debt` stale at $1.9B — needs financials fix
+- **PAYX** (512%) — `total_debt` shows $0.82B, should be ~$5B post-Paycor acquisition
+- **NEM** (117%) — face values vs current outstanding across 16 notes
+- **UBER** (121%) — borderline, doc_backfill amounts slightly high
 
 ---
 
@@ -128,26 +169,23 @@ Remaining 5 EXCESS_SIGNIFICANT after Step 7:
 
 ### Priority 1: Fix Debt Coverage Gaps (IMMEDIATE)
 
-Analysis shows 162 of 211 companies have debt instrument outstanding amounts that don't match reported total debt. Three categories to fix:
+Analysis shows 115 of 211 companies have debt instrument outstanding amounts that don't match reported total debt. Three categories to fix:
 
-#### 1a. MISSING_ALL — 24 companies with $0 outstanding
+#### 1a. MISSING_ALL — 8 companies with $0 outstanding
 Companies have debt instruments in DB but `outstanding` field is NULL/0. These need outstanding amounts populated from cached extraction results or re-extraction.
 
 **Root cause**: LLM extracted instrument names but `outstanding` amount wasn't saved to DB (field mapping issue in `merge_extraction_to_db`).
 
-**Companies**: C, CB, COF, CPRT, CSGP, ET, FOX, FTNT, IBM, KDP, KHC, LVS, MO, NCLH, OXY, PYPL, REGN, SBUX, SO, SYF, TFC, UAL, WFC, WMT
+**Companies**: FTNT, META, ON, PANW, PG, TTD, USB, VAL
 
-#### 1b. MISSING_SIGNIFICANT — 39 companies with <50% coverage
+#### 1b. MISSING_SIGNIFICANT — 60 companies with <50% coverage
 Similar issue — instruments exist but amounts are very low vs total debt. Major gaps include BAC ($0.1B vs $247B), ABT ($0.19B vs $12.9B).
 
-#### 1c. EXCESS — 78 companies with >120% of total debt
+#### 1c. EXCESS — 20 companies with >120% of total debt (down from 78)
 
-Root causes identified:
-1. **Duplicate instruments** — Same bonds ingested from SEC extraction AND Finnhub discovery (different names, same rate+year). ~1,060 duplicate groups, ~2,318 instruments, ~$645B excess.
-2. **Matured bonds still active** — ~51 instruments with maturity_date < today, ~$90B still counting.
-3. **Total-debt-as-per-instrument** — NFLX (6 notes each showing $14.5B = total debt) and GE (4 notes at $1B each). LLM assigned aggregate total to each individual instrument.
+Mostly resolved through Phases 3, 7, and 7.5. Remaining 15 EXCESS_SOME include 3 banks (structural) and 12 with minor face-value/duplicate issues. 5 EXCESS_SIGNIFICANT have known root causes (see Phase 7.5 section above).
 
-**Fix script**: `scripts/fix_excess_instruments.py` — 7-step fix:
+**Fix script**: `scripts/fix_excess_instruments.py` — 8-step fix:
 
 ```bash
 # Analyze current state
@@ -171,10 +209,16 @@ python scripts/fix_excess_instruments.py --fix-outliers --dry-run
 # Step 6: Fix stale amounts (>5yr old filing amounts in EXCESS companies)
 python scripts/fix_excess_instruments.py --fix-stale --dry-run
 
-# Step 7: Claude-assisted review of EXCESS_SIGNIFICANT companies
+# Step 7: Claude-assisted review of EXCESS companies
 python scripts/fix_excess_instruments.py --fix-llm-review --dry-run --verbose
 
-# Run ALL steps in order
+# Step 7 with custom threshold (default 2.0 = 200%, use 1.5 for 150%)
+python scripts/fix_excess_instruments.py --fix-llm-review --excess-threshold 1.5 --dry-run --verbose
+
+# Step 8: Clear revolver/ABL capacity amounts
+python scripts/fix_excess_instruments.py --fix-revolver-capacity --dry-run --verbose
+
+# Run ALL steps 1-8 in order
 python scripts/fix_excess_instruments.py --fix-all-excess --dry-run
 python scripts/fix_excess_instruments.py --fix-all-excess
 
@@ -2107,6 +2151,40 @@ When starting a new session, read this file first, then:
 ---
 
 ## Session Log
+
+### 2026-02-12 (Session 35) - Phase 7.5: Reduce Remaining EXCESS Companies
+
+**Objective:** Reduce EXCESS_SOME from 42 to ~30 and clean up remaining EXCESS companies using cheapest-first approach.
+
+**Implementation:**
+1. Added Step 8 `--fix-revolver-capacity` to `fix_excess_instruments.py` — deterministic, $0 cost
+2. Added `--excess-threshold` parameter to `--fix-llm-review` (default 2.0, allows 1.5x targeting)
+3. Added bank exclusion (`is_financial_institution IS NOT TRUE`) to LLM review SQL
+4. Updated `--fix-all-excess` to include Step 8 before Step 7
+
+**Step 8 results (revolver/ABL capacity clears):**
+- 36 instruments cleared across 23 companies ($55.5B capacity)
+- Top clears: CHTR ($13.6B), CEG ($8.35B), MA ($8B), CRM ($5.5B), SWN ($3.17B)
+- OK: 82→81 (some companies moved to OK)
+
+**LLM review at 1.5x results (95 companies, $2.01 cost):**
+- 180 instruments deactivated — aggregates (CHTR $84B, PFE $9.7B, NEE $15.5B), duplicates, generic entries
+- 91 amounts cleared — revolver capacity (BA $10B, INTU $1.18B), face values
+- Key: many companies at 100-102% correctly left alone by Claude
+
+**Combined Phase 7.5 results:**
+| Category | Before | After | Change |
+|----------|--------|-------|--------|
+| OK | 82 | 96 | +14 |
+| EXCESS_SOME | 42 | 15 | -27 |
+| EXCESS_SIGNIFICANT | 5 | 5 | 0 |
+| MISSING_SOME | 15 | 20 | +5 |
+| MISSING_SIGNIFICANT | 55 | 60 | +5 |
+| MISSING_ALL | 5 | 8 | +3 |
+
+**Side effects:** Some companies overcorrected from EXCESS to MISSING after removing aggregates (CHTR, PFE, LOW, MSFT). META, ON, VAL moved to MISSING_ALL. These need individual bond amounts populated.
+
+---
 
 ### 2026-02-12 (Session 34) - Phase 7 Step 7: Claude-Assisted EXCESS Cleanup
 
