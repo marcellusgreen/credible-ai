@@ -1,70 +1,208 @@
 # DebtStack Work Plan
 
-Last Updated: 2026-02-09
+Last Updated: 2026-02-12
 
 ## Current Status
 
-**Database**: 201 companies | 5,880 debt instruments | 3,000 with CUSIP | 2,618 with pricing | 13,862 document sections | 3,831 guarantees | 626 collateral records | 1,181 covenants | 13,970 treasury yields
+**Database**: 211 companies | ~4,663 active debt instruments (1,304 deactivated in Phase 3, 49 in Phase 7 Step 7) | 2,926 with CUSIP | 4,712 with pricing | 14,511 document sections | 4,165 guarantees | 713 collateral records | 1,247 covenants | 28,128 entities | 1,816 financial quarters
 **Deployment**: Live at `https://credible-ai-production.up.railway.app` and `https://api.debtstack.ai`
 **Infrastructure**: Railway + Neon PostgreSQL + Upstash Redis (complete)
-**Pricing Coverage**: 2,618/3,018 bonds with ISINs have pricing (86.7%) — 2,570 with YTM calculated
-**Finnhub Discovery**: 161/201 companies scanned + 26 companies re-scanned with subsidiary codes. 2,411 bonds discovered.
-**Seniority Distribution**: 5,446 senior_unsecured | 360 senior_secured | 14 subordinated | 8 junior_subordinated
-**Secured Bond Pricing**: 54 senior_secured bonds with pricing (up from 9) across 13 companies
-**Leverage Coverage**: 155/189 companies (82%) - good coverage across all sectors
-**Guarantee Coverage**: ~1,500/2,485 debt instruments (~60%) - up from 34.7% on 2026-01-21
-**Collateral Coverage**: 230/230 senior_secured instruments (100%) with collateral type identified
-**Document Coverage**: 2,777/4,675 linkable instruments (59.4%) — dropped from 100% due to Finnhub bonds awaiting linking
-**Ownership Coverage**: 199/201 companies have identified root entity; 862 explicit parent-child relationships extracted
-**Covenant Coverage**: 1,181 covenants across 201 companies (100%), 92.5% linked to specific instruments
+**Pricing Coverage**: 4,712 bonds with pricing (up from 2,618)
+**Company Expansion**: 211 companies (up from 201) — added 10 Tier 1 massive-debt companies
+**Guarantee Coverage**: 4,165 guarantees (up from 3,831)
+**Collateral Coverage**: 713 collateral records (up from 626)
+**Covenant Coverage**: 1,247 covenants across 211 companies
+**Document Coverage**: 14,511 document sections (up from 13,862)
+**Ownership Coverage**: 28,128 entities across 211 companies
 **Data Quality**: QC audit passing - 0 critical, 0 errors, 4 warnings (2026-01-26). Fixed 38 mislabeled seniority records (2026-02-06).
-**Eval Suite**: 121/136 tests passing (89.0%) — up from 119/136 (87.5%). 2 workflow tests fixed by secured bond pricing expansion.
+**Eval Suite**: 121/136 tests passing (89.0%)
+
+### Debt Coverage Gaps (2026-02-12, updated after Phase 7 Step 7)
+
+Analysis of `SUM(debt_instruments.outstanding)` vs `company_financials.total_debt`:
+
+| Status | Before | After P1+2 | After P3 | After P4 | After P5 | After P6 | After P6 all-missing | After P7 Steps 4-6 | After P7 Step 7 | Description |
+|--------|--------|------------|----------|----------|----------|----------|---------------------|--------------------|--------------------|-------------|
+| OK | 32 | 51 | 71 | 72 | 73 | 73 | 65 | 65 | **73** | Within 80-120% of total debt |
+| EXCESS_SOME | 30 | 43 | 30 | 30 | 30 | 30 | 45 | 45 | **53** | 120-200% (slight over-count) |
+| EXCESS_SIGNIFICANT | 67 | 35 | 14 | 14 | 14 | 14 | 27 | 19 | **5** | >200% (duplicates, historical, or unit issues) |
+| MISSING_SOME | 12 | 16 | 19 | 19 | 19 | 19 | 13 | 13 | **13** | 50-80% (slightly under) |
+| MISSING_SIGNIFICANT | 39 | 44 | 54 | 54 | 56 | 54 | 50 | 50 | **53** | <50% (missing outstanding amounts) |
+| MISSING_ALL | 24 | 15 | 16 | 14 | 12 | 9 | 4 | 4 | **7** | $0 outstanding despite having instruments |
+| NO_FINANCIALS | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | **7** | No total debt figure to compare against |
+
+**Note on OK recovery**: OK went back up from 65→73, recovering the companies that Phase 6 had pushed into EXCESS. Phase 7 Step 7 (Claude-assisted review) fixed 14 of 19 EXCESS_SIGNIFICANT companies by deactivating aggregates/duplicates and clearing wrong amounts. ETN and PLD moved to MISSING_ALL after all their wrong amounts were cleared — they need correct amounts re-extracted.
+
+**Phase 1 (fix from cache)**: 291 instruments updated across 68 companies — mapped 13+ field name variants
+**Phase 2 (SEC footnote extraction via Gemini)**: 282 instruments updated across 50 companies
+**Phase 3 (fix excess)**: 1,304 instruments deactivated (51 matured + 1,253 deduplicated) + 6 NFLX amounts cleared. OK companies 51→71. Excess companies 78→44.
+**Phase 4 (SEC footnote re-extraction)**: 30 instruments updated across 13 companies. Best results: NFLX (11), DVN (3), CB/TMUS/SBUX/CSCO/PGR (2 each). Low yield due to poor stored footnote quality and Finnhub/SEC instrument mismatch.
+**Phase 5 (MISSING_ALL re-extraction)**: Re-extracted core data for 14 MISSING_ALL companies via `--step core`. 13/14 succeeded (FOX→OK, ET moved to MISSING_SIGNIFICANT with +22 instruments, $23B extracted). Banks (C, MS, USB, COF) and large issuers (PG, PLD) have instruments but LLM couldn't extract outstanding amounts from complex filings. Fixed RecursionError in `build_entity_tree` (circular parent refs).
+**Phase 6 (multi-doc targeted backfill)**: Created `scripts/backfill_amounts_from_docs.py`. Sends specific instrument list + document content to Gemini. Tries multiple document_sections in priority order (10-K debt_footnote → 10-Q debt_footnote → MDA → desc_securities).
+
+Phase 6 initial run (MISSING_ALL only, 12 companies):
+- PLD: **59/59** instruments filled from single 10-K footnote (42K chars)
+- UAL: **6/6** instruments filled across 12 documents (multi-doc strategy worked)
+- C: **2/21** — bank with limited footnote detail
+- CSGP: **1/2** — notes filled, revolver $0 drawn (correct)
+- CPRT: **1/1** — found in older 10-Q footnote
+- TEAM: **1/6** — duplicates with no rates
+- PG: **0/67** — footnote is aggregate maturity schedule only, no per-instrument amounts
+- PANW, TTD: **0/3** — all revolvers with $0 drawn (correct)
+- **Initial total: 70 instruments updated across 5 companies**
+- **Key bug fixed**: Gemini returns `outstanding_amount_cents` instead of `outstanding_cents` — script now checks both
+
+Phase 6 `--all-missing` run (187 companies with any missing instruments):
+- **370 instruments updated across 96 companies**
+- **2,024 total instruments needed amounts; 370 filled = 18.3% fill rate**
+- Perfect completions (100%): HD 24/24, MGM 14/14, FYBR 6/6, CEG 5/5, XEL 5/5, MCHP 3/3, FTNT 3/3, CRWV 2/2, PCAR 2/2, NEM 1/1, NOW 1/1, CTAS 1/1, CTSH 1/1, DAL 1/1, VAL 1/1, VRSK 1/1, ZS 1/1, TSLA 1/1, CHS 1/1
+- High-yield partial: KDP 25/26, LOW 15/43, PH 15/18, KO 17/41, IBM 13/19, ET 13/26, PEP 10/53, EXC 9/18, NEE 8/31, HTZ 7/8, RIG 7/8, V 7/12, MDLZ 7/9, HCA 6/11, FANG 5/8, MSFT 4/16, CVX 4/20, ON 4/5, ROP 6/20, BAC 10/10, UBER 3/5
+- Best document sources: 10-K debt_footnote (HD 24/24 in 1 doc), 10-Q debt_footnote (KDP 20 from single doc, HTZ 7 from single doc), 8-K desc_securities (KO 17, PEP 10, MRK 3), MDA (EXC 9 from single MDA, FYBR 4+1+1)
+- **MISSING_ALL reduced: 12 → 4** (PANW, PG, TTD, USB — all structural gaps)
+- **Phase 6 total: 440 instruments updated** (70 initial + 370 all-missing)
+
+**Remaining root causes (after Phase 7 Step 7)**:
+- **MISSING_ALL (7 companies)**: PANW/TTD (revolvers with $0 drawn — correct), PG (aggregate-only footnote, 67 instruments), USB (no debt footnotes — bank), ETN (17 amounts cleared — need re-extraction with correct scale), PLD (59 amounts cleared — need re-extraction), FTNT (structural gap)
+- **MISSING_SIGNIFICANT (53 companies)**: Large issuers where documents lack per-instrument detail. Biggest gaps: VZ (1/79), T (70 instruments, $4B vs $139B), UNH (1/58), CMCSA (3/74), ORCL (0/43), PEP (10/53 but still -69%), TFC (12 instruments, $6.6B vs $41.7B — bank)
+- **EXCESS_SIGNIFICANT (5 companies)**: THC/PAYX (likely wrong total_debt in financials), DO (complex offshore driller), UBER (131% — borderline), NEM (117% — borderline)
+- **Stored debt_footnote quality**: ~40% of `debt_footnote` sections contain entire 10-Q filings (truncated at 100K) instead of just the debt note. Need to re-extract with better section targeting.
+- **NO_FINANCIALS (7 companies)**: ANET, GEV, GFS, ISRG, LULU, PLTR, VRTX — minimal/no debt or no financial data
+
+**Phase 7 (EXCESS_SIGNIFICANT cleanup)**: Extended `scripts/fix_excess_instruments.py` with 4 new steps to clean up 27 EXCESS_SIGNIFICANT companies created by Phase 6 backfill:
+
+Root causes diagnosed across 27 companies:
+- **Category A — Total-as-per-instrument**: Gemini assigned total debt to every instrument (PLD 59x$30.9B, BAC 5x$290B, HTZ 7x$5.6B, TFC 2x$41.7B)
+- **Category B — Stale amounts**: Amounts from 2004/2006 filings (ON: $1.2B convertible from 2004)
+- **Category C — Duplicates without rate/maturity**: Phase 3 dedup missed instruments with NULL rate or maturity (PH, TFC, CNK)
+- **Category D — Borderline**: 200-220%, often 1 extra duplicate (ABNB, ACN, FTNT, NOW, ZS, DASH)
+
+Steps 4-6 (pattern-matching fixes):
+```bash
+# Step 4: Clear Phase 6 identical amounts (3+ same amount, or 2 if combined > 1.5x total debt)
+python scripts/fix_excess_instruments.py --fix-phase6-totals --dry-run
+
+# Step 5: Clear single instruments exceeding total company debt
+python scripts/fix_excess_instruments.py --fix-outliers --dry-run
+
+# Step 6: Clear amounts from filings >5 years old (doc_date < 2021-01-01)
+python scripts/fix_excess_instruments.py --fix-stale --dry-run
+```
+
+Steps 4-6 result: 27 EXCESS_SIGNIFICANT → 19 (cleared ~83 instruments across PLD, BAC, HTZ, TFC, etc.)
+
+**Step 7 — Claude-assisted LLM review** (2026-02-12): Remaining 19 companies had complex issues that simple pattern-matching couldn't fix. Added `--fix-llm-review` flag that sends each company's instrument list to Claude Sonnet for judgment on duplicates, aggregates, and wrong amounts. Claude returns structured JSON with per-instrument actions.
+
+```bash
+# Step 7: Claude-assisted review of EXCESS_SIGNIFICANT companies
+python scripts/fix_excess_instruments.py --fix-llm-review --dry-run --verbose
+python scripts/fix_excess_instruments.py --fix-llm-review --verbose
+
+# Run ALL 7 steps in order
+python scripts/fix_excess_instruments.py --fix-all-excess --dry-run
+python scripts/fix_excess_instruments.py --fix-all-excess
+```
+
+Step 7 results (19 companies, $0.42 total cost):
+- **49 instruments deactivated** — aggregates (SCHW $20.1B CSC Senior Notes, SPG $19.2B Senior Unsecured Notes, ACN $5B), duplicates (PH 12, HCA 5, MSFT 5, CNK 4, SCHW 3), total-debt-as-amount (TFC 2x$41.7B)
+- **45 instrument amounts cleared** — face value not outstanding (ETN 17, THC 8, PAYX 2), revolver capacity not drawn (NEM 2, SPG 3, NRG 2, HCA 2, ACN 3), total-debt-as-amount (HCA $42B)
+- All changes tagged in `attributes` JSONB: `deactivation_reason`/`amount_cleared` = `llm_review_{reason}`, plus `llm_review_explanation` and `llm_review_at` timestamp
+- **EXCESS_SIGNIFICANT: 19 → 5** (exceeded goal of ~10)
+
+Remaining 5 EXCESS_SIGNIFICANT after Step 7:
+- **THC** (707%) — total_debt is $13M, likely wrong (should be ~$12B); needs financials fix, not instruments
+- **PAYX** (512%) — similar total_debt issue
+- **DO** (266%) — complex offshore driller with pre-reorg debt
+- **UBER** (131%) — borderline, close to target range after removing 2 duplicates
+- **NEM** (117%) — borderline, within range after clearing 2 revolvers
+
+**MISSING_ALL increased 4→7**: ETN (all 17 amounts cleared — were 10x face value), PLD (59 amounts cleared in Step 4 — were $30.9B each), FTNT (still structural gap). These need correct amounts re-extracted via Phase 6 backfill.
 
 ---
 
 ## What's Next
 
-### Finnhub Bond Discovery & Pricing — Status Update (2026-02-06)
+### Priority 1: Fix Debt Coverage Gaps (IMMEDIATE)
 
-**Finnhub Discovery (Phase 4)**: 161/201 companies scanned. 2,359 bonds discovered.
-- 40 companies remaining (mostly tech/low-debt: AAPL, TSLA, NXPI, TXN, LIN, PANW, PLTR, etc.)
-- To resume: `python scripts/expand_bond_pricing.py --phase4` (idempotent, skips already-scanned)
+Analysis shows 162 of 211 companies have debt instrument outstanding amounts that don't match reported total debt. Three categories to fix:
 
-**Pricing**: 2,552 bonds priced out of 2,948 with CUSIPs (86.5%).
-- 488 bonds have CUSIPs but no pricing (342 Finnhub-discovered, 146 SEC-extracted)
-- These were attempted but Finnhub returned `no_data` — illiquid/no recent TRACE trades
-- Pricing is fresh: 2,470/2,552 updated in last 7 days
+#### 1a. MISSING_ALL — 24 companies with $0 outstanding
+Companies have debt instruments in DB but `outstanding` field is NULL/0. These need outstanding amounts populated from cached extraction results or re-extraction.
 
-**Seniority Fix (2026-02-06)**: Fixed 38 bonds mislabeled as `senior_secured` where name said "Senior Unsecured" (APA, ADSK, BKR, BX, CAR, ABNB, ATUS). Distribution now: 5,446 unsecured | 360 secured | 14 subordinated | 8 junior_subordinated.
+**Root cause**: LLM extracted instrument names but `outstanding` amount wasn't saved to DB (field mapping issue in `merge_extraction_to_db`).
 
-**Remaining Steps**:
+**Companies**: C, CB, COF, CPRT, CSGP, ET, FOX, FTNT, IBM, KDP, KHC, LVS, MO, NCLH, OXY, PYPL, REGN, SBUX, SO, SYF, TFC, UAL, WFC, WMT
 
-#### Step 1: Complete Finnhub Discovery (40 companies remaining)
+#### 1b. MISSING_SIGNIFICANT — 39 companies with <50% coverage
+Similar issue — instruments exist but amounts are very low vs total debt. Major gaps include BAC ($0.1B vs $247B), ABT ($0.19B vs $12.9B).
+
+#### 1c. EXCESS — 78 companies with >120% of total debt
+
+Root causes identified:
+1. **Duplicate instruments** — Same bonds ingested from SEC extraction AND Finnhub discovery (different names, same rate+year). ~1,060 duplicate groups, ~2,318 instruments, ~$645B excess.
+2. **Matured bonds still active** — ~51 instruments with maturity_date < today, ~$90B still counting.
+3. **Total-debt-as-per-instrument** — NFLX (6 notes each showing $14.5B = total debt) and GE (4 notes at $1B each). LLM assigned aggregate total to each individual instrument.
+
+**Fix script**: `scripts/fix_excess_instruments.py` — 7-step fix:
+
+```bash
+# Analyze current state
+python scripts/fix_excess_instruments.py --analyze
+
+# Step 1: Deactivate matured instruments
+python scripts/fix_excess_instruments.py --deactivate-matured --dry-run
+
+# Step 2: Deduplicate by rate + maturity year
+python scripts/fix_excess_instruments.py --deduplicate --dry-run
+
+# Step 3: Fix total-debt-as-per-instrument (3+ identical amounts)
+python scripts/fix_excess_instruments.py --fix-totals --dry-run
+
+# Step 4: Fix Phase 6 total-as-per-instrument (identical doc_backfill amounts)
+python scripts/fix_excess_instruments.py --fix-phase6-totals --dry-run
+
+# Step 5: Fix outlier instruments (single instrument > total debt)
+python scripts/fix_excess_instruments.py --fix-outliers --dry-run
+
+# Step 6: Fix stale amounts (>5yr old filing amounts in EXCESS companies)
+python scripts/fix_excess_instruments.py --fix-stale --dry-run
+
+# Step 7: Claude-assisted review of EXCESS_SIGNIFICANT companies
+python scripts/fix_excess_instruments.py --fix-llm-review --dry-run --verbose
+
+# Run ALL steps in order
+python scripts/fix_excess_instruments.py --fix-all-excess --dry-run
+python scripts/fix_excess_instruments.py --fix-all-excess
+
+# Single company
+python scripts/fix_excess_instruments.py --deduplicate --ticker MA
+```
+
+**Dedup matching**: `company_id + ROUND(interest_rate/100, 2) + EXTRACT(YEAR FROM maturity_date)` — catches "2.950% Senior Notes due November 2026" vs "2.95% due 2026" (Finnhub)
+
+**Keep logic** (priority order): CUSIP (+4) > outstanding amount (+3) > pricing data (+2) > ISIN (+1) > doc links (+1) > earliest created_at
+
+**Safety**: Soft-delete only (set `is_active = false`, tag `attributes.deactivation_reason`). Merges CUSIP/ISIN/pricing from duplicates to keeper before deactivation.
+
+### Priority 2: Continue Company Expansion (201 → 288)
+
+10 Tier 1 companies already added. Remaining:
+- Tier 2: 22 companies ($30-50B debt) — HIGH PRIORITY
+- Tier 3: 38 companies ($15-30B debt) — MEDIUM PRIORITY
+- Tier 4-5: 17 companies ($5-15B debt) — SECTOR DIVERSITY
+
+### Priority 3: Finnhub Bond Discovery & Pricing
+
+**Finnhub Discovery**: 161/211 companies scanned. ~50 remaining.
 ```bash
 python scripts/expand_bond_pricing.py --phase4
 ```
 
-#### Step 2: Link Finnhub Bonds to Documents
-**Script**: `scripts/link_finnhub_bonds.py`
-
-Links discovered Finnhub bonds to indenture documents, then extracts guarantees and collateral.
-
-**Commands**:
+**Link Finnhub Bonds to Documents**:
 ```bash
-python scripts/link_finnhub_bonds.py --all --dry-run    # Preview first
-python scripts/link_finnhub_bonds.py --all               # Live run
-python scripts/link_finnhub_bonds.py --ticker CHTR        # Single company
-python scripts/link_finnhub_bonds.py --step backfill      # Specific step only
-python scripts/link_finnhub_bonds.py --step match         # Pattern matching only
-python scripts/link_finnhub_bonds.py --step guarantees    # Guarantees only
+python scripts/link_finnhub_bonds.py --all
 ```
 
-#### Step 3: Historical Pricing Backfill
-```bash
-python scripts/backfill_pricing_history.py --all --days 1095 --with-spreads
-```
-
-#### Then: SDK & Documentation
+### Priority 4: SDK & Documentation
 1. SDK publication to PyPI
 2. Mintlify docs deployment to docs.debtstack.ai
 3. ~~Set up Railway cron job for daily pricing collection~~ ✅ Done — APScheduler in-process (11 AM / 3 PM / 9 PM ET)
@@ -1964,6 +2102,109 @@ When starting a new session, read this file first, then:
 ---
 
 ## Session Log
+
+### 2026-02-12 (Session 34) - Phase 7 Step 7: Claude-Assisted EXCESS Cleanup
+
+**Objective:** Fix remaining 19 EXCESS_SIGNIFICANT companies using Claude LLM judgment.
+
+**Implementation:**
+- Added Step 7 `--fix-llm-review` to `scripts/fix_excess_instruments.py`
+- Sends each company's instrument list to Claude Sonnet with financial context
+- Claude returns structured JSON with per-instrument actions: `deactivate`, `clear_amount`, or `keep`
+- Actions tagged in `attributes` JSONB with `llm_review_explanation` and timestamp
+- Cost: $0.42 total for 19 companies (~$0.02/company)
+
+**Dry run results:** 47 deactivate, 45 clear — Claude correctly identified aggregates, duplicates, face values, and revolver capacity
+
+**Execution results:** 49 deactivated, 45 amounts cleared across 19 companies
+
+**Key fixes by pattern:**
+| Pattern | Companies | Actions |
+|---------|-----------|---------|
+| Aggregate entries | SCHW ($20.1B), SPG ($19.2B), ACN ($5B) | Deactivated |
+| Duplicates (no rate/maturity) | PH (12), HCA (5), MSFT (5), CNK (4), SCHW (3) | Deactivated |
+| Face value not outstanding | ETN (17), THC (8), PAYX (2) | Amounts cleared |
+| Revolver capacity not drawn | NEM (2), SPG (3), NRG (2), HCA (2), ACN (3) | Amounts cleared |
+| Total debt as amount | TFC (2×$41.7B), HCA ($42B) | Deactivated/cleared |
+
+**Coverage improvement:** EXCESS_SIGNIFICANT 19 → 5 (exceeded goal of ~10). OK companies 65 → 73.
+
+**Side effects:** ETN and PLD moved to MISSING_ALL (amounts cleared were wrong; need re-extraction). TFC moved to MISSING_SIGNIFICANT (legitimate instruments sum to only $6.6B vs $41.7B — bank with mostly wholesale funding).
+
+**Also fixed:** `datetime.utcnow()` deprecation warning → `datetime.now(timezone.utc)`
+
+---
+
+### 2026-02-11 (Session 33) - Company Expansion Batch Run + Debt Coverage Analysis
+
+**Objective:** Expand from 201 → 211 companies (Tier 1 massive-debt issuers) and analyze data quality gaps.
+
+**Part 1: Batch Extraction (all 211 companies)**
+- Ran `python scripts/extract_iterative.py --all --save-db --resume` across 3 batch runs
+- Run 1: Stopped at CPRT (#48) — Neon DB connection error
+- Run 2: Stopped at ISRG (#103) — SEC-API 504 timeout
+- Run 3: Completed remaining 109 companies (INTU through ZS)
+- Total: 211 processed, 70 new extractions saved, 102 skipped (resume), 39 errors
+
+**Part 2: Error Analysis & Fixes**
+- 31x `'CursorResult' object has no attribute 'final_qa_score'` — harmless logging bug at `extract_iterative.py:886` (data saved before error). NOT YET FIXED.
+- 4x `UniqueViolationError` on empty/duplicate slugs (LOW, MGM, ROP, VNO)
+- 2x Pydantic validation error: float basis points (ORCL `spread_bps=87.5`, PCG `interest_rate=737.5`)
+
+**Code Fixes Applied to `app/services/extraction.py`:**
+1. Added `coerce_bps_to_int` field_validator to `ExtractedDebtInstrument` — rounds float bps to nearest int
+2. Modified `slugify()` to generate UUID-based slug when text produces empty string
+
+**Re-run Results (6 companies):**
+
+| Company | Result | Details |
+|---------|--------|---------|
+| ORCL | Fixed | BPS fix worked, data saved |
+| PCG | Fixed | BPS fix worked, +5 debt, +11 updated |
+| MGM | Fixed | Empty slug fix worked, +5 entities, +13 debt |
+| ROP | Fixed | Empty slug fix worked, +3 entities, +13 debt |
+| LOW | Workaround | Entity slug collision — ran `--step metrics` and `--step cache` |
+| VNO | Workaround | Entity slug collision — ran `--step metrics` and `--step cache` |
+
+**Part 3: Debt Coverage Analysis**
+- Ran `fix_debt_coverage.py --analyze` to compare `SUM(outstanding)` vs `total_debt`
+- Found JOIN multiplication bug in original query — created `analyze_gaps_v2.py` with corrected subqueries
+- Corrected results: 32 OK, 23 EXCESS_SIGNIFICANT, 39 MISSING_SIGNIFICANT, 24 MISSING_ALL
+- Overall: $4,053B captured vs $6,559B total debt = 61.8% coverage
+
+**Part 4: Fix Debt Coverage — Phase 1 (Cache Fix)**
+- Surveyed 202 cached extraction files — found 13+ field name variants for `outstanding` amounts
+- Created `scripts/fix_outstanding_amounts.py` — maps all variants (`outstanding_amount`, `principal_amount_outstanding`, `outstanding_amount_cents`, `face_value_cents`, etc.)
+- Live run: **291 instruments updated across 68 companies**
+- Coverage improved from 61.8% to 66.3%
+
+**Part 5: Fix Debt Coverage — Phase 2 (SEC Footnote Extraction)**
+- Created `scripts/backfill_outstanding_from_filings.py` — uses Gemini Flash to extract from `document_sections.debt_footnote`
+- Matches extracted instruments to DB by coupon rate + maturity year (tolerance: 0.15%, scored matching)
+- Processed 151 companies with debt footnotes via Gemini Flash (~$0.30 total cost)
+- Live run: **282 instruments updated across 50 companies**
+- Coverage improved from 66.3% to **71.1%** ($4,666B / $6,559B)
+- Total improvement: +9.3% coverage (+$613B)
+
+**Coverage Progress:**
+| Phase | Coverage | OK Companies |
+|-------|----------|-------------|
+| Before | 61.8% | 32 |
+| After Phase 1 | 66.3% | ~40 |
+| After Phase 2 | **71.1%** | **51** |
+
+**Scripts Created:**
+- `scripts/analyze_gaps_v2.py` — Corrected coverage analysis (no JOIN multiplication)
+- `scripts/fix_outstanding_amounts.py` — Phase 1: fix from cached extractions
+- `scripts/backfill_outstanding_from_filings.py` — Phase 2: Gemini extraction from SEC footnotes
+- `scripts/check_source_breakdown.py` — Finnhub vs SEC source analysis
+- `scripts/debug_vz_matching.py`, `debug_vz_matching2.py`, `debug_vz_sections.py` — VZ debugging
+
+**Known Issues:**
+- `extract_iterative.py:886` — `final_qa_score` logging bug (harmless, data saves before error)
+- `merge_extraction_to_db` — entity slug collision for LOW/VNO (merge tries INSERT instead of finding existing entity by slug)
+- Claude API credits exhausted — MGM/PCG escalations fell back to Gemini Pro (QA scores 78-80%)
+- Remaining ~2,400 instruments with $0 outstanding are mostly Finnhub-discovered bonds — Finnhub API returns 0, SEC footnotes don't contain per-bond data for many companies
 
 ### 2026-02-10 (Session 32) - Analytics, Error Tracking & Alerting
 

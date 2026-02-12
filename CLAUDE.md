@@ -6,13 +6,15 @@ Context for AI assistants working on the DebtStack.ai codebase.
 
 ## What's Next
 
-**Immediate**: Complete Finnhub discovery (40/201 companies remaining), link discovered bonds to documents
+**Immediate**: Phase 7 EXCESS cleanup complete — EXCESS_SIGNIFICANT reduced from 27→5, OK companies back to 73. Phase 7 Step 7 used Claude Sonnet to review 19 remaining EXCESS companies ($0.42 cost), deactivating 49 instruments and clearing 45 wrong amounts (aggregates, face values, revolver capacity). ETN and PLD need amounts re-extracted (moved to MISSING_ALL after clearing wrong values). Next: tackle remaining MISSING_SIGNIFICANT (53 companies), fix THC/PAYX total_debt financials. See WORKPLAN.md.
 
 **Then**:
-1. SDK publication to PyPI
-2. Mintlify docs deployment to docs.debtstack.ai
-3. ~~Set up Railway cron job for daily pricing collection~~ ✅ Done — APScheduler in-process
-4. ~~Analytics, error tracking & alerting~~ ✅ Done — Vercel Analytics, PostHog, Sentry, Slack alerts
+1. Continue company expansion (211 → 288, Tier 2-5 remaining)
+2. Complete Finnhub discovery (~50 companies remaining), link discovered bonds to documents
+3. SDK publication to PyPI
+4. Mintlify docs deployment to docs.debtstack.ai
+5. ~~Set up Railway cron job for daily pricing collection~~ ✅ Done — APScheduler in-process
+6. ~~Analytics, error tracking & alerting~~ ✅ Done — Vercel Analytics, PostHog, Sentry, Slack alerts
 
 ## Project Overview
 
@@ -22,23 +24,23 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 ## Current Status (February 2026)
 
-**Database**: 201 companies | 5,828 debt instruments | 2,948 with CUSIP | 2,552 with pricing (86.5%) | 13,862 document sections | 3,831 guarantees | 626 collateral records | 1,181 covenants | 13,970 treasury yields
+**Database**: 211 companies | 6,016 debt instruments | 2,926 with CUSIP | 4,712 with pricing | 14,511 document sections | 4,165 guarantees | 713 collateral records | 1,247 covenants | 28,128 entities | 1,816 financial quarters
 
-**Pricing Coverage**: 2,552 bonds priced via Finnhub/FINRA TRACE. 2,470 updated in last 7 days. 488 bonds have CUSIPs but no TRACE data (illiquid).
+**Company Expansion**: 211 companies (up from 201) — added 10 Tier 1 massive-debt issuers (CMCSA, DUK, CVS, USB, SO, TFC, ET, PNC, PCG, BMY)
 
-**Finnhub Discovery**: 161/201 companies scanned, 2,359 bonds discovered, 40 companies remaining
+**Debt Coverage Gaps**: 65/211 companies (31%) have instrument outstanding within 80-120% of total debt. Phases 1-6 updated 1,013+ instruments. MISSING_ALL reduced to 4 (PANW, PG, TTD, USB — structural gaps). 50 MISSING_SIGNIFICANT remain. 27 EXCESS_SIGNIFICANT (up from 14 — Phase 6 amounts sometimes overshoot, e.g. face value vs outstanding).
 
-**Seniority Distribution**: 5,446 senior_unsecured | 360 senior_secured | 14 subordinated | 8 junior_subordinated
+**Pricing Coverage**: 4,712 bonds with pricing via Finnhub/FINRA TRACE.
 
-**Document Coverage**: 93% of original instruments linked (2,829 / 3,056) via `DebtInstrumentDocument` junction table. Finnhub-discovered bonds awaiting linking.
+**Finnhub Discovery**: 161/211 companies scanned, ~50 remaining
 
-**Entity Distribution**: 94 companies (47%) have 50+ entities, 71 (35%) have 11-50, 34 (17%) have 2-10, 2 have 1 entity (ODFL, TTD - legitimate single-entity companies with no Exhibit 21 subsidiaries)
+**Document Coverage**: 14,511 document sections across 211 companies
 
-**Ownership Coverage**: 199/201 companies have identified root entity (`is_root=true`); 1,474 entities with known parent relationships (678 intermediate + 796 key entities linked to root); 25,096 entities with unknown parent (from Exhibit 21 only)
+**Ownership Coverage**: 28,128 entities across 211 companies
 
 **Data Quality**: QC audit passing - 0 critical, 0 errors, 4 warnings (2026-01-29). Fixed 38 mislabeled seniority records (2026-02-06).
 
-**Eval Suite**: 119/136 tests passing (87.5%). 10 failures are Business-tier access (expected), 2 are workflow threshold gaps.
+**Eval Suite**: 121/136 tests passing (89.0%). 2 workflow tests fixed by secured bond pricing expansion.
 
 **Deployment**: Railway with Neon PostgreSQL + Upstash Redis
 - Live at: `https://api.debtstack.ai` (CNAME via Vercel DNS → Railway)
@@ -139,6 +141,10 @@ This separation keeps business logic testable and reusable while scripts handle 
 | `app/services/treasury_yields.py` | Treasury yield curve history from Treasury.gov |
 | `scripts/extract_iterative.py` | Complete extraction pipeline CLI (thin wrapper) |
 | `scripts/recompute_metrics.py` | Metrics recomputation CLI (thin wrapper) |
+| `scripts/backfill_amounts_from_docs.py` | Phase 6: Multi-doc targeted outstanding amount backfill |
+| `scripts/backfill_outstanding_from_filings.py` | Phase 2/4: Outstanding amount backfill from single footnote |
+| `scripts/fix_excess_instruments.py` | Phase 3: Dedup by rate+year, deactivate matured |
+| `scripts/analyze_gaps_v2.py` | Debt coverage gap analysis (MISSING_ALL/SIGNIFICANT/EXCESS) |
 | `scripts/script_utils.py` | Shared CLI utilities (DB sessions, parsers, progress) |
 | `app/models/schema.py` | SQLAlchemy models (includes User, UserCredits, UsageLog) |
 | `app/core/config.py` | Environment configuration |
@@ -1085,11 +1091,72 @@ if __name__ == "__main__":
 - Proper async session cleanup with rollback on errors
 - Consistent CLI output formatting
 
+## Debt Coverage Backfill (Phases 1-6)
+
+Six-phase effort to populate `outstanding` amounts on debt instruments. Progress: 32 → 73 OK companies.
+
+### Phase Summary
+
+| Phase | Script | Method | Instruments | Cost |
+|-------|--------|--------|-------------|------|
+| 1 | (manual SQL) | Recover amounts from cached extraction results | 291 | $0 |
+| 2 | `backfill_outstanding_from_filings.py` | Gemini extracts from single debt footnote | 282 | ~$0.10 |
+| 3 | `fix_excess_instruments.py` | Dedup by rate+year, deactivate matured | 1,304 deactivated | $0 |
+| 4 | `backfill_outstanding_from_filings.py` | Re-extraction with broader section search | 30 | ~$0.10 |
+| 5 | `extract_iterative.py --step core` | Full re-extraction for MISSING_ALL | 13/14 companies | ~$0.50 |
+| 6 | `backfill_amounts_from_docs.py` | Multi-doc targeted extraction | 440 | ~$2.00 |
+
+### Backfill Scripts
+
+```bash
+# Phase 2/4: Extract from single debt footnote (broad "extract ALL" prompt)
+python scripts/backfill_outstanding_from_filings.py --analyze
+python scripts/backfill_outstanding_from_filings.py --fix --ticker AAPL
+python scripts/backfill_outstanding_from_filings.py --fix --dry-run
+
+# Phase 3: Dedup and deactivate
+python scripts/fix_excess_instruments.py --analyze
+python scripts/fix_excess_instruments.py --deduplicate --dry-run
+python scripts/fix_excess_instruments.py --deactivate-matured
+
+# Phase 6: Multi-doc targeted extraction (sends instrument list to Gemini)
+python scripts/backfill_amounts_from_docs.py --analyze
+python scripts/backfill_amounts_from_docs.py --fix --ticker CSGP --dry-run
+python scripts/backfill_amounts_from_docs.py --fix                    # MISSING_ALL only
+python scripts/backfill_amounts_from_docs.py --fix --all-missing      # + MISSING_SIGNIFICANT
+python scripts/backfill_amounts_from_docs.py --fix --model gemini-2.5-pro
+```
+
+### Key Learnings from Debt Coverage Work
+
+**What works well:**
+1. **Targeted prompts beat broad extraction** — Phase 6 sends the specific instrument list ("find amounts for THESE instruments") vs Phase 2's "extract ALL instruments". Targeted approach gets better matches because Gemini knows exactly what to look for.
+2. **Multi-document iteration** — Try 10-K debt footnote first (most comprehensive), fall back to 10-Q footnotes (more recent), then MDA/desc_securities. PLD: 59/59 from single 10-K. UAL: 6/6 across 12 docs.
+3. **Rate + maturity year matching** — Simple scoring (0.5 for rate match within 0.15%, 0.5 for year match, threshold 0.8) reliably deduplicates and matches instruments across sources.
+4. **Instrument index matching** — Asking Gemini to return `instrument_index` (1-based reference to the input list) is more reliable than post-hoc fuzzy matching.
+5. **Provenance tagging** — Store `amount_source`, `amount_doc_type`, `amount_doc_date` in `attributes` JSONB for debugging.
+6. **Fresh session per company** — Neon drops idle connections during 10-60s Gemini calls. Use `async_sessionmaker` and open/close per company.
+
+**What fails or has low yield:**
+1. **Revolvers/term loans** — Usually $0 drawn; correct to skip. GEV (4 revolvers), LULU (2 revolvers), PLTR (3 revolvers) all correctly returned 0 amounts.
+2. **Aggregate-only footnotes** — PG's 33K debt footnote only has maturity schedule totals by year, not per-instrument amounts. Need a different doc section or manual entry.
+3. **Banks without debt footnotes** — COF, USB, MS have no `debt_footnote` sections. Bank debt is structured differently (deposits, wholesale funding). Try `desc_securities` or `mda_liquidity`.
+4. **Duplicate instruments with no rates** — TEAM has 3 pairs of duplicate "Senior Notes due 20XX" with no coupon rates, making matching impossible. Fix data quality first (`fix_missing_interest_rates.py`).
+5. **Gemini key name inconsistency** — Gemini returns `outstanding_amount_cents` instead of `outstanding_cents` despite the prompt specifying the latter. Always check for both: `entry.get('outstanding_cents') or entry.get('outstanding_amount_cents')`.
+6. **Poor stored footnote quality** — ~40% of `debt_footnote` sections contain entire 10-Q filings truncated at 100K instead of just the debt note. Need section re-extraction with better boundary detection.
+
+**Remaining structural gaps (won't be fixed by more LLM calls):**
+- PG: Aggregate-only footnote (67 instruments) — needs different section or prospectus data
+- Banks (COF, USB, MS): No debt footnotes — need section re-extraction or manual entry
+- Companies with only revolvers (GEV, LULU, PLTR): Correctly $0 — not real gaps
+- VRTX: Single instrument, only footnote is from year 2000
+
 ## Common Issues
 
 | Issue | Solution |
 |-------|----------|
 | LLM returns debt totals | Prompt requires individual instruments |
+| LLM uses wrong JSON key for amounts | Check both `outstanding_cents` and `outstanding_amount_cents` |
 | Entity name mismatch | `normalize_name()` handles case/punctuation |
 | Large filing truncation | `extract_debt_sections()` extracts relevant portions |
 | JSON parse errors | `parse_json_robust()` fixes common issues |
