@@ -12,6 +12,12 @@ Usage:
 import argparse
 import asyncio
 import os
+import sys
+
+# Add parent directory to path for imports (must be before app imports)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from dotenv import load_dotenv
+load_dotenv()
 
 # Set up API key BEFORE importing bond_pricing
 from app.core.config import get_settings

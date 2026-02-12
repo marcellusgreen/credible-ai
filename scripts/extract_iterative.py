@@ -1059,7 +1059,7 @@ async def run_single_step(
     print(f"SINGLE STEP: {step.upper()} for {ticker}")
     print(f"{'='*70}")
 
-    engine = create_async_engine(database_url, echo=False)
+    engine = create_async_engine(database_url, echo=False, pool_pre_ping=True)
     async_session = async_sessionmaker(engine, expire_on_commit=False)
 
     # Get company from database

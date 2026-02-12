@@ -111,6 +111,70 @@ async def analyze_debt_coverage(session) -> dict:
     return companies
 
 
+async def cleanup_duplicates(session, ticker: str, company_id: UUID) -> dict:
+    """Clean up duplicate instruments aggressively."""
+    import re
+
+    deactivated = 0
+
+    # Step 1: Deactivate zero-value bond-type duplicates
+    result = await session.execute(text('''
+        UPDATE debt_instruments di
+        SET is_active = false
+        FROM companies c
+        WHERE c.id = di.company_id
+        AND c.id = :company_id
+        AND di.is_active = true
+        AND di.instrument_type = 'bond'
+        AND (di.outstanding IS NULL OR di.outstanding = 0)
+        RETURNING di.id
+    '''), {'company_id': company_id})
+    zero_bonds = len(result.fetchall())
+    deactivated += zero_bonds
+
+    # Step 2: Find instruments with same coupon/maturity pattern
+    result = await session.execute(text('''
+        SELECT di.id, di.name, di.outstanding, di.maturity_date, di.created_at
+        FROM debt_instruments di
+        WHERE di.company_id = :company_id AND di.is_active = true
+        AND di.instrument_type IN ('senior_notes', 'senior_secured_notes', 'subordinated_notes', 'convertible_notes')
+        ORDER BY di.name
+    '''), {'company_id': company_id})
+
+    notes = result.fetchall()
+    groups = {}
+    for note in notes:
+        name = note[1] or ''
+        coupon_match = re.search(r'(\d+\.?\d*)%', name)
+        year_match = re.search(r'20(\d{2})', name)
+        if coupon_match and year_match:
+            key = (coupon_match.group(1), year_match.group(1))
+            if key not in groups:
+                groups[key] = []
+            groups[key].append(note)
+
+    # Deactivate duplicates (keep oldest)
+    dup_ids = []
+    for key, group_notes in groups.items():
+        if len(group_notes) > 1:
+            sorted_notes = sorted(group_notes, key=lambda x: x[4])  # by created_at
+            for dup in sorted_notes[1:]:
+                dup_ids.append(str(dup[0]))
+
+    if dup_ids:
+        result = await session.execute(text('''
+            UPDATE debt_instruments
+            SET is_active = false
+            WHERE id = ANY(:ids)
+            RETURNING id
+        '''), {'ids': dup_ids})
+        deactivated += len(result.fetchall())
+
+    await session.commit()
+
+    return {'status': 'cleaned', 'deactivated': deactivated, 'zero_bonds': zero_bonds, 'duplicates': len(dup_ids)}
+
+
 async def fix_company_from_cache(session, ticker: str, company_id: UUID) -> dict:
     """Fix a company's debt instruments from cached extraction."""
 
@@ -193,7 +257,7 @@ async def link_company_documents(session, ticker: str, company_id: UUID) -> dict
         return {'status': 'error', 'message': str(e)}
 
 
-async def fix_company(session, ticker: str, company_id: UUID, dry_run: bool = False) -> dict:
+async def fix_company(session, ticker: str, company_id: UUID, dry_run: bool = False, status: str = None) -> dict:
     """Fix a single company's debt coverage."""
 
     results = {
@@ -201,18 +265,25 @@ async def fix_company(session, ticker: str, company_id: UUID, dry_run: bool = Fa
         'steps': []
     }
 
-    # Step 1: Fix from cache if available
+    if dry_run:
+        cache_result = await fix_company_from_cache(session, ticker, company_id)
+        results['steps'].append(('fix_from_cache', cache_result))
+        return results
+
+    # Step 1: Clean up duplicates (especially for EXCESS companies)
+    if status in ('EXCESS_SOME', 'EXCESS_SIGNIFICANT'):
+        cleanup_result = await cleanup_duplicates(session, ticker, company_id)
+        results['steps'].append(('cleanup_duplicates', cleanup_result))
+
+    # Step 2: Fix from cache if available
     cache_result = await fix_company_from_cache(session, ticker, company_id)
     results['steps'].append(('fix_from_cache', cache_result))
 
-    if dry_run:
-        return results
-
-    # Step 2: Link documents
+    # Step 3: Link documents
     link_result = await link_company_documents(session, ticker, company_id)
     results['steps'].append(('link_documents', link_result))
 
-    # Step 3: Refresh cache
+    # Step 4: Refresh cache
     try:
         await refresh_company_cache(session, company_id, ticker)
         results['steps'].append(('refresh_cache', {'status': 'ok'}))
@@ -294,7 +365,7 @@ async def main():
 
         for c in to_fix:
             print(f'\n{c["ticker"]}:')
-            result = await fix_company(session, c['ticker'], c['id'], dry_run=args.dry_run)
+            result = await fix_company(session, c['ticker'], c['id'], dry_run=args.dry_run, status=c['status'])
             for step_name, step_result in result['steps']:
                 print(f'  {step_name}: {step_result}')
 

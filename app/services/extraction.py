@@ -286,6 +286,14 @@ class ExtractedDebtInstrument(BaseModel):
     spread_bps: Optional[int] = None
     benchmark: Optional[str] = None
     floor_bps: Optional[int] = None
+
+    @field_validator("interest_rate", "spread_bps", "floor_bps", mode="before")
+    @classmethod
+    def coerce_bps_to_int(cls, v):
+        """Round fractional basis points to nearest integer."""
+        if v is not None and isinstance(v, float):
+            return round(v)
+        return v
     issue_date: Optional[str] = None
     maturity_date: Optional[str] = None
     guarantor_names: list[str] = Field(default_factory=list)
@@ -675,6 +683,9 @@ def slugify(text: str) -> str:
     slug = text.lower()
     slug = re.sub(r"[^a-z0-9]+", "-", slug)
     slug = slug.strip("-")
+    if not slug:
+        import uuid
+        slug = f"unnamed-{uuid.uuid4().hex[:8]}"
     return slug[:255]
 
 
@@ -1607,7 +1618,14 @@ async def refresh_company_cache(
             else:
                 entities_with_unknown_parent.append(e)
 
+    visited_entity_ids = set()
+
     def build_entity_tree(entity: Entity) -> dict:
+        # Guard against circular parent-child references
+        if entity.id in visited_entity_ids:
+            return None
+        visited_entity_ids.add(entity.id)
+
         children = [e for e in entities if e.parent_id == entity.id]
 
         # Get full debt instrument details for this entity
@@ -1667,7 +1685,7 @@ async def refresh_company_cache(
                 "instrument_count": len(entity_debt_instruments),
                 "instruments": debt_details,
             },
-            "children": [build_entity_tree(c) for c in children],
+            "children": [t for t in (build_entity_tree(c) for c in children) if t is not None],
         }
 
     # Find root entities (is_root=True, fallback to entities with no parent)
@@ -1675,7 +1693,7 @@ async def refresh_company_cache(
     if not root_entities:
         root_entities = [e for e in entities if e.parent_id is None]
 
-    structure_tree = [build_entity_tree(e) for e in root_entities]
+    structure_tree = [t for t in (build_entity_tree(e) for e in root_entities) if t is not None]
 
     # Build list of entities with unknown parent (for transparency)
     unknown_parent_list = [
