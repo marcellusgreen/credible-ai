@@ -484,14 +484,24 @@ async def copy_current_to_history(
 
     Args:
         session: Database session
-        price_date: Date for the snapshot (defaults to today)
+        price_date: Date for the snapshot (defaults to today in US/Eastern)
         dry_run: If True, don't save to database
 
     Returns:
         SnapshotStats with operation statistics
     """
     if price_date is None:
-        price_date = date.today()
+        # Use US/Eastern date since bond markets are US-based and the
+        # scheduler runs on ET cron triggers. Without this, running at
+        # 9 PM ET (= 2 AM UTC next day) would save tomorrow's date.
+        try:
+            from zoneinfo import ZoneInfo
+            price_date = datetime.now(ZoneInfo("US/Eastern")).date()
+        except Exception:
+            price_date = date.today()
+
+    import structlog
+    logger = structlog.get_logger()
 
     stats = SnapshotStats()
 
@@ -535,13 +545,24 @@ async def copy_current_to_history(
         stats.copied = len(records)
         return stats
 
-    # Bulk insert new records
+    # Bulk insert new records in batches to avoid timeout on large inserts
     if records:
-        try:
-            stats.copied = await bulk_insert_history(session, records)
-            await session.commit()
-        except Exception as e:
-            stats.errors = len(records)
+        for i in range(0, len(records), BATCH_SIZE):
+            batch = records[i:i + BATCH_SIZE]
+            try:
+                saved = await bulk_insert_history(session, batch)
+                stats.copied += saved
+                await session.commit()
+            except Exception as e:
+                logger.error(
+                    "copy_current_to_history.batch_error",
+                    batch_index=i,
+                    batch_size=len(batch),
+                    price_date=str(price_date),
+                    error=str(e),
+                )
+                stats.errors += len(batch)
+                await session.rollback()
 
     return stats
 
