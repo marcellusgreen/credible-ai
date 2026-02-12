@@ -6,14 +6,14 @@ Context for AI assistants working on the DebtStack.ai codebase.
 
 ## What's Next
 
-**Immediate**: Phase 7.5 EXCESS cleanup complete — OK companies 73→96, EXCESS_SOME 53→15, EXCESS_SIGNIFICANT steady at 5. Step 8 cleared 36 revolver/ABL capacity amounts ($55B, $0 cost). LLM review at 1.5x threshold reviewed 95 companies ($2.01 cost), deactivating 180 instruments and clearing 91 wrong amounts. Remaining 15 EXCESS_SOME include 3 banks (BAC, C, JPM — structural) and 12 others with minor excess. 5 EXCESS_SIGNIFICANT have known root causes (DO pre-reorg bonds, NEM face values, PAYX/ETN wrong total_debt, UBER wrong backfill amounts). Next: tackle remaining MISSING_SIGNIFICANT (60 companies), fix THC/PAYX total_debt financials. See WORKPLAN.md.
+**Immediate**: Phase 8 MISSING_SIGNIFICANT backfill complete — OK companies 96→98, MISSING_SIGNIFICANT 60→52, MISSING_SOME 20→24. ~146 instruments updated across ~12 companies (~$182B). Generalized `fix_pld_debt_amounts.py` to accept `--ticker` (was PLD-only). Improved `extract_debt_note_from_filing()` with TOC-skipping, cross-reference detection, and broader pattern matching. Best results: UNH 56/57 ($64B), ORCL 33/43 ($69B), INTC 27/28 ($32B). Key finding: most large IG issuers present debt in aggregate maturity buckets, not per-instrument — structural limitation of 10-K footnotes. Next: fix THC/PAYX total_debt financials, consider sourcing per-instrument amounts from prospectus supplements for remaining 52 MISSING_SIGNIFICANT. See WORKPLAN.md.
 
 **Then**:
 1. Continue company expansion (211 → 288, Tier 2-5 remaining)
 2. Complete Finnhub discovery (~50 companies remaining), link discovered bonds to documents
 3. SDK publication to PyPI
 4. Mintlify docs deployment to docs.debtstack.ai
-5. ~~Set up Railway cron job for daily pricing collection~~ ✅ Done — APScheduler in-process
+5. ~~Set up Railway cron job for daily pricing collection~~ ✅ Done — APScheduler in-process (fixed snapshot bug 2026-02-12: batched inserts + timezone + error logging)
 6. ~~Analytics, error tracking & alerting~~ ✅ Done — Vercel Analytics, PostHog, Sentry, Slack alerts
 
 ## Project Overview
@@ -28,9 +28,9 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 **Company Expansion**: 211 companies (up from 201) — added 10 Tier 1 massive-debt issuers (CMCSA, DUK, CVS, USB, SO, TFC, ET, PNC, PCG, BMY)
 
-**Debt Coverage Gaps**: 96/211 companies (46%) have instrument outstanding within 80-120% of total debt ("OK"). Phases 1-7.5 updated 1,013+ instruments, deactivated 180+ duplicates/aggregates, cleared 127 wrong amounts. EXCESS reduced from 58→20 (15 EXCESS_SOME + 5 EXCESS_SIGNIFICANT). MISSING_ALL at 8 (FTNT, META, ON, PANW, PG, TTD, USB, VAL). 60 MISSING_SIGNIFICANT remain. 5 EXCESS_SIGNIFICANT have known root causes (DO, NEM, PAYX, ETN, UBER).
+**Debt Coverage Gaps**: 98/211 companies (46%) have instrument outstanding within 80-120% of total debt ("OK"). Phases 1-8 updated 1,159+ instruments, deactivated 180+ duplicates/aggregates, cleared 127 wrong amounts. EXCESS reduced from 58→22 (16 EXCESS_SOME + 6 EXCESS_SIGNIFICANT). MISSING_ALL at 8 (FTNT, META, ON, PANW, PG, TTD, USB, VAL). 52 MISSING_SIGNIFICANT remain (most use aggregate maturity/rate buckets in 10-K — structural limitation). 6 EXCESS_SIGNIFICANT have known root causes (DO, NEM, PAYX, ETN, THC, UBER). Overall: $4,723B instruments / $6,559B total debt = 72.0%.
 
-**Pricing Coverage**: 4,712 bonds with pricing via Finnhub/FINRA TRACE.
+**Pricing Coverage**: 3,557 active bonds with pricing (2,487 real TRACE, 1,070 estimated) via Finnhub/FINRA TRACE. Updated 3x daily by APScheduler (11 AM, 3 PM, 9 PM ET). Daily snapshots saved to `bond_pricing_history` at 9 PM ET.
 
 **Finnhub Discovery**: 161/211 companies scanned, ~50 remaining
 
@@ -814,6 +814,28 @@ python scripts/audit_covenant_relationships.py --verbose
 
 Bond pricing data comes from Finnhub, which sources from FINRA TRACE (same data as Bloomberg/Reuters).
 
+### Automated Pricing Schedule
+
+The APScheduler in `app/core/scheduler.py` runs these jobs (US/Eastern timezone):
+
+| Time (ET) | Job | What It Does |
+|-----------|-----|-------------|
+| 11:00 AM | `refresh_current_prices()` | Fetch latest TRACE prices for stale bonds → `bond_pricing` |
+| 3:00 PM | `refresh_current_prices()` | Second refresh of current prices |
+| 6:00 PM | `refresh_treasury_yields()` | Update current-year treasury yield curves |
+| 9:00 PM | `refresh_and_snapshot()` | Refresh prices + copy to `bond_pricing_history` for daily snapshot |
+| Every 15 min | `check_and_alert()` | Check error rates, send Slack alerts |
+
+The scheduler starts/stops with the FastAPI app lifecycle (`app/main.py`). No external cron needed.
+
+**Key implementation details:**
+- `copy_current_to_history()` uses `US/Eastern` date via `zoneinfo` (Railway runs UTC; without this, 9 PM ET = 2 AM UTC next day would save tomorrow's date)
+- Daily snapshots insert in batches of 100 with per-batch commits to avoid Neon serverless timeout
+- Only active, non-matured instruments are snapshotted (filtered via JOIN to `debt_instruments`)
+- Errors are logged with structlog; failed batches roll back without blocking subsequent batches
+
+**Past issue (fixed 2026-02-12):** Daily snapshots silently failed from Feb 9-12 because `copy_current_to_history()` tried to insert ~3,900 records in a single statement (timed out on Neon), and the exception was swallowed with no logging. Fix: batched inserts + error logging + timezone correction.
+
 ### Data Flow
 
 ```
@@ -849,17 +871,21 @@ bond_pricing_history table (daily snapshots)
 
 ### Tables
 
-**`bond_pricing`** - Current prices (one row per instrument):
+**`bond_pricing`** - Current prices (one row per active, non-matured instrument):
+- 3,557 records (2,487 TRACE + 1,070 estimated)
 - `last_price`: Clean price as % of par
 - `ytm_bps`: Yield to maturity in basis points
 - `spread_to_treasury_bps`: Spread over benchmark treasury
 - `staleness_days`: Days since last trade
 - `price_source`: "TRACE", "Finnhub", "estimated"
+- Stale records for inactive/matured instruments cleaned up 2026-02-12 (366 removed)
 
-**`bond_pricing_history`** - Historical daily snapshots:
+**`bond_pricing_history`** - Historical daily snapshots (active, non-matured only):
+- 785,258 records
 - `price_date`: Date of snapshot
 - `price`, `ytm_bps`, `spread_bps`, `volume`
 - Unique constraint on (debt_instrument_id, price_date)
+- Stale records for inactive/matured instruments cleaned up 2026-02-12 (154,459 removed)
 
 **`treasury_yield_history`** - Historical treasury yield curves:
 - `yield_date`: Date of yield curve
@@ -1107,6 +1133,7 @@ Multi-phase effort to populate `outstanding` amounts on debt instruments. Progre
 | 6 | `backfill_amounts_from_docs.py` | Multi-doc targeted extraction | 440 | ~$2.00 |
 | 7 | `fix_excess_instruments.py --fix-llm-review` | Claude reviews EXCESS_SIGNIFICANT (>200%) | 49 deactivated, 45 cleared | ~$0.42 |
 | 7.5 | `fix_excess_instruments.py` | Step 8 revolver clears + LLM review at 1.5x | 36 revolver clears + 180 deactivated, 91 cleared | ~$2.01 |
+| 8 | `fix_pld_debt_amounts.py --ticker` | SEC-direct fetch + Gemini 2.5 Pro extraction | 84 instruments updated (~$89B) | ~$3.00 |
 
 ### Backfill Scripts
 
