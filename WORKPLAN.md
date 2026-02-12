@@ -1,6 +1,6 @@
 # DebtStack Work Plan
 
-Last Updated: 2026-02-12
+Last Updated: 2026-02-12 (ETN/PLD fix)
 
 ## Current Status
 
@@ -17,21 +17,21 @@ Last Updated: 2026-02-12
 **Data Quality**: QC audit passing - 0 critical, 0 errors, 4 warnings (2026-01-26). Fixed 38 mislabeled seniority records (2026-02-06).
 **Eval Suite**: 121/136 tests passing (89.0%)
 
-### Debt Coverage Gaps (2026-02-12, updated after Phase 7 Step 7)
+### Debt Coverage Gaps (2026-02-12, updated after ETN/PLD fix)
 
 Analysis of `SUM(debt_instruments.outstanding)` vs `company_financials.total_debt`:
 
-| Status | Before | After P1+2 | After P3 | After P4 | After P5 | After P6 | After P6 all-missing | After P7 Steps 4-6 | After P7 Step 7 | Description |
-|--------|--------|------------|----------|----------|----------|----------|---------------------|--------------------|--------------------|-------------|
-| OK | 32 | 51 | 71 | 72 | 73 | 73 | 65 | 65 | **73** | Within 80-120% of total debt |
-| EXCESS_SOME | 30 | 43 | 30 | 30 | 30 | 30 | 45 | 45 | **53** | 120-200% (slight over-count) |
-| EXCESS_SIGNIFICANT | 67 | 35 | 14 | 14 | 14 | 14 | 27 | 19 | **5** | >200% (duplicates, historical, or unit issues) |
-| MISSING_SOME | 12 | 16 | 19 | 19 | 19 | 19 | 13 | 13 | **13** | 50-80% (slightly under) |
-| MISSING_SIGNIFICANT | 39 | 44 | 54 | 54 | 56 | 54 | 50 | 50 | **53** | <50% (missing outstanding amounts) |
-| MISSING_ALL | 24 | 15 | 16 | 14 | 12 | 9 | 4 | 4 | **7** | $0 outstanding despite having instruments |
-| NO_FINANCIALS | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | **7** | No total debt figure to compare against |
+| Status | Before | After P1+2 | After P3 | After P4 | After P5 | After P6 | After P6 all-missing | After P7 Steps 4-6 | After P7 Step 7 | After ETN/PLD fix | Description |
+|--------|--------|------------|----------|----------|----------|----------|---------------------|--------------------|--------------------|---------------------|-------------|
+| OK | 32 | 51 | 71 | 72 | 73 | 73 | 65 | 65 | 73 | **82** | Within 80-120% of total debt |
+| EXCESS_SOME | 30 | 43 | 30 | 30 | 30 | 30 | 45 | 45 | 53 | **42** | 120-200% (slight over-count) |
+| EXCESS_SIGNIFICANT | 67 | 35 | 14 | 14 | 14 | 14 | 27 | 19 | 5 | **5** | >200% (duplicates, historical, or unit issues) |
+| MISSING_SOME | 12 | 16 | 19 | 19 | 19 | 19 | 13 | 13 | 13 | **15** | 50-80% (slightly under) |
+| MISSING_SIGNIFICANT | 39 | 44 | 54 | 54 | 56 | 54 | 50 | 50 | 53 | **55** | <50% (missing outstanding amounts) |
+| MISSING_ALL | 24 | 15 | 16 | 14 | 12 | 9 | 4 | 4 | 7 | **5** | $0 outstanding despite having instruments |
+| NO_FINANCIALS | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | **7** | No total debt figure to compare against |
 
-**Note on OK recovery**: OK went back up from 65→73, recovering the companies that Phase 6 had pushed into EXCESS. Phase 7 Step 7 (Claude-assisted review) fixed 14 of 19 EXCESS_SIGNIFICANT companies by deactivating aggregates/duplicates and clearing wrong amounts. ETN and PLD moved to MISSING_ALL after all their wrong amounts were cleared — they need correct amounts re-extracted.
+**Note on ETN/PLD fix**: OK jumped 73→82 after fixing ETN and PLD. ETN re-extracted with Gemini 2.5 Pro (17/19 instruments, $9.70B — correct scale from "In millions" footnote). PLD required manual SEC filing fetch + debt note extraction via `scripts/fix_pld_debt_amounts.py` because all 7 stored `debt_footnote` sections were broken (contained entire filing truncated at 100K, never reaching actual debt note). PLD: 44/55 instruments, $28.84B. ETN moved to EXCESS_SIGNIFICANT (instrument amounts correct at ~$9.7B but financials.total_debt is stale at $1.9B). MISSING_ALL reduced 7→5.
 
 **Phase 1 (fix from cache)**: 291 instruments updated across 68 companies — mapped 13+ field name variants
 **Phase 2 (SEC footnote extraction via Gemini)**: 282 instruments updated across 50 companies
@@ -61,10 +61,15 @@ Phase 6 `--all-missing` run (187 companies with any missing instruments):
 - **MISSING_ALL reduced: 12 → 4** (PANW, PG, TTD, USB — all structural gaps)
 - **Phase 6 total: 440 instruments updated** (70 initial + 370 all-missing)
 
-**Remaining root causes (after Phase 7 Step 7)**:
-- **MISSING_ALL (7 companies)**: PANW/TTD (revolvers with $0 drawn — correct), PG (aggregate-only footnote, 67 instruments), USB (no debt footnotes — bank), ETN (17 amounts cleared — need re-extraction with correct scale), PLD (59 amounts cleared — need re-extraction), FTNT (structural gap)
-- **MISSING_SIGNIFICANT (53 companies)**: Large issuers where documents lack per-instrument detail. Biggest gaps: VZ (1/79), T (70 instruments, $4B vs $139B), UNH (1/58), CMCSA (3/74), ORCL (0/43), PEP (10/53 but still -69%), TFC (12 instruments, $6.6B vs $41.7B — bank)
-- **EXCESS_SIGNIFICANT (5 companies)**: THC/PAYX (likely wrong total_debt in financials), DO (complex offshore driller), UBER (131% — borderline), NEM (117% — borderline)
+**ETN/PLD fix** (2026-02-12): Re-extracted amounts after Phase 7 Step 7 cleared wrong values.
+- **ETN**: Re-ran `backfill_amounts_from_docs.py --fix --ticker ETN --model gemini-2.5-pro`. The 10-K footnote (4,426 chars, "In millions") was already correct in DB — just needed Gemini 2.5 Pro for accurate scale handling. Result: 17/19 instruments, $9.70B total. 2 remaining are likely revolvers with $0 drawn. ETN shows as EXCESS_SIGNIFICANT because `total_debt` in financials is stale ($1.9B vs correct ~$9.7B).
+- **PLD**: All 7 stored `debt_footnote` sections were broken (contained entire filing from TOC, never reaching debt note). Created `scripts/fix_pld_debt_amounts.py` — fetches latest 10-K directly from SEC via SecApiClient, extracts debt note section using keyword search (bypassing broken regex), sends to Gemini 2.5 Pro. Result: 44/55 instruments, $28.84B total. PLD moved to OK status.
+- **Total: 61 instruments updated** (17 ETN + 44 PLD), MISSING_ALL reduced 7→5, OK increased 73→82
+
+**Remaining root causes (after ETN/PLD fix)**:
+- **MISSING_ALL (5 companies)**: PANW/TTD (revolvers with $0 drawn — correct), PG (aggregate-only footnote, 67 instruments), USB (no debt footnotes — bank), FTNT (structural gap)
+- **MISSING_SIGNIFICANT (55 companies)**: Large issuers where documents lack per-instrument detail. Biggest gaps: VZ (3/81), T (29/70, $3.7B vs $139B), UNH (12/69), CMCSA (8/79), ORCL (19/62), PEP (21/64 but still -69%), TFC (12 instruments, $6.6B vs $41.7B — bank)
+- **EXCESS_SIGNIFICANT (5 companies)**: ETN (instrument amounts correct at $9.7B, total_debt stale at $1.9B — needs financials fix), THC/PAYX (likely wrong total_debt in financials), DO (complex offshore driller), UBER (131% — borderline)
 - **Stored debt_footnote quality**: ~40% of `debt_footnote` sections contain entire 10-Q filings (truncated at 100K) instead of just the debt note. Need to re-extract with better section targeting.
 - **NO_FINANCIALS (7 companies)**: ANET, GEV, GFS, ISRG, LULU, PLTR, VRTX — minimal/no debt or no financial data
 

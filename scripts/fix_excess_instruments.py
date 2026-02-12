@@ -25,6 +25,7 @@ Usage:
     python scripts/fix_excess_instruments.py --fix-outliers --dry-run
     python scripts/fix_excess_instruments.py --fix-stale --dry-run
     python scripts/fix_excess_instruments.py --fix-llm-review --dry-run
+    python scripts/fix_excess_instruments.py --fix-revolver-capacity --dry-run
 
     # Execute
     python scripts/fix_excess_instruments.py --deactivate-matured
@@ -34,6 +35,10 @@ Usage:
     python scripts/fix_excess_instruments.py --fix-outliers
     python scripts/fix_excess_instruments.py --fix-stale
     python scripts/fix_excess_instruments.py --fix-llm-review
+    python scripts/fix_excess_instruments.py --fix-revolver-capacity
+
+    # LLM review with custom excess threshold (default 2.0 = 200%)
+    python scripts/fix_excess_instruments.py --fix-llm-review --excess-threshold 1.5
 
     # Run ALL steps in order
     python scripts/fix_excess_instruments.py --fix-all-excess --dry-run
@@ -981,9 +986,10 @@ def _format_instrument_for_prompt(idx, inst):
     return '\n'.join(parts)
 
 
-async def fix_llm_review(session, dry_run=True, ticker=None, verbose=False):
+async def fix_llm_review(session, dry_run=True, ticker=None, verbose=False, excess_threshold=2.0):
     """Step 7: Use Claude to identify instruments to deactivate or clear in EXCESS companies."""
-    print_subheader("STEP 7: CLAUDE-ASSISTED REVIEW OF EXCESS COMPANIES")
+    threshold_pct = int(excess_threshold * 100)
+    print_subheader(f"STEP 7: CLAUDE-ASSISTED REVIEW OF EXCESS COMPANIES (>{threshold_pct}%)")
 
     # Initialize Claude client
     claude_client = get_claude_client()
@@ -997,7 +1003,8 @@ async def fix_llm_review(session, dry_run=True, ticker=None, verbose=False):
         where_ticker = "AND c.ticker = :ticker"
         params['ticker'] = ticker.upper()
 
-    # Find EXCESS_SIGNIFICANT companies (instrument_sum > total_debt * 2)
+    # Find EXCESS companies above the threshold (default: instrument_sum > total_debt * 2)
+    params['threshold'] = excess_threshold
     result = await session.execute(text(f'''
         WITH latest_financials AS (
             SELECT DISTINCT ON (company_id)
@@ -1024,17 +1031,18 @@ async def fix_llm_review(session, dry_run=True, ticker=None, verbose=False):
         FROM companies c
         JOIN latest_financials lf ON lf.company_id = c.id
         JOIN instrument_stats ist ON ist.company_id = c.id
-        WHERE ist.instruments_sum > lf.total_debt * 2
+        WHERE ist.instruments_sum > lf.total_debt * :threshold
+          AND c.is_financial_institution IS NOT TRUE
           {where_ticker}
         ORDER BY ist.instruments_sum::numeric / NULLIF(lf.total_debt, 0) DESC
     '''), params)
     excess_companies = result.fetchall()
 
     if not excess_companies:
-        print("  No EXCESS_SIGNIFICANT companies found.")
+        print(f"  No EXCESS companies found above {threshold_pct}% threshold (excluding banks).")
         return {'llm_review_companies': 0, 'llm_deactivated': 0, 'llm_cleared': 0}
 
-    print(f"  Found {len(excess_companies)} EXCESS_SIGNIFICANT companies (>200% coverage)")
+    print(f"  Found {len(excess_companies)} EXCESS companies (>{threshold_pct}% coverage, excluding banks)")
     print()
     for row in excess_companies:
         company_id, tick, count, inst_sum, total_debt, coverage_pct = row
@@ -1230,6 +1238,135 @@ async def fix_llm_review(session, dry_run=True, ticker=None, verbose=False):
 
 
 # =============================================================================
+# STEP 8: Clear Revolver/ABL Capacity Amounts
+# =============================================================================
+
+REVOLVER_KEYWORDS = [
+    'revolv', 'credit facility', 'credit agreement', 'abl', 'asset-based',
+    'asset based', 'line of credit', 'borrowing base',
+]
+
+
+async def fix_revolver_capacity(session, dry_run=True, ticker=None, verbose=False):
+    """Step 8: Clear revolver/ABL amounts that show facility capacity, not drawn amount.
+
+    Revolvers and ABLs typically show their total capacity as 'outstanding' when
+    the actual drawn amount is usually $0 or a small fraction. This clears those
+    amounts for EXCESS companies where instrument sum > 120% of total debt.
+    """
+    print_subheader("STEP 8: CLEAR REVOLVER/ABL CAPACITY AMOUNTS")
+
+    where_ticker = ""
+    params = {}
+    if ticker:
+        where_ticker = "AND c.ticker = :ticker"
+        params['ticker'] = ticker.upper()
+
+    result = await session.execute(text(f'''
+        WITH latest_financials AS (
+            SELECT DISTINCT ON (company_id)
+                company_id, total_debt
+            FROM company_financials
+            WHERE total_debt IS NOT NULL AND total_debt > 0
+            ORDER BY company_id, fiscal_year DESC, fiscal_quarter DESC
+        ),
+        instrument_stats AS (
+            SELECT
+                company_id,
+                SUM(COALESCE(outstanding, 0)) as instruments_sum
+            FROM debt_instruments
+            WHERE is_active = true
+            GROUP BY company_id
+        )
+        SELECT di.id, c.ticker, di.name, di.outstanding, di.commitment,
+               di.instrument_type, lf.total_debt, ist.instruments_sum
+        FROM debt_instruments di
+        JOIN companies c ON c.id = di.company_id
+        JOIN instrument_stats ist ON ist.company_id = di.company_id
+        JOIN latest_financials lf ON lf.company_id = di.company_id
+        WHERE di.is_active = true
+          AND di.instrument_type IN ('revolver', 'abl')
+          AND di.outstanding IS NOT NULL
+          AND di.outstanding > 0
+          AND ist.instruments_sum > lf.total_debt * 1.2
+          {where_ticker}
+        ORDER BY c.ticker, di.outstanding DESC
+    '''), params)
+    rows = result.fetchall()
+
+    if not rows:
+        print("  No revolver/ABL capacity amounts found in EXCESS companies.")
+        return {'revolver_cleared': 0}
+
+    # Filter to instruments whose names match revolver/ABL keywords (safety check)
+    to_clear = []
+    skipped = []
+    for row in rows:
+        di_id, tick, name, outstanding, commitment, inst_type, total_debt, inst_sum = row
+        name_lower = (name or '').lower()
+        if any(kw in name_lower for kw in REVOLVER_KEYWORDS) or inst_type in ('revolver', 'abl'):
+            to_clear.append(row)
+        else:
+            skipped.append(row)
+
+    if not to_clear:
+        print("  No matching revolver/ABL instruments found.")
+        if skipped and verbose:
+            print(f"  Skipped {len(skipped)} instruments (no keyword match):")
+            for row in skipped:
+                print(f"    {row[1]:6s}: {row[2][:60]}")
+        return {'revolver_cleared': 0}
+
+    # Group by company for display
+    by_ticker = defaultdict(list)
+    for row in to_clear:
+        di_id, tick, name, outstanding, commitment, inst_type, total_debt, inst_sum = row
+        by_ticker[tick].append({
+            'id': di_id, 'name': name, 'outstanding': outstanding,
+            'commitment': commitment, 'type': inst_type,
+            'total_debt': total_debt, 'inst_sum': inst_sum,
+        })
+
+    total_amount = sum(row[3] for row in to_clear)
+    print(f"  Found {len(to_clear)} revolver/ABL capacity amounts across {len(by_ticker)} companies")
+    print(f"  Total capacity to clear: ${total_amount / 1e11:.2f}B")
+    print()
+
+    for tick, instruments in sorted(by_ticker.items()):
+        tick_amount = sum(i['outstanding'] for i in instruments)
+        td = instruments[0]['total_debt']
+        ist = instruments[0]['inst_sum']
+        coverage = ist / td * 100 if td else 0
+        print(f"  {tick:6s}: {len(instruments)} revolvers/ABLs, ${tick_amount / 1e11:.2f}B capacity "
+              f"(coverage: {coverage:.0f}%, total debt: ${td / 1e11:.2f}B)")
+        if verbose:
+            for inst in instruments:
+                print(f"    - {inst['name'][:60]} (${inst['outstanding'] / 1e11:.3f}B, type={inst['type']})")
+
+    if skipped and verbose:
+        print(f"\n  Skipped {len(skipped)} instruments (instrument_type matched but no keyword):")
+        for row in skipped:
+            print(f"    {row[1]:6s}: {row[2][:60]}")
+
+    if dry_run:
+        print(f"\n  [DRY RUN] Would clear outstanding on {len(to_clear)} revolver/ABL instruments (${total_amount / 1e11:.2f}B)")
+    else:
+        print(f"\n  Clearing revolver/ABL capacity amounts...")
+        ids_to_clear = [row[0] for row in to_clear]
+        await session.execute(text('''
+            UPDATE debt_instruments
+            SET outstanding = NULL,
+                attributes = COALESCE(attributes, '{}'::jsonb) || '{"amount_cleared": "revolver_capacity"}'::jsonb,
+                updated_at = NOW()
+            WHERE id = ANY(:ids)
+        '''), {'ids': ids_to_clear})
+        await session.commit()
+        print(f"  Cleared outstanding on {len(ids_to_clear)} instruments.")
+
+    return {'revolver_cleared': len(to_clear)}
+
+
+# =============================================================================
 # ANALYZE MODE
 # =============================================================================
 
@@ -1366,8 +1503,11 @@ async def main():
     parser.add_argument('--fix-phase6-totals', action='store_true', help='Step 4: Fix Phase 6 total-as-per-instrument')
     parser.add_argument('--fix-outliers', action='store_true', help='Step 5: Fix single instruments exceeding total debt')
     parser.add_argument('--fix-stale', action='store_true', help='Step 6: Fix stale amounts from old filings (>5yr)')
-    parser.add_argument('--fix-llm-review', action='store_true', help='Step 7: Claude-assisted review of EXCESS_SIGNIFICANT companies')
-    parser.add_argument('--fix-all-excess', action='store_true', help='Run ALL steps 1-7 in order')
+    parser.add_argument('--fix-llm-review', action='store_true', help='Step 7: Claude-assisted review of EXCESS companies')
+    parser.add_argument('--fix-revolver-capacity', action='store_true', help='Step 8: Clear revolver/ABL capacity amounts')
+    parser.add_argument('--fix-all-excess', action='store_true', help='Run ALL steps 1-8 in order')
+    parser.add_argument('--excess-threshold', type=float, default=2.0,
+                        help='Coverage threshold for --fix-llm-review (default: 2.0 = 200%%)')
     parser.add_argument('--dry-run', action='store_true', help='Show what would change without applying')
     parser.add_argument('--ticker', type=str, help='Process single company by ticker')
     parser.add_argument('--verbose', action='store_true', help='Show detailed output')
@@ -1381,12 +1521,13 @@ async def main():
         args.fix_phase6_totals = True
         args.fix_outliers = True
         args.fix_stale = True
-        args.fix_llm_review = True
+        args.fix_revolver_capacity = True  # Step 8 (before Step 7)
+        args.fix_llm_review = True         # Step 7 (runs after Step 8)
 
     # Default to analyze if no action specified
     has_action = (args.deactivate_matured or args.deduplicate or args.fix_totals
                   or args.fix_phase6_totals or args.fix_outliers or args.fix_stale
-                  or args.fix_llm_review)
+                  or args.fix_revolver_capacity or args.fix_llm_review)
     if not has_action:
         args.analyze = True
 
@@ -1423,8 +1564,13 @@ async def main():
             result = await fix_stale_amounts(session, dry_run=args.dry_run, ticker=args.ticker, verbose=args.verbose)
             stats.update(result)
 
+        if args.fix_revolver_capacity:
+            result = await fix_revolver_capacity(session, dry_run=args.dry_run, ticker=args.ticker, verbose=args.verbose)
+            stats.update(result)
+
         if args.fix_llm_review:
-            result = await fix_llm_review(session, dry_run=args.dry_run, ticker=args.ticker, verbose=args.verbose)
+            result = await fix_llm_review(session, dry_run=args.dry_run, ticker=args.ticker,
+                                          verbose=args.verbose, excess_threshold=args.excess_threshold)
             stats.update(result)
 
     if stats:
