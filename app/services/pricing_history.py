@@ -505,10 +505,13 @@ async def copy_current_to_history(
 
     stats = SnapshotStats()
 
-    # Get all current prices with a single query
+    # Get current prices for active, non-matured instruments only
     result = await session.execute(
         select(BondPricing)
+        .join(DebtInstrument, DebtInstrument.id == BondPricing.debt_instrument_id)
         .where(BondPricing.last_price.isnot(None))
+        .where(DebtInstrument.is_active == True)
+        .where(DebtInstrument.maturity_date > date.today())
     )
     current_prices = result.scalars().all()
     stats.total_current = len(current_prices)
