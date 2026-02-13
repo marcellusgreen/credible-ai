@@ -6,7 +6,7 @@ Context for AI assistants working on the DebtStack.ai codebase.
 
 ## What's Next
 
-**Immediate**: Phase 8 MISSING_SIGNIFICANT backfill complete — OK companies 96→98, MISSING_SIGNIFICANT 60→52, MISSING_SOME 20→24. ~146 instruments updated across ~12 companies (~$182B). Generalized `fix_pld_debt_amounts.py` to accept `--ticker` (was PLD-only). Improved `extract_debt_note_from_filing()` with TOC-skipping, cross-reference detection, and broader pattern matching. Best results: UNH 56/57 ($64B), ORCL 33/43 ($69B), INTC 27/28 ($32B). Key finding: most large IG issuers present debt in aggregate maturity buckets, not per-instrument — structural limitation of 10-K footnotes. Next: fix THC/PAYX total_debt financials, consider sourcing per-instrument amounts from prospectus supplements for remaining 52 MISSING_SIGNIFICANT. See WORKPLAN.md.
+**Immediate**: Phase 9 + all targeted backfill + Tier 2 excess cleanup + Tier 3 re-extraction complete. Indenture extraction exhausted. Coverage: $5,130B / $6,618B = **77.5%**. OK: 115, EXCESS_SOME: 15, EXCESS_SIGNIFICANT: 0, MISSING_SOME: 32, MISSING_SIGNIFICANT: 40, MISSING_ALL: 2. Tier 3 re-extraction moved DUK/UAL/ATUS from MISSING_SIGNIFICANT to MISSING_SOME. Next approaches: (1) footnote backfill for ADBE/GE/CSX/CB, (2) near-OK flips for AMGN/TMO/BMY/GOOGL (need more instruments), (3) financial refresh for GILD/MA/NRG (stale total_debt causing excess), (4) more re-extraction for remaining MISSING_SIGNIFICANT companies. See WORKPLAN.md.
 
 **Then**:
 1. Continue company expansion (211 → 288, Tier 2-5 remaining)
@@ -28,7 +28,7 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 **Company Expansion**: 211 companies (up from 201) — added 10 Tier 1 massive-debt issuers (CMCSA, DUK, CVS, USB, SO, TFC, ET, PNC, PCG, BMY)
 
-**Debt Coverage Gaps**: 98/211 companies (46%) have instrument outstanding within 80-120% of total debt ("OK"). Phases 1-8 updated 1,159+ instruments, deactivated 180+ duplicates/aggregates, cleared 127 wrong amounts. EXCESS reduced from 58→22 (16 EXCESS_SOME + 6 EXCESS_SIGNIFICANT). MISSING_ALL at 8 (FTNT, META, ON, PANW, PG, TTD, USB, VAL). 52 MISSING_SIGNIFICANT remain (most use aggregate maturity/rate buckets in 10-K — structural limitation). 6 EXCESS_SIGNIFICANT have known root causes (DO, NEM, PAYX, ETN, THC, UBER). Overall: $4,723B instruments / $6,559B total debt = 72.0%.
+**Debt Coverage Gaps**: 115/211 companies (55%) have instrument outstanding within 80-120% of total debt ("OK"). Phases 1-9 + cleanup fixes + targeted backfill + Tier 2 excess cleanup + Tier 3 re-extraction updated 1,540+ instruments, deactivated 210+ duplicates/aggregates, cleared 133 wrong amounts. EXCESS reduced from 58→15 (15 EXCESS_SOME + 0 EXCESS_SIGNIFICANT). MISSING_ALL at 2 (PANW, TTD — revolvers with $0 drawn). 40 MISSING_SIGNIFICANT remain — three sub-groups: re-extraction attempted but still low (ABBV 41.3%, HD unchanged), have footnotes (GE/CSX can backfill), structural (VZ/T/CMCSA/CHTR — aggregate footnotes, indentures exhausted). 32 MISSING_SOME — includes DUK (53.5%), UAL (53.4%), ATUS (62.0%) moved from MISSING_SIGNIFICANT after Tier 3 re-extraction, plus AMGN (75.8%), TMO (75.4%), BMY (54.7%), GM (64.1%). Overall: $5,130B instruments / $6,618B total debt = **77.5%**.
 
 **Pricing Coverage**: 3,557 active bonds with pricing (2,487 real TRACE, 1,070 estimated) via Finnhub/FINRA TRACE. Updated 3x daily by APScheduler (11 AM, 3 PM, 9 PM ET). Daily snapshots saved to `bond_pricing_history` at 9 PM ET.
 
@@ -142,6 +142,7 @@ This separation keeps business logic testable and reusable while scripts handle 
 | `scripts/extract_iterative.py` | Complete extraction pipeline CLI (thin wrapper) |
 | `scripts/recompute_metrics.py` | Metrics recomputation CLI (thin wrapper) |
 | `scripts/backfill_amounts_from_docs.py` | Phase 6: Multi-doc targeted outstanding amount backfill |
+| `scripts/extract_amounts_from_indentures.py` | Phase 9: Extract amounts from indentures (regex + LLM) |
 | `scripts/backfill_outstanding_from_filings.py` | Phase 2/4: Outstanding amount backfill from single footnote |
 | `scripts/fix_excess_instruments.py` | Phase 3/7/7.5: Dedup, deactivate matured, LLM review, revolver clears |
 | `scripts/analyze_gaps_v2.py` | Debt coverage gap analysis (MISSING_ALL/SIGNIFICANT/EXCESS) |
@@ -1134,6 +1135,7 @@ Multi-phase effort to populate `outstanding` amounts on debt instruments. Progre
 | 7 | `fix_excess_instruments.py --fix-llm-review` | Claude reviews EXCESS_SIGNIFICANT (>200%) | 49 deactivated, 45 cleared | ~$0.42 |
 | 7.5 | `fix_excess_instruments.py` | Step 8 revolver clears + LLM review at 1.5x | 36 revolver clears + 180 deactivated, 91 cleared | ~$2.01 |
 | 8 | `fix_pld_debt_amounts.py --ticker` | SEC-direct fetch + Gemini 2.5 Pro extraction | 84 instruments updated (~$89B) | ~$3.00 |
+| 9 | `extract_amounts_from_indentures.py` | Regex + LLM extraction from supplemental indentures | 282 (66 regex + 216 LLM) | ~$1-2 |
 
 ### Backfill Scripts
 
@@ -1154,6 +1156,14 @@ python scripts/backfill_amounts_from_docs.py --fix --ticker CSGP --dry-run
 python scripts/backfill_amounts_from_docs.py --fix                    # MISSING_ALL only
 python scripts/backfill_amounts_from_docs.py --fix --all-missing      # + MISSING_SIGNIFICANT
 python scripts/backfill_amounts_from_docs.py --fix --model gemini-2.5-pro
+
+# Phase 9: Extract amounts from indentures (bullet bonds only)
+python scripts/extract_amounts_from_indentures.py --analyze
+python scripts/extract_amounts_from_indentures.py --fix --ticker VZ --dry-run
+python scripts/extract_amounts_from_indentures.py --fix                    # MISSING_SIG + MISSING_ALL
+python scripts/extract_amounts_from_indentures.py --fix --all-missing      # All w/ missing bullets
+python scripts/extract_amounts_from_indentures.py --fix --regex-only       # No LLM cost
+python scripts/extract_amounts_from_indentures.py --fix --model gemini-2.5-pro
 ```
 
 ### Key Learnings from Debt Coverage Work

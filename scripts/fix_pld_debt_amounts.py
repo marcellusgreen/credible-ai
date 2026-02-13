@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-Fix PLD (Prologis) debt instrument amounts.
+Fix debt instrument amounts by fetching filings directly from SEC.
 
-The stored debt_footnote sections for PLD are broken — they contain the entire
-filing (truncated at 100K chars) starting from the table of contents, never
-reaching the actual debt note. This script:
+For companies whose stored debt_footnote sections are broken (contain the entire
+filing truncated at 100K chars starting from the table of contents, never
+reaching the actual debt note), this script:
 
-1. Fetches PLD's latest 10-K directly from SEC via SecApiClient
+1. Fetches the company's latest 10-K directly from SEC via SecApiClient
 2. Finds the debt note section using keyword search (bypassing broken regex)
 3. Sends instrument list + clean debt note to Gemini 2.5 Pro
 4. Updates the DB with matched amounts
 
 Usage:
-    python scripts/fix_pld_debt_amounts.py --dry-run    # Preview
-    python scripts/fix_pld_debt_amounts.py              # Apply changes
+    python scripts/fix_pld_debt_amounts.py --ticker PLD --dry-run    # Preview
+    python scripts/fix_pld_debt_amounts.py --ticker DUK              # Apply changes
+    python scripts/fix_pld_debt_amounts.py --ticker HD               # Apply changes
 """
 import argparse
 import asyncio
@@ -41,81 +42,119 @@ from scripts.backfill_amounts_from_docs import (
 )
 
 
+def _is_toc_match(content: str, pos: int) -> bool:
+    """Check if a match is in a table of contents or a mid-text cross-reference.
+
+    Returns True if the match is NOT the actual debt note section content.
+    """
+    after = content[pos:pos + 500]
+    # TOC: many note headers clustered together
+    note_refs = len(re.findall(r'Note\s*\d+', after, re.IGNORECASE))
+    if note_refs >= 3:
+        return True
+    # Cross-reference: match is embedded in a sentence about something else
+    # Real debt notes have $ signs and "in millions/billions" within 500 chars
+    has_dollar = '$' in after
+    has_scale = bool(re.search(r'(?i)in\s+(?:millions|billions|thousands)', after))
+    has_table = bool(re.search(r'\d{1,3}(?:,\d{3})+', after))  # Numbers like 1,500
+    if not has_dollar and not has_scale and not has_table:
+        return True
+    return False
+
+
 def extract_debt_note_from_filing(content: str) -> str | None:
     """Find and extract the debt note section from a full 10-K/10-Q filing.
 
     Searches for common debt note headers that appear after the financial
     statements, then captures content until the next note header.
+    Skips table-of-contents matches by checking for many note references nearby.
     """
     # Patterns for finding the debt note section header
-    # PLD uses "Note X – Debt" style headers
     debt_note_patterns = [
-        # "Note 5 – Debt" or "Note 5 - Debt" or "Note 5. Debt"
-        r'(Note\s*\d+\s*[\.\-\u2014\u2013]\s*(?:Debt|Long[\-\s]?Term\s+Debt|Borrowings|'
-        r'Senior\s+Notes|Notes\s+Payable|Unsecured\s+Senior\s+Notes))',
+        # "Note 5 – Debt" or "Note 5 - Debt" or "Note 5. Debt" or "Note 6: Debt"
+        # Also: "Note 6. Short-term Borrowings and Long-term Debt"
+        r'(Note\s*\d+\s*[\.\-:\u2014\u2013]\s*(?:Debt|Long[\-\s]?Term\s+Debt|Borrowings|'
+        r'Short[\-\s]?[Tt]erm\s+Borrowings|'
+        r'Senior\s+Notes|Notes\s+Payable|Unsecured\s+Senior\s+Notes|Indebtedness|'
+        r'Credit\s+Facilit(?:y|ies)|Financing\s+Arrangements|Debt\s+and\s+Credit))',
+        # All caps section headers (no Note prefix): "NOTES PAYABLE AND OTHER BORROWINGS"
+        r'((?:NOTES\s+PAYABLE|LONG[\-\s]?TERM\s+DEBT|BORROWINGS|DEBT)\s+(?:AND\s+)?'
+        r'(?:OTHER\s+)?(?:BORROWINGS|OBLIGATIONS|CREDIT\s+FACILIT(?:Y|IES))?)',
+        # All caps: "7. DEBT AND CREDIT FACILITIES" or "6. NOTES PAYABLE AND OTHER BORROWINGS"
+        r'(\d+\.\s+(?:DEBT\b|LONG[\-\s]?TERM\s+DEBT|BORROWINGS|DEBT\s+AND\s+CREDIT|INDEBTEDNESS|NOTES\s+PAYABLE))',
         # Numbered without "Note" prefix: "5. Debt"
-        r'(\d+\.\s+(?:Debt|Long[\-\s]?Term\s+Debt|Borrowings))',
-        # All caps variant
-        r'(NOTE\s*\d+\s*[\.\-\u2014\u2013]\s*(?:DEBT|LONG[\-\s]?TERM\s+DEBT|BORROWINGS))',
+        r'(\d+\.\s+(?:Debt|Long[\-\s]?Term\s+Debt|Borrowings|Indebtedness))',
+        # All caps variant with NOTE prefix
+        r'(NOTE\s*\d+\s*[\.\-:\u2014\u2013]\s*(?:DEBT|LONG[\-\s]?TERM\s+DEBT|BORROWINGS|INDEBTEDNESS))',
     ]
 
-    best_match = None
-    best_pos = len(content)
-
+    # Collect ALL matches, not just the first one
+    all_matches = []
     for pattern in debt_note_patterns:
-        # Search from position 10000+ to skip past financial statement headers
         for m in re.finditer(pattern, content):
-            if m.start() > 5000 and m.start() < best_pos:
-                best_match = m
-                best_pos = m.start()
+            if m.start() > 5000:
+                all_matches.append(m)
 
-    if not best_match:
-        return None
+    # Sort by position
+    all_matches.sort(key=lambda m: m.start())
 
-    # Find the end of this note (next "Note X" header)
-    start = best_match.start()
-    end_patterns = [
-        r'\nNote\s*\d+\s*[\.\-\u2014\u2013]',
-        r'\nNOTE\s*\d+\s*[\.\-\u2014\u2013]',
-        r'\n\d+\.\s+[A-Z][a-z]',  # Next numbered section
-    ]
+    # Try each match, skipping TOC entries
+    for match in all_matches:
+        if _is_toc_match(content, match.start()):
+            continue  # Skip table of contents references
 
-    end_pos = len(content)
-    for ep in end_patterns:
-        for em in re.finditer(ep, content[start + 100:]):
-            candidate = start + 100 + em.start()
-            if candidate < end_pos:
-                end_pos = candidate
-                break
+        start = match.start()
 
-    section = content[start:end_pos]
+        # Find the end of this note (next "Note X" header)
+        end_patterns = [
+            r'\nNote\s*\d+\s*[\.\-:\u2014\u2013]',
+            r'\nNOTE\s*\d+\s*[\.\-:\u2014\u2013]',
+            r'\n\d+\.\s+[A-Z][a-z]',  # Next numbered section
+        ]
 
-    # Sanity check: should be at least 500 chars and contain debt keywords
-    if len(section) < 500:
-        return None
+        end_pos = len(content)
+        for ep in end_patterns:
+            for em in re.finditer(ep, content[start + 100:]):
+                candidate = start + 100 + em.start()
+                if candidate < end_pos:
+                    end_pos = candidate
+                    break
 
-    lower = section.lower()
-    debt_keywords = ['senior notes', 'due 20', '% notes', 'aggregate principal',
-                     'debt consisted', 'unsecured notes', 'term loan', 'credit facility',
-                     'maturity', 'interest rate']
-    matches = sum(1 for kw in debt_keywords if kw in lower)
-    if matches < 2:
-        return None
+        section = content[start:end_pos]
 
-    # Truncate if too long (shouldn't be for a single note)
-    if len(section) > 50000:
-        section = section[:50000] + "\n... [truncated]"
+        # Sanity check: should be at least 500 chars and contain debt keywords
+        if len(section) < 500:
+            continue
 
-    return section
+        lower = section.lower()
+        debt_keywords = ['senior notes', 'due 20', '% notes', 'aggregate principal',
+                         'debt consisted', 'unsecured notes', 'term loan', 'credit facility',
+                         'maturity', 'interest rate', 'first mortgage', 'mortgage bonds',
+                         'notes payable', 'debentures', 'in millions', 'in thousands']
+        kw_matches = sum(1 for kw in debt_keywords if kw in lower)
+        if kw_matches < 2:
+            continue
+
+        # Truncate if too long (shouldn't be for a single note)
+        if len(section) > 50000:
+            section = section[:50000] + "\n... [truncated]"
+
+        return section
+
+    return None
 
 
 async def main():
-    parser = argparse.ArgumentParser(description='Fix PLD debt instrument amounts')
+    parser = argparse.ArgumentParser(description='Fix debt instrument amounts from SEC filings')
+    parser.add_argument('--ticker', type=str, required=True,
+                        help='Company ticker symbol (e.g., PLD, DUK, HD)')
     parser.add_argument('--dry-run', action='store_true',
                         help='Preview changes without applying')
     parser.add_argument('--model', type=str, default='gemini-2.5-pro',
                         help='Gemini model (default: gemini-2.5-pro)')
     args = parser.parse_args()
+
+    ticker = args.ticker.upper()
 
     database_url = os.getenv('DATABASE_URL')
     sec_api_key = os.getenv('SEC_API_KEY')
@@ -135,18 +174,18 @@ async def main():
     async_session = async_sessionmaker(engine, expire_on_commit=False)
 
     try:
-        # Step 1: Get PLD company and instruments
+        # Step 1: Get company and instruments
         print("=" * 80)
-        print("FIX PLD DEBT AMOUNTS")
+        print(f"FIX {ticker} DEBT AMOUNTS")
         print("=" * 80)
 
         async with async_session() as session:
             result = await session.execute(
-                select(Company).where(Company.ticker == 'PLD')
+                select(Company).where(Company.ticker == ticker)
             )
             company = result.scalar_one_or_none()
             if not company:
-                print("ERROR: PLD not found in database")
+                print(f"ERROR: {ticker} not found in database")
                 return
 
             print(f"Company: {company.name} (CIK: {company.cik})")
@@ -183,18 +222,18 @@ async def main():
             print("No instruments need amounts — nothing to do.")
             return
 
-        # Step 2: Download PLD's latest 10-K from SEC
-        print("\nDownloading PLD filings from SEC-API...")
+        # Step 2: Download latest 10-K from SEC
+        print(f"\nDownloading {ticker} filings from SEC-API...")
         from app.services.sec_client import SecApiClient
         client = SecApiClient(api_key=sec_api_key)
 
         # Get the latest 10-K filing
         filings = client.get_filings_by_ticker(
-            'PLD', form_types=['10-K'], max_filings=3, cik=company.cik
+            ticker, form_types=['10-K'], max_filings=3, cik=company.cik
         )
 
         if not filings:
-            print("ERROR: No 10-K filings found for PLD")
+            print(f"ERROR: No 10-K filings found for {ticker}")
             return
 
         debt_note = None
@@ -224,7 +263,7 @@ async def main():
             # Try 10-Q filings as fallback
             print("\nTrying 10-Q filings as fallback...")
             q_filings = client.get_filings_by_ticker(
-                'PLD', form_types=['10-Q'], max_filings=3, cik=company.cik
+                ticker, form_types=['10-Q'], max_filings=3, cik=company.cik
             )
             for filing in q_filings:
                 filing_url = filing.get('linkToFilingDetails', '')

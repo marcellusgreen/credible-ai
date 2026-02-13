@@ -1,6 +1,6 @@
 # DebtStack Work Plan
 
-Last Updated: 2026-02-12 (Phase 7.5 EXCESS cleanup)
+Last Updated: 2026-02-13 (EXCESS_SIGNIFICANT eliminated: DO/NEM/ON/UBER fixes)
 
 ## Current Status
 
@@ -17,19 +17,19 @@ Last Updated: 2026-02-12 (Phase 7.5 EXCESS cleanup)
 **Data Quality**: QC audit passing - 0 critical, 0 errors, 4 warnings (2026-01-26). Fixed 38 mislabeled seniority records (2026-02-06).
 **Eval Suite**: 121/136 tests passing (89.0%)
 
-### Debt Coverage Gaps (2026-02-12, updated after Phase 7.5)
+### Debt Coverage Gaps (2026-02-13, updated after META/FTNT fixes)
 
 Analysis of `SUM(debt_instruments.outstanding)` vs `company_financials.total_debt`:
 
-| Status | Before | After P1+2 | After P3 | After P4 | After P5 | After P6 | After P6 all-missing | After P7 Steps 4-6 | After P7 Step 7 | After ETN/PLD fix | After P7.5 | Description |
-|--------|--------|------------|----------|----------|----------|----------|---------------------|--------------------|--------------------|---------------------|------------|-------------|
-| OK | 32 | 51 | 71 | 72 | 73 | 73 | 65 | 65 | 73 | 82 | **96** | Within 80-120% of total debt |
-| EXCESS_SOME | 30 | 43 | 30 | 30 | 30 | 30 | 45 | 45 | 53 | 42 | **15** | 120-200% (slight over-count) |
-| EXCESS_SIGNIFICANT | 67 | 35 | 14 | 14 | 14 | 14 | 27 | 19 | 5 | 5 | **5** | >200% (duplicates, historical, or unit issues) |
-| MISSING_SOME | 12 | 16 | 19 | 19 | 19 | 19 | 13 | 13 | 13 | 15 | **20** | 50-80% (slightly under) |
-| MISSING_SIGNIFICANT | 39 | 44 | 54 | 54 | 56 | 54 | 50 | 50 | 53 | 55 | **60** | <50% (missing outstanding amounts) |
-| MISSING_ALL | 24 | 15 | 16 | 14 | 12 | 9 | 4 | 4 | 7 | 5 | **8** | $0 outstanding despite having instruments |
-| NO_FINANCIALS | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | **7** | No total debt figure to compare against |
+| Status | Before | After P1+2 | After P3 | After P4 | After P5 | After P6 | After P6 all-missing | After P7 Steps 4-6 | After P7 Step 7 | After ETN/PLD fix | After P7.5 | After P8 | After Fin Fix | After P9 | After T1 | After T1B | Current | Description |
+|--------|--------|------------|----------|----------|----------|----------|---------------------|--------------------|--------------------|---------------------|------------|----------|---------------|----------|----------|----------|---------|-------------|
+| OK | 32 | 51 | 71 | 72 | 73 | 73 | 65 | 65 | 73 | 82 | 96 | 98 | 100 | 102 | 103 | 106 | **115** | Within 80-120% of total debt |
+| EXCESS_SOME | 30 | 43 | 30 | 30 | 30 | 30 | 45 | 45 | 53 | 42 | 15 | 16 | 16 | 17 | 17 | 16 | **15** | 120-200% (slight over-count) |
+| EXCESS_SIGNIFICANT | 67 | 35 | 14 | 14 | 14 | 14 | 27 | 19 | 5 | 5 | 5 | 6 | 4 | 4 | 4 | 6 | **0** | >200% — eliminated |
+| MISSING_SOME | 12 | 16 | 19 | 19 | 19 | 19 | 13 | 13 | 13 | 15 | 20 | 24 | 26 | 32 | 33 | 31 | **32** | 50-80% (slightly under) |
+| MISSING_SIGNIFICANT | 39 | 44 | 54 | 54 | 56 | 54 | 50 | 50 | 53 | 55 | 60 | 52 | 52 | 45 | 43 | 43 | **40** | <50% (missing outstanding amounts) |
+| MISSING_ALL | 24 | 15 | 16 | 14 | 12 | 9 | 4 | 4 | 7 | 5 | 8 | 8 | 6 | 4 | 4 | 2 | **2** | $0 outstanding despite having instruments (PANW, TTD) |
+| NO_FINANCIALS | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | **7** | No total debt figure to compare against |
 
 **Note on Phase 7.5**: OK jumped 82→96, EXCESS_SOME dropped 42→15. Two-step approach:
 1. **Step 8 — Revolver/ABL capacity clears** ($0 cost): Cleared 36 revolver/ABL instruments across 23 companies ($55.5B capacity shown as outstanding). Moved 11 companies from EXCESS to OK. Added `--fix-revolver-capacity` flag to `fix_excess_instruments.py`.
@@ -71,13 +71,167 @@ Phase 6 `--all-missing` run (187 companies with any missing instruments):
 - **PLD**: All 7 stored `debt_footnote` sections were broken (contained entire filing from TOC, never reaching debt note). Created `scripts/fix_pld_debt_amounts.py` — fetches latest 10-K directly from SEC via SecApiClient, extracts debt note section using keyword search (bypassing broken regex), sends to Gemini 2.5 Pro. Result: 44/55 instruments, $28.84B total. PLD moved to OK status.
 - **Total: 61 instruments updated** (17 ETN + 44 PLD), MISSING_ALL reduced 7→5, OK increased 73→82
 
-**Remaining root causes (after Phase 7.5)**:
-- **MISSING_ALL (8 companies)**: PANW/TTD (revolvers with $0 drawn — correct), PG (aggregate-only footnote, 67 instruments), USB (no debt footnotes — bank), FTNT/META/ON/VAL (amounts cleared in Phase 7/7.5, need re-extraction)
-- **MISSING_SIGNIFICANT (60 companies)**: Large issuers where documents lack per-instrument detail. Biggest gaps: VZ (3/81), T (29/70, $3.7B vs $139B), UNH (12/69), CMCSA (8/79), ORCL (19/62), CHTR (11/40 after aggregate removal), PEP (21/64 but still -69%). Some overcorrected from EXCESS after aggregate removal (CHTR, PFE, LOW, MSFT).
-- **EXCESS_SIGNIFICANT (5 companies)**: DO (pre-reorg bonds), ETN (total_debt stale at $1.9B), PAYX (total_debt wrong post-Paycor), NEM (face values), UBER (borderline 121%)
-- **EXCESS_SOME (15 companies)**: 3 banks (BAC, C, JPM — structural), 12 others with minor excess (20-95%)
-- **Stored debt_footnote quality**: ~40% of `debt_footnote` sections contain entire 10-Q filings (truncated at 100K) instead of just the debt note. Need to re-extract with better section targeting.
+**Phase 8 (MISSING_SIGNIFICANT backfill)** (2026-02-12): Two-pronged approach to fill outstanding amounts for the 60 MISSING_SIGNIFICANT companies:
+
+1. **Step 1 — Backfill from stored documents** (Gemini 2.5 Pro): Ran `backfill_amounts_from_docs.py --fix --all-missing --model gemini-2.5-pro` on 180 companies. Processed 29/180 before stopping due to very low yield (2 companies updated out of 29). Most stored `debt_footnote` sections contain either broken content (entire filing truncated at 100K) or aggregate maturity bucket summaries, not per-instrument detail. **Result**: APH 9/20, AXP 2/47 = 11 instruments updated.
+
+2. **Step 2 — SEC-direct extraction** (generalized `fix_pld_debt_amounts.py`): Generalized the PLD-specific script to accept `--ticker` parameter. Downloads 10-K directly from SEC, extracts debt note using keyword search with TOC-skipping logic (`_is_toc_match()`), sends to Gemini 2.5 Pro. Ran for 40+ companies.
+
+Step 2 results (successful):
+- **UNH**: **56/57** instruments, **$64.0B** — near-complete, moved to OK
+- **ORCL**: **33/43** instruments, **$69.3B** — moved to EXCESS_SOME
+- **INTC**: **27/28** instruments, **$32.4B** — near-complete
+- **HSY**: **9/13** instruments, **$3.1B** — moved to MISSING_SOME
+- **PCG**: **5/16** instruments, **$7.8B** — still MISSING_SIGNIFICANT but improved
+- **THC**: **2/14** instruments, **$1.5B** — moved to EXCESS_SIGNIFICANT
+- **VZ**: **1/78** instruments, **$2.2B** (aggregate maturity band format)
+- **CSX**: **1/23** instruments, **$950M**
+- **ET**: **1/6** instruments, **$850M**
+- **HD**: Already fixed (0 instruments needing amounts)
+- 30+ companies returned 0 matches — debt notes present aggregate maturity buckets, wrong section extracted, or cross-references matched instead of actual note
+
+**Key fixes in extraction**:
+- Added `_is_toc_match()` function to skip table-of-contents entries. Checks if 3+ "Note X" references appear within 500 chars — if so, it's TOC.
+- Added cross-reference detection: checks for `$`, scale words, and formatted numbers to distinguish real notes from mid-text references.
+- Added `:` to separator character class (matches "Note 6: Debt" used by CMCSA, etc.)
+- Added "NOTES PAYABLE AND OTHER BORROWINGS" all-caps pattern (used by ORCL)
+- Added "Indebtedness", "Credit Facilities", "Financing Arrangements" to match list
+
+**Phase 8 total**: ~146 instruments updated across ~12 companies, ~$182B in amounts. MISSING_SIGNIFICANT: 60→52, OK: 96→98, MISSING_SOME: 20→24, EXCESS_SOME: 15→16, EXCESS_SIGNIFICANT: 5→6.
+
+**Phase 9 total**: 282 instruments updated across 31 companies, ~$275B in amounts. MISSING_SIGNIFICANT: 52→45, MISSING_ALL: 6→4, OK: 100→102, MISSING_SOME: 26→32. Overall: $5,049B / $6,586B = **76.7%** (up from 72.5%).
+
+**Tier 1 fixes** (2026-02-12): Quick data quality fixes identified via gap analysis. 21 instruments fixed, $0 cost:
+- **PG JPY bond cleared**: `0.230% Notes due 2031` had ¥50,000,000,000 (Japanese Yen) treated as $50B USD by Phase 9 LLM. Indenture confirmed: "DESC OF 0.110% YEN NOTES DUE 2026 & 0.230% YEN NOTES DUE 2031". Set outstanding to 0. Removed ~$50B false data from coverage totals.
+- **KLAC scale x1000**: All 11 instruments multiplied by 1000 — filing was "in thousands". Result: $5.95B vs $5.9B total_debt = perfect match. Moved KLAC from MISSING_SIGNIFICANT → OK.
+- **CTAS scale x1000**: All 6 instruments multiplied by 1000 — same "in thousands" issue. Result: $4.57B vs $3.0B total_debt. Moved CTAS from MISSING_SIGNIFICANT → EXCESS_SOME.
+- **IHRT bonds scale x1000**: 4 bond instruments multiplied by 1000 (excluding revolver at $100M and term loan at $5.1M which were already correct scale).
+- **Investigated HD/DUK/ABBV/TSLA/UAL/ATUS**: These show 0 missing amounts but are MISSING_SIGNIFICANT because they lack instruments in the database (e.g., HD has 45 instruments totaling $22.6B but total_debt is $49.5B). Requires re-extraction via `extract_iterative.py --step core`, not a quick fix.
+
+**Tier 1 total**: 21 instruments fixed across 4 companies, $0 cost. OK: 102→103 (+KLAC). MISSING_SIGNIFICANT: 45→43 (-KLAC, -CTAS). MISSING_SOME: 32→33 (+IHRT). Overall: $5,012B / $6,586B = **76.1%** (down from 76.7% because PG's false $50B was removed — a data quality improvement).
+
+**Tier 1B fixes** (2026-02-13): Deactivated aggregate/double-counting entries, $0 cost:
+- **LOW**: Deactivated 9 fiscal-year maturity bucket entries ($4.3B) that double-counted individually-listed bonds (e.g., "Notes due fiscal 2030-2034" overlaps with 8 individual bonds). Moved LOW from EXCESS_SOME → OK.
+- **DHR**: Deactivated Euro-denominated commercial paper ($1.09B) — short-term, not long-term debt. Reduced excess from 124.5% to 124.3%, still EXCESS_SOME.
+
+**Targeted indenture backfill** (2026-02-13): Re-ran `extract_amounts_from_indentures.py` with gemini-2.5-pro for 9 companies with rich indenture sets. Results were limited — most indentures only cover recent (2018+) bond issuances:
+- **PM**: 12/12 matched ($13.9B) — moved PM from MISSING_SOME → OK. ~$0.01.
+- **WMT**: 4/31 matched ($3.5B) — small improvement. ~$0.02.
+- **SO**: 1/5 matched ($1.0B) — small improvement. ~$0.01.
+- **PG, PEP, TMUS, MRK, ET, KO, LMT, T**: 0 matches — indentures don't cover older bonds.
+
+**Excess cleanup** (2026-02-13): Deactivated duplicates and commercial paper, $0 cost:
+- **KSS**: Deactivated duplicate "3.375% Senior Notes due 2031" ($500M) — exact duplicate of existing entry. Moved KSS from EXCESS_SOME → OK.
+- **AMD**: Deactivated Commercial Paper Program ($950M) — short-term, not long-term debt. Moved AMD from EXCESS_SOME → OK.
+- **FTNT**: Deactivated 2 Finnhub-discovered bond duplicates ($500M each) that duplicated Senior Notes entries. Moved FTNT from MISSING_ALL → EXCESS_SIGNIFICANT (200.8% — $2B notes vs $1B total_debt, likely stale financials).
+- **META**: Investigated — all 20 instruments are distinct bond issuances (Aug 2022 + Nov 2024 tranches). Total_debt ($28.8B) appears stale vs $59B in actual bonds outstanding. Needs financial refresh, not deactivation.
+
+**Near-OK backfill** (2026-02-13): Targeted indenture extraction for companies near 80% threshold:
+- **UNP**: 9/17 matched ($6.95B) — moved UNP from MISSING_SOME (71.2%) → OK (~93%). ~$0.01.
+- **JNJ**: 1/6 matched ($850M) — improved from 70.3% to 72.2%, still MISSING_SOME. ~$0.01.
+- **BKR**: Gap from missing instruments, not amounts — needs re-extraction.
+- **ORCL/RCL**: 120.3% excess — term loans at commitment amounts, no clean fix without quarterly drawn data.
+
+**META/FTNT fixes** (2026-02-13): Fixed stale total_debt and missing instruments:
+- **META**: Added 14 bonds from 3 earlier 8-K offerings (Aug 2022: $10.0B, May 2023: $8.5B, Aug 2024: $10.5B) — DB previously only had 6 bonds from Nov 2025. Extracted Q4 2025 10-K financials via Claude: total_debt=$58.7B (was $28.83B from Q3 pre-offering). Result: 20 instruments, $59.0B vs $58.7B total_debt = 100.5%. Moved META from EXCESS_SIGNIFICANT → OK.
+- **FTNT**: Corrected instrument amounts from $1.0B to $500M each (backfill had doubled the amounts). Added interest rates (1.0% 2026, 2.2% 2031) from Finnhub duplicates. Extracted Q4 2024 10-K financials via Claude: total_debt=$994M. Result: 2 instruments, $1.0B vs $994M = 100.6%. Moved FTNT from EXCESS_SIGNIFICANT → OK.
+- **Side effect**: 10-K extraction for META/FTNT also improved 2 other companies (OK 106→108), likely from updated financial data propagating through metrics.
+
+**Tier 1 indenture backfill** (2026-02-13): Targeted indenture extraction for near-OK and high-gap companies:
+- **HSY**: 4/4 matched ($2.0B) — moved HSY from MISSING_SOME (68.7%) to OK (109.5%).
+- **LLY**: 15/19 matched ($14.1B) — moved LLY from MISSING_SIGNIFICANT (54.9%) to OK (90.5%).
+- **NCLH**: 3/4 matched ($3.2B) — moved NCLH from MISSING_SOME (63.7%) to OK (85.7%).
+- **AMGN**: 2/2 matched ($7.0B) — improved from 63.0% to 75.8%, still MISSING_SOME.
+- **TMO**: 9/9 matched ($5.2B after clearing $110B JPY error on 4.497% Notes due 2030) — improved from 58.0% to 75.4%, still MISSING_SOME.
+- **GM**: 5/5 matched ($3.9B) — improved from 61.1% to 64.1%, still MISSING_SOME.
+- **PCG**: 1/11 matched ($0.4B) — improved from 50.3% to 51.0%, still MISSING_SIGNIFICANT.
+- **APH**: Dry run showed 7/7 matches ($6.4B) but would push to 145% EXCESS — skipped, likely has duplicate instruments or stale total_debt.
+- Cost: ~$0.05 total.
+
+**Tier 2 excess cleanup** (2026-02-13): Targeted deactivation and cleanup of EXCESS companies:
+- **PH**: Deactivated Commercial Paper Program ($2.4B) — short-term, not LT debt. Moved PH from EXCESS_SOME (122.0%) to OK (97.7%).
+- **INTU**: Cleared 4 revolver amounts ($2.62B total) — at commitment, not drawn. Moved INTU from EXCESS_SOME (124.1%) to OK (81.4%).
+- **TTWO**: Deactivated $2.94B 0% Convertible Notes due 2026 — classified as equity in total_debt. Moved TTWO from EXCESS_SOME (195.2%) to OK (99.4%).
+- **APP**: Cleared term loan amount ($2.97B) — at commitment, not drawn. Moved APP from EXCESS_SOME (185.5%) to OK (101.1%).
+- **GILD**: Deactivated "Liability Related to Future Royalties" ($1.15B) — not a debt instrument. Still EXCESS_SOME (158.4%) — senior_notes total $33B vs $24.9B total_debt, likely stale financials.
+- **MA**: Fixed maturity_date on "4.950% Notes due 2032" (was 2028-03-15, now 2032-03-15). Still EXCESS_SOME (138.8%).
+- **Skipped**: CTAS (needs investigation), NRG (complex structure), DISH/WELL/GILD (not clearly actionable).
+
+**EXCESS_SIGNIFICANT elimination** (2026-02-13): Fixed all 4 remaining EXCESS_SIGNIFICANT companies:
+- **DO** (+266%→EXCESS_SOME): Deactivated 7 pre-Chapter 11 bonds (5.70% 2039, 4.875% 2043, debentures, old revolvers). All cancelled in April 2021 emergence. Remaining: $0.72B vs $0.53B.
+- **NEM** (+117%→EXCESS_SOME): Deactivated 3 repaid facilities (Newcrest Finance $1.0B, Term Loan A $0.5B, Term Loan B $0.5B — all repaid post-Newcrest acquisition). Updated 5.30% 2026 to $924M from 10-K. Remaining excess from face values vs buyback-reduced outstanding.
+- **ON** (+482%→MISSING_SOME): Extracted Q4 2025 10-K via Claude — total_debt=$3.0B (was $0 from bad extraction). Deactivated 2 duplicate entries. $2.2B instruments vs $3.0B.
+- **UBER** (+121%→EXCESS_SOME): Cleared $9.46B wrong aggregate on "due 2028" (cusip 90353TAR1) — doc_backfill had assigned aggregate total to single bond. $16.68B vs $11.85B.
+
+**Tier 3 re-extraction** (2026-02-13): Re-ran `extract_iterative.py --step core` for 6 MISSING_SIGNIFICANT companies with all amounts filled but insufficient instruments:
+- **DUK**: +23 new instruments (+$9B) — improved from 43.1% to 53.5%, moved to MISSING_SOME.
+- **ABBV**: +5 new instruments (+$3.3B) — improved from 36.3% to 41.3%, still MISSING_SIGNIFICANT.
+- **HD**: +0 new instruments — Gemini extracted same 22 instruments already in DB. Still 45.5%.
+- **TSLA**: Failed — entity slug collision ("Tesla (Shanghai) Co., Ltd" vs "Co., Ltd."). TSLA debt is mostly securitized auto loans, not traditional bonds. Still 42.0%.
+- **UAL**: +4 new instruments (+$3.5B) — improved from 40.5% to 53.4%, moved to MISSING_SOME.
+- **ATUS**: +4 new instruments (+$6.9B) — improved from 36.0% to 62.0%, moved to MISSING_SOME.
+- Cost: ~$0.10 total (Gemini extraction + QA iterations).
+
+**Current totals** (2026-02-13): OK 115, EXCESS_SOME 15, EXCESS_SIGNIFICANT 0, MISSING_SOME 32, MISSING_SIGNIFICANT 40, MISSING_ALL 2, NO_FINANCIALS 7. Overall: $5,130B / $6,618B = **77.5%**.
+
+**Root cause of limited impact**: Most large issuers (VZ, CMCSA, T, PEP, LOW, UNP, GE, MSFT, PM, KO, WMT) present debt in aggregate maturity/rate buckets in their 10-K footnotes (e.g., "Notes due 2030-2034: $7.7B" or "Senior notes with maturities of 5 years or less: $25.4B") rather than per-instrument detail. This is a structural limitation — per-instrument amounts would need to be sourced from prospectus supplements or individual offering documents, not 10-K/10-Q footnotes.
+
+**Remaining root causes (after Tier 3 re-extraction)**:
+- **MISSING_ALL (2 companies)**: PANW/TTD (revolvers with $0 drawn — correct)
+- **MISSING_SIGNIFICANT (40 companies)**: Three sub-groups:
+  - *Re-extraction attempted, still low* (need different approach): ABBV (41.3%), HD (unchanged) — re-extraction yielded some new instruments but not enough
+  - *Re-extraction failed*: TSLA (entity slug collision "Tesla (Shanghai) Co., Ltd")
+  - *Have footnotes for backfill* (`backfill_amounts_from_docs.py`): ADBE, ADSK, GE, CSX, CB — debt footnotes available
+  - *Structural* (aggregate footnotes, few indentures): VZ, T, CMCSA, CHTR, PEP, KO, LMT, F — indentures exhausted, footnotes only have maturity buckets
+- **EXCESS_SIGNIFICANT (0 companies)**: Eliminated. DO (pre-reorg bonds deactivated), NEM (repaid facilities deactivated), ON (total_debt fixed via 10-K extraction), UBER (wrong aggregate cleared).
+- **EXCESS_SOME (15 companies)**: 3 banks (BAC, C, JPM — structural), NEM (178%, face values vs buyback-reduced), UBER (141%, many legitimate bond issues), GILD/MA/NRG/CTAS (stale total_debt or complex structure), DO/DISH/WELL/DHR/ORCL/RCL (minor-moderate excess)
+- **MISSING_SOME (32 companies)**: Near-OK companies including DUK (53.5%), UAL (53.4%), ATUS (62.0%) — moved from MISSING_SIGNIFICANT after Tier 3 re-extraction. Also AMGN (75.8%), TMO (75.4%), VNO (76.4%), BKR (74.2%), JNJ (72.2%), GOOGL (67.3%), BMY (54.7%), GM (64.1%), CAT (61.4%), PCG (51.0%). Most need more instruments via re-extraction, not amount backfill.
+- **Structural limitation**: Indenture-based extraction has been fully exhausted. Covers only bonds filed as 8-K exhibits (typically 2018+). Older bonds require prospectus supplements or expanded SEC filing ingestion.
 - **NO_FINANCIALS (7 companies)**: ANET, GEV, GFS, ISRG, LULU, PLTR, VRTX — minimal/no debt or no financial data
+
+**Phase 9 (indenture-based extraction)** (2026-02-12): New approach to fill outstanding amounts for the 52 MISSING_SIGNIFICANT + 8 MISSING_ALL companies. Most large IG issuers present debt in aggregate maturity/rate buckets in 10-K footnotes — but supplemental indentures explicitly state the original issuance amount for each bond series (e.g., "The Company hereby creates and issues $500,000,000 aggregate principal amount of 5.25% Senior Notes due 2030"). For bullet bonds (senior notes, debentures), original principal = current outstanding.
+
+Created `scripts/extract_amounts_from_indentures.py` with two-phase approach:
+- **Phase A (regex, $0 cost)**: Searches indenture content for "principal amount" patterns, extracts dollar amount + rate + maturity year, matches to instruments (rate ±0.15%, exact year). Handles reopened/tapped issues by summing amounts across multiple supplemental indentures.
+- **Phase B (LLM fallback)**: For unmatched instruments, sends instrument list + indenture content to Gemini with an indenture-specific prompt.
+
+Only applies to bullet bond types (senior_notes, subordinated_notes, debenture, senior_secured_notes, convertible_notes, bond). Does NOT apply to amortizing debt (term_loan, revolver, abl, equipment_trust, mortgage, finance_lease, government_loan) where principal != outstanding.
+
+```bash
+# Analysis mode
+python scripts/extract_amounts_from_indentures.py --analyze
+
+# Dry run for single company
+python scripts/extract_amounts_from_indentures.py --fix --ticker VZ --dry-run
+
+# Run for all missing companies (MISSING_SIGNIFICANT + MISSING_ALL)
+python scripts/extract_amounts_from_indentures.py --fix
+
+# All companies with missing bullet amounts
+python scripts/extract_amounts_from_indentures.py --fix --all-missing
+
+# Regex only (no LLM cost)
+python scripts/extract_amounts_from_indentures.py --fix --regex-only
+
+# With Gemini 2.5 Pro for Phase B
+python scripts/extract_amounts_from_indentures.py --fix --model gemini-2.5-pro
+```
+
+Amounts tagged with `amount_source: 'indenture_principal'` in attributes JSONB to distinguish from footnote-sourced amounts.
+
+**Phase 9 results** (2026-02-12):
+- **Phase A (regex only)**: 66 instruments across 9 companies (BMY 8, CMCSA 10, DUK 15, ON 2, PM 7, QCOM 1, THC 2, UNP 20, VAL 1). $0 cost.
+- **Phase B (LLM, gemini-2.0-flash)**: 216 instruments across 31 companies. ~$1-2 cost.
+- **Total: 282 instruments updated across 31 companies** (~$275B in outstanding amounts populated)
+- **Coverage: $5,049B / $6,586B = 76.7%** (up from 72.5%)
+
+Key completions (100%): GOOGL 12/12, PM 22/34 (had 7 from regex), PNC 20/32, LOW 32/40, USB 3/3, BMY 1/1, CCL 1/1, DUK 1/1, VRTX 1/1.
+High yield: MSFT 13/21, TMUS 13/28, SO 12/17, PG 13/56, VZ 17/77, THC 6/10, T 5/37, CVX 5/16.
+Zero matches: AEP, CSX, F, FTNT, KO, KLAC, LMT, M, META, MS, WFC — indentures don't cover missing instruments or are wrong document type.
+
+**Known issue (fixed in Tier 1)**: PG `0.230% Notes due 2031: $50.00B` was a JPY bond (¥50B) treated as USD by LLM. Cleared in Tier 1 fixes.
+
+**MISSING_SIGNIFICANT**: 52→45 (7 companies improved). **MISSING_ALL**: 6→4 (USB moved out). **OK**: 100→102. **MISSING_SOME**: 26→32 (6 companies improved from MISSING_SIGNIFICANT).
 
 **Phase 7 (EXCESS_SIGNIFICANT cleanup)**: Extended `scripts/fix_excess_instruments.py` with 4 new steps to clean up 27 EXCESS_SIGNIFICANT companies created by Phase 6 backfill:
 
@@ -2151,6 +2305,94 @@ When starting a new session, read this file first, then:
 ---
 
 ## Session Log
+
+### 2026-02-13 (Session 37) - Eliminate EXCESS_SIGNIFICANT: DO/NEM/ON/UBER + META/FTNT
+
+**Objective:** Fix all remaining EXCESS_SIGNIFICANT companies to bring the count to 0.
+
+**META/FTNT fixes (early session):**
+- **META**: Added 14 missing bonds from 3 earlier 8-K offerings (Aug 2022 $10.0B, May 2023 $8.5B, Aug 2024 $10.5B). Extracted Q4 2025 10-K via Claude: total_debt=$58.7B. Result: 20 instruments, $59.0B vs $58.7B = OK.
+- **FTNT**: Corrected backfill amounts from $1.0B to $500M each. Extracted Q4 2024 10-K via Claude: total_debt=$994M. Result: $1.0B vs $994M = OK.
+
+**DO/NEM/ON/UBER fixes (later session):**
+- **DO** (+266%): Deactivated 7 pre-Chapter 11 bankruptcy bonds (5.70% 2039, 4.875% 2043, debentures, old revolvers — all cancelled in April 2021 emergence). Result: $0.72B vs $0.53B = EXCESS_SOME.
+- **NEM** (+117%): Deactivated 3 repaid Newcrest acquisition facilities ($2.0B total). Updated 5.30% 2026 amount from 10-K ($924M). Result: $9.22B vs $5.18B = EXCESS_SOME (remaining excess from face values vs buyback-reduced outstanding).
+- **ON** (+482%): Extracted Q4 2025 10-K via Claude — total_debt=$3.0B (was $0 from bad extraction in Q3/Q4 2025). Deactivated 2 duplicate entries (convertible notes duplicated by Finnhub). Result: $2.2B vs $3.0B = MISSING_SOME.
+- **UBER** (+121%): Cleared $9.46B wrong aggregate on "due 2028" (cusip 90353TAR1) — doc_backfill had assigned aggregate total to single bond. Result: $16.68B vs $11.85B = EXCESS_SOME.
+
+**Results:**
+| Category | Before | After | Change |
+|----------|--------|-------|--------|
+| OK | 108 | 115 | +7 |
+| EXCESS_SOME | 16 | 15 | -1 |
+| EXCESS_SIGNIFICANT | 4 | 0 | -4 (eliminated!) |
+| MISSING_SOME | 31 | 29 | -2 |
+
+**Key learnings:**
+- 10-K `--filing-type 10-K` extraction via Claude is reliable for refreshing stale total_debt
+- Pre-reorg bonds from bankrupt companies need manual deactivation — extraction doesn't know about Chapter 11
+- Doc_backfill can assign aggregate footnote totals to individual instruments — need to validate amounts
+- NEM-type issues (face values from indentures vs current outstanding after buybacks) are structural — need Q3/Q4 10-Q footnote extraction
+
+---
+
+### 2026-02-13 (Session 37 - earlier) - META 8-K Bond Backfill + META/FTNT Financial Refresh
+
+**Objective:** Fix META (missing 14 bonds from 3 earlier offerings) and FTNT (wrong amounts + stale total_debt) to move both from EXCESS_SIGNIFICANT to OK.
+
+**META fixes:**
+1. Added 14 missing bonds from 3 earlier 8-K offering announcements via `scripts/fix_meta_amounts.py`:
+   - Aug 2022: 4 notes, $10.0B (3.500% 2027, 3.850% 2032, 4.450% 2052, 4.650% 2062)
+   - May 2023: 5 notes, $8.5B (4.600% 2028, 4.800% 2030, 4.950% 2033, 5.600% 2053, 5.750% 2063)
+   - Aug 2024: 5 notes, $10.5B (4.300% 2029, 4.550% 2031, 4.750% 2034, 5.400% 2054, 5.550% 2064)
+2. Extracted Q4 2025 10-K financials via Claude (`extract_financials.py --filing-type 10-K --use-claude`): total_debt=$58.7B (was $28.83B from Q3 pre-Nov offering)
+3. Result: 20 instruments, $59.0B vs $58.7B = 100.5% → OK
+
+**FTNT fixes:**
+1. Corrected instrument amounts: Senior Notes due 2026 and 2031 had $1.0B each from backfill (LLM returned total $1B per note instead of $500M). Fixed to $500M each. Added interest rates (1.0%, 2.2%) from Finnhub duplicates.
+2. Extracted Q4 2024 10-K financials via Claude: total_debt=$994M
+3. Result: 2 instruments, $1.0B vs $994M = 100.6% → OK
+
+**Results:**
+| Category | Before | After | Change |
+|----------|--------|-------|--------|
+| OK | 106 | 108 | +2 (META, FTNT + 2 others from financial refresh) |
+| EXCESS_SIGNIFICANT | 6 | 4 | -2 (META, FTNT) |
+
+**Key learnings:**
+- 10-K `--filing-type 10-K` extraction is useful for updating total_debt when latest 10-Q predates a major offering
+- 8-K offering announcements (Item 8.01) contain exact per-bond issuance amounts — more reliable than aggregate footnotes
+- Backfill can return doubled amounts when LLM interprets aggregate totals as per-instrument amounts
+
+---
+
+### 2026-02-12 (Session 36) - Fix THC/PAYX/ETN Total Debt Financials
+
+**Objective:** Fix wrong `total_debt` values for THC, PAYX, ETN that caused them to appear in EXCESS_SIGNIFICANT.
+
+**Root Cause Analysis:**
+- THC: Scale detection bug — filing has both "in thousands" (10 mentions, for shares) and "in millions" (11 mentions, for dollars). The `detect_filing_scale()` function found "in thousands" first and used 100,000 multiplier instead of 100,000,000. All financial values were 1000x too low ($13M instead of $13B).
+- PAYX: total_debt was $817M (pre-Paycor acquisition value from FY2024). Post-Paycor (Jan 2025), actual total_debt is $5.0B from FY2025 10-K.
+- ETN: Q3 2025 total_debt was $1.9B (wrong extraction). Actual: $10.65B ($761M short-term + $1,136M current LT + $8,756M LT).
+
+**Approach:**
+1. Attempted `extract_iterative.py --step financials` — failed with 413 (accumulated filing content too large for SEC-API)
+2. Attempted `extract_financials.py --ttm --save-db --use-claude` for THC — succeeded but values 1000x too low due to scale bug
+3. Used direct SEC filing lookup to verify actual values
+4. SQL updates: THC (multiply all monetary fields by 1000 for 8 quarters), PAYX (set total_debt to $5.0B for Q3+Q4 2025), ETN (set total_debt to $10.65B for Q3 2025)
+5. Recomputed metrics and refreshed caches for all three
+
+**Results:**
+| Category | Before | After | Change |
+|----------|--------|-------|--------|
+| OK | 98 | 100 | +2 |
+| EXCESS_SIGNIFICANT | 6 | 4 | -2 |
+| MISSING_SOME | 24 | 26 | +2 |
+| MISSING_ALL | 8 | 6 | -2 |
+
+**Known issue:** `detect_filing_scale()` can pick wrong scale when filing has both "in thousands" (for shares) and "in millions" (for dollars). THC, and potentially other companies, affected. The function checks for "in thousands" patterns before "in millions" near financial statement headers, but some filings have both in close proximity.
+
+---
 
 ### 2026-02-12 (Session 35) - Phase 7.5: Reduce Remaining EXCESS Companies
 
