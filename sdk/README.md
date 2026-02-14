@@ -167,28 +167,140 @@ result = await client.search_documents(
 
 ## LangChain Integration
 
+Build AI agents that can autonomously analyze corporate credit data.
+
+### Installation
+
+```bash
+pip install debtstack-ai[langchain]
+```
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `debtstack_search_companies` | Screen companies by leverage, sector, coverage ratios, and risk flags |
+| `debtstack_search_bonds` | Filter bonds by yield, spread, seniority, maturity, and pricing |
+| `debtstack_resolve_bond` | Look up bonds by CUSIP, ISIN, or description (e.g., "RIG 8% 2027") |
+| `debtstack_traverse_entities` | Follow guarantor chains, map corporate structure, trace ownership |
+| `debtstack_search_pricing` | Get FINRA TRACE bond prices, YTM, and spreads |
+| `debtstack_search_documents` | Full-text search across credit agreements, indentures, and SEC filings |
+| `debtstack_get_changes` | Track debt structure changes over time (new issuances, maturities, leverage) |
+
+### Full Example
+
 ```python
 from debtstack.langchain import DebtStackToolkit
 from langchain.agents import AgentExecutor, create_openai_functions_agent
 from langchain_openai import ChatOpenAI
 from langchain import hub
 
+# Initialize toolkit with your API key
 toolkit = DebtStackToolkit(api_key="your-api-key")
 tools = toolkit.get_tools()
 
+# Create an agent with GPT-4 (or any LangChain-compatible LLM)
 llm = ChatOpenAI(temperature=0, model="gpt-4")
 prompt = hub.pull("hwchase17/openai-functions-agent")
 agent = create_openai_functions_agent(llm, tools, prompt)
-agent_executor = AgentExecutor(agent=agent, tools=tools)
+agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 
+# Ask natural language questions about corporate credit
 result = agent_executor.invoke({
     "input": "Which telecom companies are most at risk of default?"
 })
+print(result["output"])
 ```
 
-## MCP Server (Claude Desktop)
+### Example Queries
 
-Add to `~/.config/claude/mcp.json`:
+The agent can handle complex, multi-step credit analysis:
+
+- "Which telecom companies have leverage above 5x and near-term maturities?"
+- "Find all bonds yielding above 8% with senior secured status"
+- "Who guarantees Transocean's 8.75% 2030 notes? How many entities are in the guarantee chain?"
+- "Compare Charter and Altice's corporate structures - which has more structural subordination risk?"
+- "What changed in RIG's debt structure since January 2025?"
+- "Search for maintenance covenant language in Charter's credit agreements"
+- "Find distressed bonds trading below 80 cents on the dollar"
+
+## MCP Server (Claude Desktop, Claude Code, Cursor)
+
+Give Claude (or any MCP client) direct access to corporate credit data.
+
+### Installation
+
+```bash
+pip install debtstack-ai[mcp]
+```
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `search_companies` | Search companies by ticker, sector, leverage ratio, and risk flags |
+| `search_bonds` | Search bonds by ticker, seniority, yield, spread, and maturity |
+| `resolve_bond` | Look up a bond by CUSIP, ISIN, or description (e.g., "RIG 8% 2027") |
+| `get_guarantors` | Find all entities that guarantee a bond |
+| `get_corporate_structure` | Get full parent-subsidiary hierarchy for a company |
+| `search_pricing` | Get FINRA TRACE bond prices, YTM, and spreads |
+| `search_documents` | Search SEC filing sections (debt footnotes, credit agreements, indentures) |
+| `get_changes` | See what changed in a company's debt structure since a date |
+
+### Claude Desktop
+
+Add to your Claude Desktop config (`~/.config/claude/mcp.json` on Mac/Linux, `%APPDATA%\Claude\mcp.json` on Windows):
+
+```json
+{
+    "mcpServers": {
+        "debtstack-ai": {
+            "command": "debtstack-mcp",
+            "env": {
+                "DEBTSTACK_API_KEY": "your-api-key"
+            }
+        }
+    }
+}
+```
+
+### Claude Code
+
+Add to your Claude Code config (`~/.claude/mcp.json`):
+
+```json
+{
+    "mcpServers": {
+        "debtstack-ai": {
+            "command": "debtstack-mcp",
+            "env": {
+                "DEBTSTACK_API_KEY": "your-api-key"
+            }
+        }
+    }
+}
+```
+
+### Cursor
+
+Add to your Cursor MCP settings (`.cursor/mcp.json`):
+
+```json
+{
+    "mcpServers": {
+        "debtstack-ai": {
+            "command": "debtstack-mcp",
+            "env": {
+                "DEBTSTACK_API_KEY": "your-api-key"
+            }
+        }
+    }
+}
+```
+
+### Alternative: Run with Python Module
+
+If you prefer not to install the console script, you can use `python -m` instead:
 
 ```json
 {
@@ -204,10 +316,18 @@ Add to `~/.config/claude/mcp.json`:
 }
 ```
 
-Then ask Claude:
+### Example Queries
+
+Once configured, ask Claude:
+
 - "Which energy companies have near-term maturities and high leverage?"
 - "Who guarantees the Transocean 8% 2027 notes?"
 - "Compare Charter's debt structure to Altice"
+- "Find all senior secured bonds yielding above 8%"
+- "What are the financial covenants in Charter's credit agreement?"
+- "Show me RIG's corporate structure - where does the debt sit?"
+- "What changed in CVS's debt structure since June 2025?"
+- "Search for change-of-control provisions in Altice's indentures"
 
 ## Pricing
 

@@ -642,6 +642,11 @@ async def main():
         )
 
 
-if __name__ == "__main__":
+def run():
+    """Sync entry point for console_scripts."""
     import asyncio
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    run()
