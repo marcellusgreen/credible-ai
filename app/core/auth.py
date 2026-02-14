@@ -135,7 +135,7 @@ TIER_CREDITS = {
     "pro": -1,  # Unlimited
     "business": -1,  # Unlimited
     # Legacy aliases
-    "free": 0,
+    "free": 5,  # $5 free trial credits on signup
     "enterprise": -1,
     "starter": 0,
     "growth": -1,

@@ -101,7 +101,7 @@ TIER_CONFIG = {
     # Legacy aliases
     "free": {
         "monthly_price": 0,
-        "credits": 0,
+        "credits": 5,  # $5 free trial credits on signup
         "rate_limit": 60,
         "has_pricing": True,
         "companies": 200,

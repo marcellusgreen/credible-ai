@@ -108,7 +108,7 @@ async def signup(
     Create a new DebtStack account.
 
     Returns an API key that you must save - it cannot be retrieved later.
-    All new accounts start on the free tier with 1,000 credits/month.
+    All new accounts start on the free tier with $5 in trial credits.
     """
     # Check if email already exists
     existing = await db.execute(
