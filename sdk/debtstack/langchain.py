@@ -51,7 +51,7 @@ class DebtStackAPIWrapper:
             )
         self.base_url = base_url
         self._headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "X-API-Key": self.api_key,
             "Content-Type": "application/json",
         }
 
@@ -94,8 +94,9 @@ class DebtStackAPIWrapper:
         return self._post("/entities/traverse", body)
 
     def search_pricing(self, **kwargs) -> Dict[str, Any]:
-        """Search bond pricing."""
-        return self._get("/pricing", params=kwargs)
+        """Search bond pricing via /bonds with has_pricing=true."""
+        kwargs["has_pricing"] = True
+        return self._get("/bonds", params=kwargs)
 
     def search_documents(self, **kwargs) -> Dict[str, Any]:
         """Search SEC filing sections."""

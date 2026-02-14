@@ -59,7 +59,7 @@ def get_headers() -> dict:
     if not API_KEY:
         raise ValueError("DEBTSTACK_API_KEY environment variable not set")
     return {
-        "Authorization": f"Bearer {API_KEY}",
+        "X-API-Key": API_KEY,
         "Content-Type": "application/json",
     }
 
@@ -521,24 +521,25 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "search_pricing":
             params = {k: v for k, v in arguments.items() if v is not None}
             params.setdefault("limit", 10)
-            params["aggregation"] = "latest"
-            result = api_get("/pricing", params)
+            params["has_pricing"] = True
+            result = api_get("/bonds", params)
 
-            pricing = result.get("data", [])
-            if not pricing:
+            bonds = result.get("data", [])
+            if not bonds:
                 return [TextContent(type="text", text="No pricing data found.")]
 
-            text = f"Bond pricing ({len(pricing)} bonds):\n\n"
-            for p in pricing:
-                text += f"**{p.get('bond_name', p.get('cusip', '?'))}**\n"
-                if p.get('company_ticker'):
-                    text += f"Issuer: {p['company_ticker']}\n"
-                if p.get('last_price'):
-                    text += f"Price: {p['last_price']:.2f}\n"
-                if p.get('ytm'):
-                    text += f"YTM: {p['ytm']:.2f}%\n"
-                if p.get('spread'):
-                    text += f"Spread: {p['spread']} bps\n"
+            text = f"Bond pricing ({len(bonds)} bonds):\n\n"
+            for b in bonds:
+                text += f"**{b.get('name', b.get('cusip', '?'))}**\n"
+                if b.get('company_ticker'):
+                    text += f"Issuer: {b['company_ticker']}\n"
+                pricing = b.get('pricing', {}) or {}
+                if pricing.get('last_price'):
+                    text += f"Price: {pricing['last_price']:.2f}\n"
+                if pricing.get('ytm'):
+                    text += f"YTM: {pricing['ytm']:.2f}%\n"
+                if pricing.get('spread'):
+                    text += f"Spread: {pricing['spread']} bps\n"
                 text += "\n"
 
             return [TextContent(type="text", text=text)]

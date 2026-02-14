@@ -91,10 +91,12 @@ result = client.search_companies(sector="Energy", min_leverage=3.0)
 
 | Coverage | Count |
 |----------|-------|
-| Companies | 177 (S&P 100 + NASDAQ 100 + high-yield issuers) |
-| Entities | 3,085 (subsidiaries, holdcos, JVs, VIEs) |
-| Debt Instruments | 1,805 (bonds, loans, revolvers) |
-| SEC Filing Sections | 5,456 (searchable full-text) |
+| Companies | 211 (S&P 100 + NASDAQ 100 + high-yield issuers) |
+| Entities | 28,128 (subsidiaries, holdcos, JVs, VIEs) |
+| Debt Instruments | 4,496 (bonds, loans, revolvers) with 97% document linkage |
+| Bond Pricing | 3,557 bonds with FINRA TRACE pricing (updated 3x daily) |
+| SEC Filing Sections | 14,511 (searchable full-text) |
+| Covenants | 1,247 structured covenant records |
 
 **Pre-computed metrics:** Leverage ratios, interest coverage, maturity profiles, structural subordination scores.
 

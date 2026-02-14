@@ -58,7 +58,7 @@ class DebtStackClient:
                 base_url=self.base_url,
                 timeout=self.timeout,
                 headers={
-                    "Authorization": f"Bearer {self.api_key}",
+                    "X-API-Key": self.api_key,
                     "Content-Type": "application/json",
                     "User-Agent": "debtstack-python/0.1.0"
                 }
@@ -449,47 +449,41 @@ class DebtStackClient:
         self,
         ticker: Optional[str] = None,
         cusip: Optional[str] = None,
-        pricing_date: Optional[Union[str, date]] = None,
-        date_from: Optional[Union[str, date]] = None,
-        date_to: Optional[Union[str, date]] = None,
-        aggregation: str = "latest",
         min_ytm: Optional[float] = None,
         max_ytm: Optional[float] = None,
         min_spread: Optional[int] = None,
         fields: Optional[str] = None,
-        sort: str = "-ytm",
+        sort: str = "-pricing.ytm",
         limit: int = 50,
     ) -> Dict[str, Any]:
         """
         Search bond pricing from FINRA TRACE.
 
+        Uses /bonds endpoint with has_pricing=true. Pricing is included
+        inline with each bond result.
+
         Args:
             ticker: Company ticker(s)
             cusip: CUSIP(s)
-            pricing_date: Pricing as of date
-            date_from: History start date
-            date_to: History end date
-            aggregation: "latest", "daily", "weekly"
             min_ytm: Minimum YTM (%)
             max_ytm: Maximum YTM (%)
             min_spread: Minimum spread (bps)
-            fields: Comma-separated fields to return
-            sort: Sort field
+            fields: Comma-separated fields to return (pricing fields always included)
+            sort: Sort field (default: -pricing.ytm for highest yield first)
             limit: Results per page
 
         Returns:
-            Dictionary with pricing data
+            Dictionary with bond data including inline pricing
 
         Example:
             # Get current pricing for RIG bonds
             result = await client.search_pricing(
                 ticker="RIG",
-                aggregation="latest",
-                fields="cusip,bond_name,last_price,ytm,spread"
+                fields="name,cusip,pricing"
             )
         """
         params = {
-            "aggregation": aggregation,
+            "has_pricing": True,
             "sort": sort,
             "limit": limit,
         }
@@ -498,12 +492,6 @@ class DebtStackClient:
             params["ticker"] = ticker
         if cusip:
             params["cusip"] = cusip
-        if pricing_date:
-            params["date"] = str(pricing_date)
-        if date_from:
-            params["date_from"] = str(date_from)
-        if date_to:
-            params["date_to"] = str(date_to)
         if min_ytm is not None:
             params["min_ytm"] = min_ytm
         if max_ytm is not None:
@@ -514,7 +502,7 @@ class DebtStackClient:
             params["fields"] = fields
 
         client = await self._get_client()
-        response = await client.get("/pricing", params=params)
+        response = await client.get("/bonds", params=params)
         response.raise_for_status()
         return response.json()
 
