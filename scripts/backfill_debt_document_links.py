@@ -23,13 +23,8 @@ Environment variables:
 """
 
 import argparse
-import io
 import sys
 from collections import defaultdict
-
-# Handle Windows encoding
-if sys.platform == 'win32':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 from sqlalchemy import select, func
 
@@ -221,145 +216,153 @@ async def main():
 
     print_header("BACKFILL DEBT INSTRUMENT -> DOCUMENT LINKS")
 
+    # Get company list with a short-lived session
     async with get_db_session() as session:
-        # Get companies to process
         if args.ticker:
             company = await get_company_by_ticker(session, args.ticker)
             if not company:
                 print(f"Error: Company {args.ticker} not found")
                 sys.exit(1)
-            companies = [company]
+            company_info = [(company.id, company.ticker)]
         else:
             companies = await get_companies_with_debt(session)
-            print(f"Found {len(companies)} companies with debt instruments")
+            company_info = [(c.id, c.ticker) for c in companies]
+            print(f"Found {len(company_info)} companies with debt instruments")
 
-        # Apply offset and limit
-        if args.offset > 0:
-            companies = companies[args.offset:]
-            print(f"Skipping first {args.offset}, processing from #{args.offset + 1}")
-        if args.limit:
-            companies = companies[:args.limit]
-            print(f"Limiting to {args.limit} companies")
+    # Apply offset and limit
+    if args.offset > 0:
+        company_info = company_info[args.offset:]
+        print(f"Skipping first {args.offset}, processing from #{args.offset + 1}")
+    if args.limit:
+        company_info = company_info[:args.limit]
+        print(f"Limiting to {args.limit} companies")
 
-        print(f"\nCompanies: {len(companies)}")
-        print(f"Dry run: {args.dry_run}")
-        print(f"Min confidence: {args.min_confidence}")
-        print(f"Replace existing: {args.replace}")
-        print()
+    print(f"\nCompanies: {len(company_info)}")
+    print(f"Dry run: {args.dry_run}")
+    print(f"Min confidence: {args.min_confidence}")
+    print(f"Replace existing: {args.replace}")
+    print()
 
-        # Process companies
-        results = []
-        for i, company in enumerate(companies):
-            print(f"[{i+1}/{len(companies)}] {company.ticker}...", end=" ", flush=True)
+    # Process companies with fresh session per company (Neon drops idle connections)
+    results = []
+    for i, (company_id, ticker) in enumerate(company_info):
+        print(f"[{i+1}/{len(company_info)}] {ticker}...", end=" ", flush=True)
 
-            result = await backfill_company(
-                session,
-                company,
-                min_confidence=args.min_confidence,
-                dry_run=args.dry_run,
-                replace_existing=args.replace,
-            )
+        try:
+            async with get_db_session() as session:
+                company = await session.get(Company, company_id)
+                result = await backfill_company(
+                    session,
+                    company,
+                    min_confidence=args.min_confidence,
+                    dry_run=args.dry_run,
+                    replace_existing=args.replace,
+                )
+                results.append(result)
+        except Exception as e:
+            error_msg = str(e)[:200].encode('ascii', 'replace').decode('ascii')
+            result = {"ticker": ticker, "status": "error", "reason": error_msg}
             results.append(result)
 
-            # Print inline status
-            if result["status"] == "success":
-                created = result.get("links_created", 0)
-                high = result.get("matched_high_confidence", 0)
-                low = result.get("matched_low_confidence", 0)
-                unmatched = result.get("unmatched", 0)
-                print(f"OK ({created} links: {high} high, {low} low conf, {unmatched} unmatched)")
-            elif result["status"] == "dry_run":
-                high = result.get("matched_high_confidence", 0)
-                low = result.get("matched_low_confidence", 0)
-                unmatched = result.get("unmatched", 0)
-                print(f"[DRY RUN] ({high} high, {low} low conf, {unmatched} unmatched)")
-            elif result["status"] == "skip":
-                print(f"SKIP ({result.get('reason', 'unknown')})")
-            else:
-                print(f"ERROR: {result.get('reason', 'unknown')[:50]}")
+        # Print inline status
+        if result["status"] == "success":
+            created = result.get("links_created", 0)
+            high = result.get("matched_high_confidence", 0)
+            low = result.get("matched_low_confidence", 0)
+            unmatched = result.get("unmatched", 0)
+            print(f"OK ({created} links: {high} high, {low} low conf, {unmatched} unmatched)")
+        elif result["status"] == "dry_run":
+            high = result.get("matched_high_confidence", 0)
+            low = result.get("matched_low_confidence", 0)
+            unmatched = result.get("unmatched", 0)
+            print(f"[DRY RUN] ({high} high, {low} low conf, {unmatched} unmatched)")
+        elif result["status"] == "skip":
+            print(f"SKIP ({result.get('reason', 'unknown')})")
+        else:
+            print(f"ERROR: {result.get('reason', 'unknown')[:50]}")
 
-        # Summary
+    # Summary
+    print(f"\n{'='*80}")
+    print("SUMMARY")
+    print(f"{'='*80}")
+
+    success = [r for r in results if r["status"] == "success"]
+    skipped = [r for r in results if r["status"] == "skip"]
+    errors = [r for r in results if r["status"] == "error"]
+    dry_runs = [r for r in results if r["status"] == "dry_run"]
+
+    print(f"\nCompanies processed:")
+    print(f"  Success:  {len(success)}")
+    print(f"  Skipped:  {len(skipped)}")
+    print(f"  Errors:   {len(errors)}")
+    if dry_runs:
+        print(f"  Dry run:  {len(dry_runs)}")
+
+    # Aggregate match stats
+    total_instruments = sum(r.get("total_instruments", 0) for r in success + dry_runs)
+    total_high_conf = sum(r.get("matched_high_confidence", 0) for r in success + dry_runs)
+    total_low_conf = sum(r.get("matched_low_confidence", 0) for r in success + dry_runs)
+    total_unmatched = sum(r.get("unmatched", 0) for r in success + dry_runs)
+    total_links_created = sum(r.get("links_created", 0) for r in success)
+
+    print(f"\nMatching results:")
+    print(f"  Total instruments:      {total_instruments:>6}")
+    print(f"  High confidence (>=0.7):{total_high_conf:>6}")
+    print(f"  Low confidence (0.5-0.7):{total_low_conf:>5}")
+    print(f"  Unmatched (<0.5):       {total_unmatched:>6}")
+
+    if not args.dry_run:
+        print(f"\n  Links created:          {total_links_created:>6}")
+
+    # Coverage calculation
+    if total_instruments > 0:
+        coverage_pct = (total_high_conf + total_low_conf) / total_instruments * 100
+        print(f"\n  Coverage rate:          {coverage_pct:>5.1f}%")
+
+    # Companies with full coverage
+    full_coverage = [
+        r for r in success + dry_runs
+        if r.get("unmatched", 0) == 0 and r.get("total_instruments", 0) > 0
+    ]
+    partial_coverage = [
+        r for r in success + dry_runs
+        if r.get("unmatched", 0) > 0 and (r.get("matched_high_confidence", 0) + r.get("matched_low_confidence", 0)) > 0
+    ]
+    no_coverage = [
+        r for r in success + dry_runs
+        if (r.get("matched_high_confidence", 0) + r.get("matched_low_confidence", 0)) == 0 and r.get("total_instruments", 0) > 0
+    ]
+
+    print(f"\nCompany coverage breakdown:")
+    print(f"  Full coverage (100%):   {len(full_coverage):>6}")
+    print(f"  Partial coverage:       {len(partial_coverage):>6}")
+    print(f"  No matches:             {len(no_coverage):>6}")
+
+    # List companies with gaps
+    if partial_coverage or no_coverage:
         print(f"\n{'='*80}")
-        print("SUMMARY")
+        print("COMPANIES NEEDING ATTENTION")
         print(f"{'='*80}")
 
-        success = [r for r in results if r["status"] == "success"]
-        skipped = [r for r in results if r["status"] == "skip"]
-        errors = [r for r in results if r["status"] == "error"]
-        dry_runs = [r for r in results if r["status"] == "dry_run"]
+        if no_coverage:
+            print("\nNo matches found (need document extraction or manual linking):")
+            for r in sorted(no_coverage, key=lambda x: x["ticker"]):
+                print(f"  {r['ticker']}: {r.get('total_instruments', 0)} instruments, "
+                      f"{r.get('indentures', 0)} indentures, {r.get('credit_agreements', 0)} credit agreements")
 
-        print(f"\nCompanies processed:")
-        print(f"  Success:  {len(success)}")
-        print(f"  Skipped:  {len(skipped)}")
-        print(f"  Errors:   {len(errors)}")
-        if dry_runs:
-            print(f"  Dry run:  {len(dry_runs)}")
+        if partial_coverage:
+            print("\nPartial coverage (some instruments unmatched):")
+            for r in sorted(partial_coverage, key=lambda x: -x.get("unmatched", 0))[:20]:
+                matched = r.get("matched_high_confidence", 0) + r.get("matched_low_confidence", 0)
+                total = r.get("total_instruments", 0)
+                print(f"  {r['ticker']}: {matched}/{total} matched ({r.get('unmatched', 0)} unmatched)")
 
-        # Aggregate match stats
-        total_instruments = sum(r.get("total_instruments", 0) for r in success + dry_runs)
-        total_high_conf = sum(r.get("matched_high_confidence", 0) for r in success + dry_runs)
-        total_low_conf = sum(r.get("matched_low_confidence", 0) for r in success + dry_runs)
-        total_unmatched = sum(r.get("unmatched", 0) for r in success + dry_runs)
-        total_links_created = sum(r.get("links_created", 0) for r in success)
-
-        print(f"\nMatching results:")
-        print(f"  Total instruments:      {total_instruments:>6}")
-        print(f"  High confidence (>=0.7):{total_high_conf:>6}")
-        print(f"  Low confidence (0.5-0.7):{total_low_conf:>5}")
-        print(f"  Unmatched (<0.5):       {total_unmatched:>6}")
-
-        if not args.dry_run:
-            print(f"\n  Links created:          {total_links_created:>6}")
-
-        # Coverage calculation
-        if total_instruments > 0:
-            coverage_pct = (total_high_conf + total_low_conf) / total_instruments * 100
-            print(f"\n  Coverage rate:          {coverage_pct:>5.1f}%")
-
-        # Companies with full coverage
-        full_coverage = [
-            r for r in success + dry_runs
-            if r.get("unmatched", 0) == 0 and r.get("total_instruments", 0) > 0
-        ]
-        partial_coverage = [
-            r for r in success + dry_runs
-            if r.get("unmatched", 0) > 0 and (r.get("matched_high_confidence", 0) + r.get("matched_low_confidence", 0)) > 0
-        ]
-        no_coverage = [
-            r for r in success + dry_runs
-            if (r.get("matched_high_confidence", 0) + r.get("matched_low_confidence", 0)) == 0 and r.get("total_instruments", 0) > 0
-        ]
-
-        print(f"\nCompany coverage breakdown:")
-        print(f"  Full coverage (100%):   {len(full_coverage):>6}")
-        print(f"  Partial coverage:       {len(partial_coverage):>6}")
-        print(f"  No matches:             {len(no_coverage):>6}")
-
-        # List companies with gaps
-        if partial_coverage or no_coverage:
-            print(f"\n{'='*80}")
-            print("COMPANIES NEEDING ATTENTION")
-            print(f"{'='*80}")
-
-            if no_coverage:
-                print("\nNo matches found (need document extraction or manual linking):")
-                for r in sorted(no_coverage, key=lambda x: x["ticker"]):
-                    print(f"  {r['ticker']}: {r.get('total_instruments', 0)} instruments, "
-                          f"{r.get('indentures', 0)} indentures, {r.get('credit_agreements', 0)} credit agreements")
-
-            if partial_coverage:
-                print("\nPartial coverage (some instruments unmatched):")
-                for r in sorted(partial_coverage, key=lambda x: -x.get("unmatched", 0))[:20]:
-                    matched = r.get("matched_high_confidence", 0) + r.get("matched_low_confidence", 0)
-                    total = r.get("total_instruments", 0)
-                    print(f"  {r['ticker']}: {matched}/{total} matched ({r.get('unmatched', 0)} unmatched)")
-
-        if errors:
-            print(f"\n{'='*80}")
-            print("ERRORS")
-            print(f"{'='*80}")
-            for r in errors:
-                print(f"  {r['ticker']}: {r.get('reason', 'unknown')}")
+    if errors:
+        print(f"\n{'='*80}")
+        print("ERRORS")
+        print(f"{'='*80}")
+        for r in errors:
+            print(f"  {r['ticker']}: {r.get('reason', 'unknown')}")
 
 
 if __name__ == "__main__":
