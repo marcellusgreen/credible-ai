@@ -6,12 +6,12 @@ Context for AI assistants working on the DebtStack.ai codebase.
 
 ## What's Next
 
-**Immediate**: Tiers 1-4 complete. Coverage: $5,165B / $6,618B = **78.0%**. OK: 124, EXCESS_SOME: 12, EXCESS_SIGNIFICANT: 0, MISSING_SOME: 27, MISSING_SIGNIFICANT: 39, MISSING_ALL: 2. Tier 4 flipped 9 companies to OK (VNO, ON, APH, RCL, CTAS, UBER, DO, FANG, JNJ→77.6%). Remaining gaps are mostly structural: large issuers with aggregate-only footnotes (VZ, T, CMCSA, PEP, KO), banks with deposits in total_debt (COF, AXP, USB, WFC), and stale total_debt causing excess (GILD, NRG, WELL). Next: (1) financial refresh for GILD/NRG/WELL/MA (stale total_debt), (2) company expansion 211→288, (3) AMGN over-deduped needs review. See WORKPLAN.md.
+**Immediate**: Tiers 1-5 complete. Coverage: $5,139B / $6,618B = **77.7%**. OK: **130**, EXCESS_SOME: 9, EXCESS_SIGNIFICANT: 0, MISSING_SOME: 24, MISSING_SIGNIFICANT: 39, MISSING_ALL: 2. Tier 5 flipped 6 companies to OK (MA, DHR, DISH, GILD, BKR, TEAM). Remaining gaps are mostly structural: large issuers with aggregate-only footnotes (VZ, T, CMCSA, PEP, KO), banks with deposits in total_debt (COF, AXP, USB, WFC). Next: (1) company expansion 211→288, (2) AMGN over-deduped needs review, (3) COST overcorrected to EXCESS_SOME needs calibration. See WORKPLAN.md.
 
 **Then**:
 1. Continue company expansion (211 → 288, Tier 2-5 remaining)
 2. Complete Finnhub discovery (~50 companies remaining), link discovered bonds to documents
-3. SDK publication to PyPI
+3. ~~SDK publication to PyPI~~ ✅ Done — v0.1.2 published with LangChain tools, MCP server, console script (`debtstack-mcp`)
 4. Mintlify docs deployment to docs.debtstack.ai
 5. ~~Set up Railway cron job for daily pricing collection~~ ✅ Done — APScheduler in-process (fixed snapshot bug 2026-02-12: batched inserts + timezone + error logging)
 6. ~~Analytics, error tracking & alerting~~ ✅ Done — Vercel Analytics, PostHog, Sentry, Slack alerts
@@ -28,7 +28,7 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 **Company Expansion**: 211 companies (up from 201) — added 10 Tier 1 massive-debt issuers (CMCSA, DUK, CVS, USB, SO, TFC, ET, PNC, PCG, BMY)
 
-**Debt Coverage Gaps**: 124/211 companies (59%) have instrument outstanding within 80-120% of total debt ("OK"). Phases 1-9 + Tiers 1-4 updated 1,600+ instruments, deactivated 250+ duplicates/aggregates, cleared 150+ wrong amounts. EXCESS reduced from 58→12 (12 EXCESS_SOME + 0 EXCESS_SIGNIFICANT). MISSING_ALL at 2 (PANW, TTD — revolvers with $0 drawn). 39 MISSING_SIGNIFICANT remain — mostly structural: aggregate-only footnotes (VZ, T, CMCSA, CHTR, PEP, KO, WMT, TMUS), banks with deposits in total_debt (COF, AXP, USB, WFC, TFC, MS). 27 MISSING_SOME — BMY (73.8%), JNJ (77.6%), TMO (75.4%), BKR (74.2%), COST (77.1%), AMGN (70.9%, over-deduped). Overall: $5,165B instruments / $6,618B total debt = **78.0%**.
+**Debt Coverage Gaps**: 130/211 companies (62%) have instrument outstanding within 80-120% of total debt ("OK"). Phases 1-9 + Tiers 1-5 updated 1,600+ instruments, deactivated 270+ duplicates/phantoms/aggregates, cleared 150+ wrong amounts, fixed 10+ scale errors. EXCESS reduced from 58→9 (9 EXCESS_SOME + 0 EXCESS_SIGNIFICANT). MISSING_ALL at 2 (PANW, TTD — revolvers with $0 drawn). 39 MISSING_SIGNIFICANT remain — mostly structural: aggregate-only footnotes (VZ, T, CMCSA, CHTR, PEP, KO, WMT, TMUS), banks with deposits in total_debt (COF, AXP, USB, WFC, TFC, MS). 24 MISSING_SOME — AMGN (70.9%, over-deduped), BMY (73.8%), JNJ (77.6%), TMO (75.4%), GOOGL (67.3%). Overall: $5,139B instruments / $6,618B total debt = **77.7%**.
 
 **Pricing Coverage**: 3,557 active bonds with pricing (2,487 real TRACE, 1,070 estimated) via Finnhub/FINRA TRACE. Updated 3x daily by APScheduler (11 AM, 3 PM, 9 PM ET). Daily snapshots saved to `bond_pricing_history` at 9 PM ET.
 

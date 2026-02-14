@@ -1,6 +1,6 @@
 # DebtStack Work Plan
 
-Last Updated: 2026-02-13 (EXCESS_SIGNIFICANT eliminated: DO/NEM/ON/UBER fixes)
+Last Updated: 2026-02-13 (Tier 5: OK 124→130, EXCESS_SOME 12→9)
 
 ## Current Status
 
@@ -21,15 +21,15 @@ Last Updated: 2026-02-13 (EXCESS_SIGNIFICANT eliminated: DO/NEM/ON/UBER fixes)
 
 Analysis of `SUM(debt_instruments.outstanding)` vs `company_financials.total_debt`:
 
-| Status | Before | After P1+2 | After P3 | After P4 | After P5 | After P6 | After P6 all-missing | After P7 Steps 4-6 | After P7 Step 7 | After ETN/PLD fix | After P7.5 | After P8 | After Fin Fix | After P9 | After T1 | After T1B | Current | Description |
-|--------|--------|------------|----------|----------|----------|----------|---------------------|--------------------|--------------------|---------------------|------------|----------|---------------|----------|----------|----------|---------|-------------|
-| OK | 32 | 51 | 71 | 72 | 73 | 73 | 65 | 65 | 73 | 82 | 96 | 98 | 100 | 102 | 103 | 106 | 115 | **124** | Within 80-120% of total debt |
-| EXCESS_SOME | 30 | 43 | 30 | 30 | 30 | 30 | 45 | 45 | 53 | 42 | 15 | 16 | 16 | 17 | 17 | 16 | 15 | **12** | 120-200% (slight over-count) |
-| EXCESS_SIGNIFICANT | 67 | 35 | 14 | 14 | 14 | 14 | 27 | 19 | 5 | 5 | 5 | 6 | 4 | 4 | 4 | 6 | 0 | **0** | >200% — eliminated |
-| MISSING_SOME | 12 | 16 | 19 | 19 | 19 | 19 | 13 | 13 | 13 | 15 | 20 | 24 | 26 | 32 | 33 | 31 | 32 | **27** | 50-80% (slightly under) |
-| MISSING_SIGNIFICANT | 39 | 44 | 54 | 54 | 56 | 54 | 50 | 50 | 53 | 55 | 60 | 52 | 52 | 45 | 43 | 43 | 40 | **39** | <50% (missing outstanding amounts) |
-| MISSING_ALL | 24 | 15 | 16 | 14 | 12 | 9 | 4 | 4 | 7 | 5 | 8 | 8 | 6 | 4 | 4 | 2 | 2 | **2** | $0 outstanding despite having instruments (PANW, TTD) |
-| NO_FINANCIALS | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | **7** | No total debt figure to compare against |
+| Status | Before | After P1+2 | After P3 | After P4 | After P5 | After P6 | After P6 all-missing | After P7 Steps 4-6 | After P7 Step 7 | After ETN/PLD fix | After P7.5 | After P8 | After Fin Fix | After P9 | After T1 | After T1B | After T4 | Current | Description |
+|--------|--------|------------|----------|----------|----------|----------|---------------------|--------------------|--------------------|---------------------|------------|----------|---------------|----------|----------|----------|---------|---------|-------------|
+| OK | 32 | 51 | 71 | 72 | 73 | 73 | 65 | 65 | 73 | 82 | 96 | 98 | 100 | 102 | 103 | 106 | 115 | 124 | **130** | Within 80-120% of total debt |
+| EXCESS_SOME | 30 | 43 | 30 | 30 | 30 | 30 | 45 | 45 | 53 | 42 | 15 | 16 | 16 | 17 | 17 | 16 | 15 | 12 | **9** | 120-200% (slight over-count) |
+| EXCESS_SIGNIFICANT | 67 | 35 | 14 | 14 | 14 | 14 | 27 | 19 | 5 | 5 | 5 | 6 | 4 | 4 | 4 | 6 | 0 | 0 | **0** | >200% — eliminated |
+| MISSING_SOME | 12 | 16 | 19 | 19 | 19 | 19 | 13 | 13 | 13 | 15 | 20 | 24 | 26 | 32 | 33 | 31 | 32 | 27 | **24** | 50-80% (slightly under) |
+| MISSING_SIGNIFICANT | 39 | 44 | 54 | 54 | 56 | 54 | 50 | 50 | 53 | 55 | 60 | 52 | 52 | 45 | 43 | 43 | 40 | 39 | **39** | <50% (missing outstanding amounts) |
+| MISSING_ALL | 24 | 15 | 16 | 14 | 12 | 9 | 4 | 4 | 7 | 5 | 8 | 8 | 6 | 4 | 4 | 2 | 2 | 2 | **2** | $0 outstanding despite having instruments (PANW, TTD) |
+| NO_FINANCIALS | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | **7** | No total debt figure to compare against |
 
 **Note on Phase 7.5**: OK jumped 82→96, EXCESS_SOME dropped 42→15. Two-step approach:
 1. **Step 8 — Revolver/ABL capacity clears** ($0 cost): Cleared 36 revolver/ABL instruments across 23 companies ($55.5B capacity shown as outstanding). Moved 11 companies from EXCESS to OK. Added `--fix-revolver-capacity` flag to `fix_excess_instruments.py`.
@@ -205,15 +205,36 @@ Other cleanup:
 - **ODFL**: Deactivated orphan "Senior Notes" (no rate/maturity/amount).
 - **VAL**: Deactivated redeemed 8.25% 2028 bond (fully redeemed May 2023).
 
-**Current totals** (2026-02-13): OK 124, EXCESS_SOME 12, EXCESS_SIGNIFICANT 0, MISSING_SOME 27, MISSING_SIGNIFICANT 39, MISSING_ALL 2, NO_FINANCIALS 7. Overall: $5,165B / $6,618B = **78.0%**.
+**Current totals** (after Tier 4): OK 124, EXCESS_SOME 12, EXCESS_SIGNIFICANT 0, MISSING_SOME 27, MISSING_SIGNIFICANT 39, MISSING_ALL 2, NO_FINANCIALS 7. Overall: $5,165B / $6,618B = **78.0%**.
+
+**Tier 5 EXCESS cleanup + MISSING quick fixes** (2026-02-13): Targeted fixes for EXCESS_SOME companies (scale errors, phantoms, duplicates) and near-OK MISSING_SOME companies (amount backfill, reactivations).
+
+Flipped to OK (6 companies):
+- **MA**: Fixed 2x 10x scale errors (Floating Rate 2028: $3B→$300M, 4.95% 2032: $5B→$500M), deactivated duplicate revolver → 100.8% OK.
+- **DHR**: Deactivated 2 Finnhub bonds with maturity-schedule aggregate amounts double-counting extracted bonds (1.3% 2026 $2.1B, 1.4% 2027 $0.8B) → 100.7% OK.
+- **DISH**: Deactivated intercompany loan ($4.8B DISH 2021 Intercompany Loan 2026 Tranche — eliminates in consolidation) → 98.2% OK.
+- **GILD**: Deactivated 13 LLM-hallucinated phantom instruments ($16.4B total), 1 duplicate 3.00% 2027 ($1.5B), fixed scale error on 2.60% 2040 ($1.5B→$989M), populated 3 zero-outstanding bonds ($2.7B: 5.10% 2035, 4.60% 2035, 5.60% 2064) → 95.6% OK.
+- **BKR**: Fixed Finnhub 4.08% 2047 bond outstanding (was trade volume $135K, set to principal $1.34B), transferred CUSIPs from 2 Finnhub duplicates to extraction instruments → 98.3% OK.
+- **TEAM**: Reactivated 2 inactive senior notes (5.25% 2029 $500M + 5.50% 2034 $500M from May 2024 issuance), fixed revolver outstanding ($750M→$0, was capacity not drawn) → 101.2% OK.
+
+Other fixes (moved categories):
+- **COST**: Fixed 3x 1000x scale errors (3.00% 2027: $1M→$1B, 1.75% 2032: $1M→$1B, 1.60% 2030: $1.75M→$1.75B), deactivated duplicate 1.40% notes → moved from MISSING_SOME to EXCESS_SOME (129.3%).
+- **NEM**: Deactivated old/replaced revolver ($0 impact) — still EXCESS_SOME due to stale outstanding amounts from 2025 tender offers ($3.4B redeemed in 9 months).
+
+Not fixable without re-extraction:
+- **ORCL** (20.3% excess): All 53 instruments are legitimate distinct bonds. Excess likely due to total_debt excluding $10B in term loans.
+- **WELL** (28.8% excess): 6 NULL-outstanding instruments are real bonds. Total_debt may be understated.
+- **NEM** (78.1% excess): Stale per-bond outstanding amounts — Newmont redeemed $3.4B in 2025 tender offers across multiple series.
+
+**Current totals** (2026-02-13): OK **130**, EXCESS_SOME 9, EXCESS_SIGNIFICANT 0, MISSING_SOME 24, MISSING_SIGNIFICANT 39, MISSING_ALL 2, NO_FINANCIALS 7. Overall: $5,139B / $6,618B = **77.7%**.
 
 **Root cause of limited impact**: Most large issuers (VZ, CMCSA, T, PEP, LOW, UNP, GE, MSFT, PM, KO, WMT) present debt in aggregate maturity/rate buckets in their 10-K footnotes (e.g., "Notes due 2030-2034: $7.7B" or "Senior notes with maturities of 5 years or less: $25.4B") rather than per-instrument detail. This is a structural limitation — per-instrument amounts would need to be sourced from prospectus supplements or individual offering documents, not 10-K/10-Q footnotes.
 
-**Remaining root causes (after Tier 4)**:
+**Remaining root causes (after Tier 5)**:
 - **MISSING_ALL (2 companies)**: PANW/TTD (revolvers with $0 drawn — correct)
 - **MISSING_SIGNIFICANT (39 companies)**: Structural gaps dominate — VZ, T, CMCSA, CHTR, PEP, KO, LMT, F, WMT, TMUS have aggregate-only footnotes. ABBV (41.3%), HD (45.5%) re-extraction exhausted. Banks (COF, AXP, USB, WFC, TFC, MS) have deposits/wholesale funding in total_debt. ADBE, ADSK, GE, CSX, CB have footnotes but backfill yielded 0 matches.
-- **EXCESS_SOME (12 companies)**: 3 banks (BAC, C, JPM — structural), NRG (136.8%, stale total_debt), GILD (158.4%, stale total_debt), MA (138.8%, amount errors), CAT (123.9%), WELL (128.8%, understated total_debt), NEM (178.1%), DHR (124.3%), DISH (129.1%), UBER removed (now OK).
-- **MISSING_SOME (27 companies)**: BMY (73.8%), AMGN (70.9%), JNJ (77.6%), TMO (75.4%), BKR (74.2%), COST (77.1%), GOOGL (67.3%), GM (64.1%), PCG (51.0%), DUK (53.5%), UAL (53.4%), ATUS (62.0%).
+- **EXCESS_SOME (9 companies)**: 3 banks (BAC, C, JPM — structural), NRG (136.8%, stale total_debt), COST (129.3%, overcorrected scale fix), CAT (123.9%), WELL (128.8%, understated total_debt), NEM (178.1%, stale amounts from 2025 tender offers), ORCL (120.3%, total_debt may exclude term loans).
+- **MISSING_SOME (24 companies)**: AMGN (70.9%, over-deduped), BMY (73.8%), JNJ (77.6%), TMO (75.4%), GOOGL (67.3%), GM (64.1%), PCG (51.0%), DUK (53.5%), UAL (53.4%), ATUS (62.0%), CVX (54.3%), MAR (59.6%).
 - **NO_FINANCIALS (7 companies)**: ANET, GEV, GFS, ISRG, LULU, PLTR, VRTX — minimal/no debt or no financial data
 
 **Phase 9 (indenture-based extraction)** (2026-02-12): New approach to fill outstanding amounts for the 52 MISSING_SIGNIFICANT + 8 MISSING_ALL companies. Most large IG issuers present debt in aggregate maturity/rate buckets in 10-K footnotes — but supplemental indentures explicitly state the original issuance amount for each bond series (e.g., "The Company hereby creates and issues $500,000,000 aggregate principal amount of 5.25% Senior Notes due 2030"). For bullet bonds (senior notes, debentures), original principal = current outstanding.
@@ -433,7 +454,7 @@ python scripts/link_finnhub_bonds.py --all
 ```
 
 ### Priority 4: SDK & Documentation
-1. SDK publication to PyPI
+1. ~~SDK publication to PyPI~~ ✅ Done — v0.1.2 published (2026-02-14): LangChain tools (7), MCP server (8 tools), `debtstack-mcp` console script, comprehensive README docs
 2. Mintlify docs deployment to docs.debtstack.ai
 3. ~~Set up Railway cron job for daily pricing collection~~ ✅ Done — APScheduler in-process (11 AM / 3 PM / 9 PM ET)
 
@@ -994,7 +1015,7 @@ Create `tests/test_pricing_tiers.py`:
 
 ### Secondary Priorities:
 1. ~~**Finnhub Pricing Expansion**~~ - ✅ DONE: Expanded from 30 to 2,552 bonds with pricing data
-2. **SDK Publication** - Publish `debtstack-ai` to PyPI for easy Python integration
+2. ~~**SDK Publication**~~ ✅ DONE (v0.1.2) - Published `debtstack-ai` to PyPI with LangChain + MCP integrations
 3. **Mintlify Docs Deployment** - Deploy docs to `docs.debtstack.ai`
 4. **Scale Error Investigation** - Verify INTU/META/etc. scale issues against source SEC filings (don't auto-fix)
 5. **Eval Suite Fixes** - Adjust workflow test thresholds for secured bond pricing reality; add Business-tier test key for covenants/compare tests
@@ -1835,15 +1856,23 @@ GET /v1/pricing/history?cusip=76825DAJ7&from=2025-01-01&to=2026-01-27
 ---
 
 ### Priority 5: SDK Publication
-**Status**: ⬜ TODO
+**Status**: ✅ COMPLETE (2026-02-14)
 **Effort**: 0.5 day
 
 | Step | Description | Status |
 |------|-------------|--------|
-| 1. Final review | Ensure SDK matches current API | ⬜ TODO |
-| 2. PyPI account | Create account if needed | ⬜ TODO |
-| 3. Publish | `python -m build && twine upload dist/*` | ⬜ TODO |
-| 4. Test install | `pip install debtstack-ai` | ⬜ TODO |
+| 1. Final review | Ensure SDK matches current API | ✅ Done (v0.1.1 auth header + endpoint fixes) |
+| 2. PyPI account | Create account if needed | ✅ Done |
+| 3. Publish | `python -m build && twine upload dist/*` | ✅ Done (v0.1.2) |
+| 4. Test install | `pip install debtstack-ai` | ✅ Done |
+
+**v0.1.2 changes:**
+- Added `mcp` optional dependency group (`pip install debtstack-ai[mcp]`)
+- Added `debtstack-mcp` console script entry point for MCP clients
+- Added sync `run()` wrapper in `mcp_server.py` for console_scripts
+- Expanded README with comprehensive LangChain docs (7 tools, full agent example, example queries)
+- Expanded README with comprehensive MCP docs (8 tools, Claude Desktop/Code/Cursor configs)
+- PyPI: https://pypi.org/project/debtstack-ai/0.1.2/
 
 ---
 
@@ -1908,7 +1937,7 @@ Set up docs at `docs.debtstack.ai` using Mintlify with:
 - [x] Website updated (CTA, pricing, remove beta) ✅ (2026-01-23)
 - [x] Explorer page (structure visualization) ✅ (2026-01-23) - needs hierarchy data fix
 - [x] Mintlify docs created ✅ (2026-01-23) - needs deployment
-- [ ] SDK published to PyPI
+- [x] SDK published to PyPI ✅ (2026-02-14) - v0.1.2 with LangChain + MCP
 - [ ] Mintlify docs deployed to docs.debtstack.ai
 
 ---
@@ -2332,6 +2361,22 @@ When starting a new session, read this file first, then:
 ---
 
 ## Session Log
+
+### 2026-02-14 (Session 38) - SDK v0.1.2: MCP Console Script + Documentation
+
+**Objective:** Make SDK MCP server publishable and add comprehensive LangChain/MCP documentation.
+
+**Changes:**
+1. **`sdk/pyproject.toml`**: Added `mcp` optional dependency group, `debtstack-mcp` console script entry point, bumped version to 0.1.2
+2. **`sdk/debtstack/__init__.py`**: Bumped `__version__` to `"0.1.2"`
+3. **`sdk/debtstack/mcp_server.py`**: Added sync `run()` wrapper for console_scripts (needed because `main()` is async)
+4. **`sdk/README.md`**: Expanded LangChain section (7 tools table, full agent example, 7 example queries) and MCP section (8 tools table, Claude Desktop/Code/Cursor configs, python -m alternative, 8 example queries)
+
+**Published:** v0.1.2 to PyPI — https://pypi.org/project/debtstack-ai/0.1.2/
+
+**Files modified:** `sdk/pyproject.toml`, `sdk/debtstack/__init__.py`, `sdk/debtstack/mcp_server.py`, `sdk/README.md`, `CLAUDE.md`, `WORKPLAN.md`, `README.md`
+
+---
 
 ### 2026-02-13 (Session 37) - Eliminate EXCESS_SIGNIFICANT: DO/NEM/ON/UBER + META/FTNT
 

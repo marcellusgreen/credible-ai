@@ -619,11 +619,26 @@ credible/
 └── results/                       # Extraction outputs
 ```
 
+## Python SDK
+
+Install the SDK for programmatic access or AI agent integration:
+
+```bash
+pip install debtstack-ai              # Core SDK
+pip install debtstack-ai[langchain]   # LangChain tools (7 tools for credit analysis agents)
+pip install debtstack-ai[mcp]         # MCP server (8 tools for Claude Desktop/Code/Cursor)
+```
+
+**PyPI**: [pypi.org/project/debtstack-ai](https://pypi.org/project/debtstack-ai/)
+
+See `sdk/README.md` for full documentation including LangChain agent setup and MCP client configurations.
+
 ## Documentation
 
 - `docs/PRIMITIVES_API_SPEC.md` - **Primitives API specification** with examples
 - `docs/DEPLOYMENT.md` - Full deployment guide for Railway
 - `docs/ACCOUNT_SETUP.md` - Step-by-step vendor account setup
+- `sdk/README.md` - **Python SDK** with LangChain and MCP integration guides
 - `CLAUDE.md` - AI assistant context for development
 
 ## License
