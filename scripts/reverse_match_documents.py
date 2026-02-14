@@ -22,13 +22,8 @@ Usage:
 """
 
 import argparse
-import io
 import sys
 from collections import defaultdict
-
-# Handle Windows encoding
-if sys.platform == 'win32':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload

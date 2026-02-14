@@ -3,13 +3,9 @@
 Diagnose why credit facilities aren't matching to available credit agreements.
 """
 
-import io
 import re
 import sys
 from collections import defaultdict
-
-if sys.platform == 'win32':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 from sqlalchemy import text
 

@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """Analyze what identifiers appear in indentures for matching."""
 
-import io
 import re
 import sys
 from collections import Counter
-
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 from sqlalchemy import select
 

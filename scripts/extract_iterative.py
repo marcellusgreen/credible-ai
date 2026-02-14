@@ -85,10 +85,12 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from dotenv import load_dotenv
-
 # Add parent dir to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from script_utils import run_async  # Handles Windows event loop + stdout encoding
+
+from dotenv import load_dotenv
 
 from app.services.iterative_extraction import IterativeExtractionService, IterativeExtractionResult
 from app.services.extraction import SecApiClient, SECEdgarClient, check_existing_data, merge_extraction_to_db, save_extraction_to_db
@@ -144,7 +146,12 @@ async def download_filings(ticker: str, cik: str, sec_api_key: str = None) -> tu
 
 async def link_documents_to_instruments(session, company_id: UUID, ticker: str, use_llm: bool = False) -> int:
     """
-    Link debt instruments to their governing documents.
+    Link debt instruments to their governing documents using multi-strategy matching.
+
+    Runs three strategies in order (cheapest first):
+    1. Heuristic matching (10+ strategies: CUSIP, coupon+maturity, note pattern, etc.)
+    2. Base indenture fallback (links unlinked notes to oldest base indenture, conf 0.60)
+    3. Credit agreement fallback (links unlinked loans/revolvers to most recent CA)
 
     Uses the document_linking service which creates DebtInstrumentDocument records
     that guarantee/collateral extraction can use.
@@ -156,10 +163,25 @@ async def link_documents_to_instruments(session, company_id: UUID, ticker: str, 
         use_llm: If True, use LLM-based matching (slower but more accurate).
                  If False, use heuristic matching (faster).
     """
+    total_links = 0
+
+    # Strategy 1: Heuristic or LLM matching
     if use_llm:
-        return await link_documents(session, company_id, ticker)
+        total_links += await link_documents(session, company_id, ticker)
     else:
-        return await link_documents_heuristic(session, company_id)
+        total_links += await link_documents_heuristic(session, company_id)
+
+    # Strategy 2: Base indenture fallback for unlinked notes/bonds
+    try:
+        from app.services.document_matching import match_debt_instruments_to_documents, store_document_links
+        report = await match_debt_instruments_to_documents(session, company_id, min_confidence=0.50)
+        if report.matches:
+            created = await store_document_links(session, report.matches, created_by="algorithm")
+            total_links += created
+    except Exception as e:
+        print(f"      [INFO] Additional matching skipped: {e}")
+
+    return total_links
 
 
 async def recompute_metrics(session, company_id: UUID, ticker: str) -> bool:
@@ -231,9 +253,6 @@ async def run_iterative_extraction(
         force: Force re-run all steps (ignore skip conditions)
         full: Run ALL steps including Finnhub discovery and pricing (slow)
         finnhub_api_key: Finnhub API key (required for --full)
-        skip_enrichment: Skip guarantees, collateral, document linking
-        core_only: Only run core extraction (fastest)
-        force: Force re-run all steps (ignore skip conditions)
     """
     print(f"\n{'='*70}")
     print(f"COMPLETE COMPANY EXTRACTION: {ticker} (CIK: {cik})")
@@ -1437,7 +1456,7 @@ def main():
             print(f"Error: GEMINI_API_KEY required for step '{args.step}'")
             sys.exit(1)
 
-        success = asyncio.run(
+        success = run_async(
             run_single_step(
                 ticker=args.ticker,
                 step=args.step,
@@ -1464,7 +1483,7 @@ def main():
             print("Error: DATABASE_URL required for --all mode")
             sys.exit(1)
 
-        asyncio.run(
+        run_async(
             run_batch_extraction(
                 database_url=database_url,
                 gemini_api_key=gemini_api_key,
@@ -1481,7 +1500,7 @@ def main():
         if args.full and not finnhub_api_key:
             print("Warning: --full specified but FINNHUB_API_KEY not set. Steps 12-15 will be skipped.")
 
-        asyncio.run(
+        run_async(
             run_iterative_extraction(
                 ticker=args.ticker,
                 cik=args.cik,

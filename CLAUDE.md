@@ -6,7 +6,7 @@ Context for AI assistants working on the DebtStack.ai codebase.
 
 ## What's Next
 
-**Immediate**: Phase 9 + all targeted backfill + Tier 2 excess cleanup + Tier 3 re-extraction complete. Indenture extraction exhausted. Coverage: $5,130B / $6,618B = **77.5%**. OK: 115, EXCESS_SOME: 15, EXCESS_SIGNIFICANT: 0, MISSING_SOME: 32, MISSING_SIGNIFICANT: 40, MISSING_ALL: 2. Tier 3 re-extraction moved DUK/UAL/ATUS from MISSING_SIGNIFICANT to MISSING_SOME. Next approaches: (1) footnote backfill for ADBE/GE/CSX/CB, (2) near-OK flips for AMGN/TMO/BMY/GOOGL (need more instruments), (3) financial refresh for GILD/MA/NRG (stale total_debt causing excess), (4) more re-extraction for remaining MISSING_SIGNIFICANT companies. See WORKPLAN.md.
+**Immediate**: Tiers 1-4 complete. Coverage: $5,165B / $6,618B = **78.0%**. OK: 124, EXCESS_SOME: 12, EXCESS_SIGNIFICANT: 0, MISSING_SOME: 27, MISSING_SIGNIFICANT: 39, MISSING_ALL: 2. Tier 4 flipped 9 companies to OK (VNO, ON, APH, RCL, CTAS, UBER, DO, FANG, JNJ→77.6%). Remaining gaps are mostly structural: large issuers with aggregate-only footnotes (VZ, T, CMCSA, PEP, KO), banks with deposits in total_debt (COF, AXP, USB, WFC), and stale total_debt causing excess (GILD, NRG, WELL). Next: (1) financial refresh for GILD/NRG/WELL/MA (stale total_debt), (2) company expansion 211→288, (3) AMGN over-deduped needs review. See WORKPLAN.md.
 
 **Then**:
 1. Continue company expansion (211 → 288, Tier 2-5 remaining)
@@ -24,11 +24,11 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 ## Current Status (February 2026)
 
-**Database**: 211 companies | 6,016 debt instruments | 2,926 with CUSIP | 4,712 with pricing | 14,511 document sections | 4,165 guarantees | 713 collateral records | 1,247 covenants | 28,128 entities | 1,816 financial quarters
+**Database**: 211 companies | 6,016 debt instruments | 2,926 with CUSIP | 4,712 with pricing | 14,511 document sections | 4,165 guarantees | 713 collateral records | 1,247 covenants | 28,128 entities | 1,816 financial quarters | **97% document linkage** (4,379/4,496 active instruments linked; 117 unlinked = 51 commercial paper + 52 zero-doc companies + 14 other)
 
 **Company Expansion**: 211 companies (up from 201) — added 10 Tier 1 massive-debt issuers (CMCSA, DUK, CVS, USB, SO, TFC, ET, PNC, PCG, BMY)
 
-**Debt Coverage Gaps**: 115/211 companies (55%) have instrument outstanding within 80-120% of total debt ("OK"). Phases 1-9 + cleanup fixes + targeted backfill + Tier 2 excess cleanup + Tier 3 re-extraction updated 1,540+ instruments, deactivated 210+ duplicates/aggregates, cleared 133 wrong amounts. EXCESS reduced from 58→15 (15 EXCESS_SOME + 0 EXCESS_SIGNIFICANT). MISSING_ALL at 2 (PANW, TTD — revolvers with $0 drawn). 40 MISSING_SIGNIFICANT remain — three sub-groups: re-extraction attempted but still low (ABBV 41.3%, HD unchanged), have footnotes (GE/CSX can backfill), structural (VZ/T/CMCSA/CHTR — aggregate footnotes, indentures exhausted). 32 MISSING_SOME — includes DUK (53.5%), UAL (53.4%), ATUS (62.0%) moved from MISSING_SIGNIFICANT after Tier 3 re-extraction, plus AMGN (75.8%), TMO (75.4%), BMY (54.7%), GM (64.1%). Overall: $5,130B instruments / $6,618B total debt = **77.5%**.
+**Debt Coverage Gaps**: 124/211 companies (59%) have instrument outstanding within 80-120% of total debt ("OK"). Phases 1-9 + Tiers 1-4 updated 1,600+ instruments, deactivated 250+ duplicates/aggregates, cleared 150+ wrong amounts. EXCESS reduced from 58→12 (12 EXCESS_SOME + 0 EXCESS_SIGNIFICANT). MISSING_ALL at 2 (PANW, TTD — revolvers with $0 drawn). 39 MISSING_SIGNIFICANT remain — mostly structural: aggregate-only footnotes (VZ, T, CMCSA, CHTR, PEP, KO, WMT, TMUS), banks with deposits in total_debt (COF, AXP, USB, WFC, TFC, MS). 27 MISSING_SOME — BMY (73.8%), JNJ (77.6%), TMO (75.4%), BKR (74.2%), COST (77.1%), AMGN (70.9%, over-deduped). Overall: $5,165B instruments / $6,618B total debt = **78.0%**.
 
 **Pricing Coverage**: 3,557 active bonds with pricing (2,487 real TRACE, 1,070 estimated) via Finnhub/FINRA TRACE. Updated 3x daily by APScheduler (11 AM, 3 PM, 9 PM ET). Daily snapshots saved to `bond_pricing_history` at 9 PM ET.
 
@@ -106,7 +106,10 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 **Scripts** are thin CLI wrappers that import from services:
 - `scripts/extract_iterative.py` - Complete extraction pipeline
 - `scripts/recompute_metrics.py` - Metrics recomputation
-- `scripts/script_utils.py` - **Shared utilities** (DB sessions, parsers, progress)
+- `scripts/backfill_debt_document_links.py` - Heuristic multi-strategy document linking
+- `scripts/link_to_base_indenture.py` - Fallback: link notes → base indenture
+- `scripts/link_to_credit_agreement.py` - Fallback: link loans → credit agreement
+- `scripts/script_utils.py` - **Shared utilities** (DB sessions, parsers, progress, Windows handling)
 
 This separation keeps business logic testable and reusable while scripts handle CLI concerns. All scripts should use `script_utils.py` for consistent database handling and Windows compatibility.
 
@@ -146,7 +149,10 @@ This separation keeps business logic testable and reusable while scripts handle 
 | `scripts/backfill_outstanding_from_filings.py` | Phase 2/4: Outstanding amount backfill from single footnote |
 | `scripts/fix_excess_instruments.py` | Phase 3/7/7.5: Dedup, deactivate matured, LLM review, revolver clears |
 | `scripts/analyze_gaps_v2.py` | Debt coverage gap analysis (MISSING_ALL/SIGNIFICANT/EXCESS) |
-| `scripts/script_utils.py` | Shared CLI utilities (DB sessions, parsers, progress) |
+| `scripts/backfill_debt_document_links.py` | Heuristic multi-strategy document linking (10+ strategies) |
+| `scripts/link_to_base_indenture.py` | Fallback: link notes/bonds → oldest base indenture (conf 0.60) |
+| `scripts/link_to_credit_agreement.py` | Fallback: link loans/revolvers → most recent credit agreement |
+| `scripts/script_utils.py` | Shared CLI utilities (DB sessions, parsers, progress, Windows handling) |
 | `app/models/schema.py` | SQLAlchemy models (includes User, UserCredits, UsageLog) |
 | `app/core/config.py` | Environment configuration |
 | `app/core/database.py` | Database connection |
@@ -1113,10 +1119,12 @@ if __name__ == "__main__":
 
 **Benefits:**
 - Eliminates ~15-20 lines of boilerplate per script (sys.path, dotenv, engine creation)
-- Handles Windows event loop policy automatically
-- Handles UTF-8 output encoding on Windows
+- Handles Windows event loop policy automatically (`WindowsSelectorEventLoopPolicy`)
+- Handles UTF-8 output encoding on Windows (via `TextIOWrapper`)
 - Proper async session cleanup with rollback on errors
 - Consistent CLI output formatting
+
+**IMPORTANT**: If a script imports from `script_utils`, it must NOT also wrap `sys.stdout` manually. Double-wrapping causes "I/O operation on closed file" errors. See Common Issues > Windows stdout Encoding.
 
 ## Debt Coverage Backfill (Phases 1-6)
 
@@ -1200,6 +1208,56 @@ python scripts/extract_amounts_from_indentures.py --fix --model gemini-2.5-pro
 | Large filing truncation | `extract_debt_sections()` extracts relevant portions |
 | JSON parse errors | `parse_json_robust()` fixes common issues |
 | Company not found by ticker | Falls back to CIK search |
+| "I/O operation on closed file" | **Duplicate `sys.stdout` wrapping** — script wraps stdout AND imports `script_utils.py` which also wraps it. Only wrap in ONE place. If importing `script_utils`, remove the manual wrapping from the script. |
+| "Can't reconnect until invalid transaction is rolled back" | **Neon idle connection drop** — Neon serverless drops connections idle >10s. Use fresh `async with get_db_session() as session:` per company, not one shared session for a batch. See pattern below. |
+
+### Neon Serverless Connection Management
+
+**Critical pattern for batch scripts**: Neon Cloud drops idle connections after ~10 seconds. When processing companies in a loop with LLM calls (10-60s each), a single shared session will fail after the first timeout, cascading errors to all subsequent companies.
+
+**Wrong (single session for batch):**
+```python
+async with get_db_session() as session:
+    companies = await get_companies(session)
+    for company in companies:           # Session goes idle during LLM call
+        result = await slow_operation(session, company)  # FAILS after ~10s idle
+```
+
+**Right (fresh session per company):**
+```python
+async with get_db_session() as session:
+    companies = await get_companies(session)
+    company_info = [(c.id, c.ticker) for c in companies]  # Extract data before closing
+
+for company_id, ticker in company_info:
+    try:
+        async with get_db_session() as session:  # Fresh session per company
+            company = await session.get(Company, company_id)
+            result = await slow_operation(session, company)
+    except Exception as e:
+        print(f"Error {ticker}: {e}")  # Error is isolated, next company continues
+```
+
+This pattern is used in `backfill_debt_document_links.py`, `extract_iterative.py` (batch mode), and should be used in any script that processes companies with LLM calls or other slow operations.
+
+### Windows stdout Encoding
+
+**Rule**: Only wrap `sys.stdout` in ONE place. `script_utils.py` handles this automatically at import time. Scripts that import from `script_utils` must NOT also wrap stdout manually.
+
+**Wrong (double wrapping — causes "I/O operation on closed file"):**
+```python
+import io, sys
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+from script_utils import get_db_session  # Also wraps stdout!
+```
+
+**Right (let script_utils handle it):**
+```python
+from script_utils import get_db_session  # Handles stdout wrapping automatically
+```
+
+Scripts that do NOT import from `script_utils` should handle their own stdout wrapping.
 
 ### QA False Positives
 
@@ -1227,6 +1285,32 @@ See `docs/operations/QA_TROUBLESHOOTING.md` for detailed debugging guides.
 3. **Pattern matching beats LLM for large docs** - Search for "Term A-6" directly rather than asking LLM
 4. **Fix data quality first** - Many matches fail due to NULL rates/maturities that can be extracted from names
 5. **Lower confidence is better than no link** - 60% confidence base indenture link is more useful than nothing
+6. **Run linking scripts cheapest-first** - base indenture fallback ($0) → credit agreement fallback ($0) → heuristic matching ($0) → LLM matching (~$0.10). The free steps handle 95%+ of linkable instruments.
+7. **Commercial paper and zero-doc companies are unlinkable** - ~100 instruments will always remain unlinked: commercial paper (no SEC doc expected) and instruments where the company has zero extracted documents.
+
+**Document Linking Backfill Pipeline (run in order, cheapest first):**
+```bash
+# Step 1: Link notes/bonds to base indentures (free, ~250 links)
+python scripts/link_to_base_indenture.py --dry-run
+python scripts/link_to_base_indenture.py --save
+
+# Step 2: Link loans/revolvers to credit agreements (free, ~120 links)
+python scripts/link_to_credit_agreement.py --dry-run
+python scripts/link_to_credit_agreement.py --save
+
+# Step 3: Heuristic multi-strategy matching (free, ~460 links)
+python scripts/backfill_debt_document_links.py --all --dry-run
+python scripts/backfill_debt_document_links.py --all
+
+# Step 4: Pattern + DeepSeek LLM confirmation (~$0.05)
+python scripts/smart_document_matching.py --all --dry-run
+python scripts/smart_document_matching.py --all --save
+
+# Step 5: Full LLM matching for stragglers (~$0.10)
+python scripts/llm_document_matching.py --all --dry-run
+python scripts/llm_document_matching.py --all --save
+```
+Result: 489 → 117 unlinked (76% reduction). Remaining ~117 are commercial paper (51) + companies with zero documents (52) + specialized types (14).
 
 ### Financial Extraction Issues
 
