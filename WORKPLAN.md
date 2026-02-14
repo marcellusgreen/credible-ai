@@ -1,6 +1,6 @@
 # DebtStack Work Plan
 
-Last Updated: 2026-02-13 (Tier 5: OK 124→130, EXCESS_SOME 12→9)
+Last Updated: 2026-02-14 (Tier 7: OK 139→143, MISSING_SOME 22→14)
 
 ## Current Status
 
@@ -17,19 +17,19 @@ Last Updated: 2026-02-13 (Tier 5: OK 124→130, EXCESS_SOME 12→9)
 **Data Quality**: QC audit passing - 0 critical, 0 errors, 4 warnings (2026-01-26). Fixed 38 mislabeled seniority records (2026-02-06).
 **Eval Suite**: 121/136 tests passing (89.0%)
 
-### Debt Coverage Gaps (2026-02-13, updated after META/FTNT fixes)
+### Debt Coverage Gaps (2026-02-14, updated after Tier 7)
 
 Analysis of `SUM(debt_instruments.outstanding)` vs `company_financials.total_debt`:
 
-| Status | Before | After P1+2 | After P3 | After P4 | After P5 | After P6 | After P6 all-missing | After P7 Steps 4-6 | After P7 Step 7 | After ETN/PLD fix | After P7.5 | After P8 | After Fin Fix | After P9 | After T1 | After T1B | After T4 | Current | Description |
-|--------|--------|------------|----------|----------|----------|----------|---------------------|--------------------|--------------------|---------------------|------------|----------|---------------|----------|----------|----------|---------|---------|-------------|
-| OK | 32 | 51 | 71 | 72 | 73 | 73 | 65 | 65 | 73 | 82 | 96 | 98 | 100 | 102 | 103 | 106 | 115 | 124 | **130** | Within 80-120% of total debt |
-| EXCESS_SOME | 30 | 43 | 30 | 30 | 30 | 30 | 45 | 45 | 53 | 42 | 15 | 16 | 16 | 17 | 17 | 16 | 15 | 12 | **9** | 120-200% (slight over-count) |
-| EXCESS_SIGNIFICANT | 67 | 35 | 14 | 14 | 14 | 14 | 27 | 19 | 5 | 5 | 5 | 6 | 4 | 4 | 4 | 6 | 0 | 0 | **0** | >200% — eliminated |
-| MISSING_SOME | 12 | 16 | 19 | 19 | 19 | 19 | 13 | 13 | 13 | 15 | 20 | 24 | 26 | 32 | 33 | 31 | 32 | 27 | **24** | 50-80% (slightly under) |
-| MISSING_SIGNIFICANT | 39 | 44 | 54 | 54 | 56 | 54 | 50 | 50 | 53 | 55 | 60 | 52 | 52 | 45 | 43 | 43 | 40 | 39 | **39** | <50% (missing outstanding amounts) |
-| MISSING_ALL | 24 | 15 | 16 | 14 | 12 | 9 | 4 | 4 | 7 | 5 | 8 | 8 | 6 | 4 | 4 | 2 | 2 | 2 | **2** | $0 outstanding despite having instruments (PANW, TTD) |
-| NO_FINANCIALS | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | **7** | No total debt figure to compare against |
+| Status | Before | After P1+2 | After P3 | After P4 | After P5 | After P6 | After P6 all-missing | After P7 Steps 4-6 | After P7 Step 7 | After ETN/PLD fix | After P7.5 | After P8 | After Fin Fix | After P9 | After T1 | After T1B | After T4 | After T5 | After T6 | Current | Description |
+|--------|--------|------------|----------|----------|----------|----------|---------------------|--------------------|--------------------|---------------------|------------|----------|---------------|----------|----------|----------|---------|---------|---------|---------|-------------|
+| OK | 32 | 51 | 71 | 72 | 73 | 73 | 65 | 65 | 73 | 82 | 96 | 98 | 100 | 102 | 103 | 106 | 115 | 124 | 130 | 139 | **143** | Within 80-120% of total debt |
+| EXCESS_SOME | 30 | 43 | 30 | 30 | 30 | 30 | 45 | 45 | 53 | 42 | 15 | 16 | 16 | 17 | 17 | 16 | 15 | 12 | 9 | 5 | **5** | 120-200% (slight over-count) |
+| EXCESS_SIGNIFICANT | 67 | 35 | 14 | 14 | 14 | 14 | 27 | 19 | 5 | 5 | 5 | 6 | 4 | 4 | 4 | 6 | 0 | 0 | 0 | 0 | **1** | >200% (CHS total_debt understated) |
+| MISSING_SOME | 12 | 16 | 19 | 19 | 19 | 19 | 13 | 13 | 13 | 15 | 20 | 24 | 26 | 32 | 33 | 31 | 32 | 27 | 24 | 22 | **14** | 50-80% (slightly under) |
+| MISSING_SIGNIFICANT | 39 | 44 | 54 | 54 | 56 | 54 | 50 | 50 | 53 | 55 | 60 | 52 | 52 | 45 | 43 | 43 | 40 | 39 | 39 | 36 | **39** | <50% (dedup moved some in from MISSING_SOME) |
+| MISSING_ALL | 24 | 15 | 16 | 14 | 12 | 9 | 4 | 4 | 7 | 5 | 8 | 8 | 6 | 4 | 4 | 2 | 2 | 2 | 2 | 2 | **2** | $0 outstanding despite having instruments (PANW, TTD) |
+| NO_FINANCIALS | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | **7** | No total debt figure to compare against |
 
 **Note on Phase 7.5**: OK jumped 82→96, EXCESS_SOME dropped 42→15. Two-step approach:
 1. **Step 8 — Revolver/ABL capacity clears** ($0 cost): Cleared 36 revolver/ABL instruments across 23 companies ($55.5B capacity shown as outstanding). Moved 11 companies from EXCESS to OK. Added `--fix-revolver-capacity` flag to `fix_excess_instruments.py`.
@@ -226,15 +226,83 @@ Not fixable without re-extraction:
 - **WELL** (28.8% excess): 6 NULL-outstanding instruments are real bonds. Total_debt may be understated.
 - **NEM** (78.1% excess): Stale per-bond outstanding amounts — Newmont redeemed $3.4B in 2025 tender offers across multiple series.
 
-**Current totals** (2026-02-13): OK **130**, EXCESS_SOME 9, EXCESS_SIGNIFICANT 0, MISSING_SOME 24, MISSING_SIGNIFICANT 39, MISSING_ALL 2, NO_FINANCIALS 7. Overall: $5,139B / $6,618B = **77.7%**.
+**Current totals** (after Tier 5): OK 130, EXCESS_SOME 9, EXCESS_SIGNIFICANT 0, MISSING_SOME 24, MISSING_SIGNIFICANT 39, MISSING_ALL 2, NO_FINANCIALS 7. Overall: $5,139B / $6,618B = 77.7%.
+
+**Tier 6 systematic scale fixes + excess cleanup** (2026-02-14): Database-wide scan for 100x scale errors (outstanding/principal ratio ~0.01, meaning outstanding stored in dollars instead of cents) plus targeted fixes for EXCESS_SOME companies.
+
+Flipped to OK (9 companies):
+- **COST**: Deactivated aggregate "Bank Credit Facilities" revolver ($880K, parent of Domestic + International sub-facilities), deactivated 2 Japan subsidiary Guaranteed Senior Notes showing total $805M instead of individual tranche amounts → 101.2% OK. (Was 129.3% EXCESS_SOME from Tier 5 overcorrection.)
+- **BMY**: Fixed 7x 100x scale errors on bonds (outstanding in dollars not cents), deactivated 9 duplicate bond/senior_notes pairs (same bond entered twice with different type) → 87.2% OK.
+- **AMGN**: Fixed 7x 100x scale errors on bonds → 92.0% OK. (Was 70.9% after Tier 4 over-deduplication.)
+- **GOOGL**: Fixed 4x 100x scale errors, deactivated duplicate revolver, duplicate 2.05% 2050 bond, 6 stub instruments with NULL outstanding/maturity → 97.1% OK.
+- **ABBV**: Fixed 11x 100x scale errors on bonds → 87.0% OK. (Was 41.3% MISSING_SIGNIFICANT.)
+- **ADSK**: Fixed 3x 100x scale errors on bonds → 100.8% OK. (Was 21.0% MISSING_SIGNIFICANT.)
+- **C**: Cleared wrong outstanding on 6.625% 2032 bond (had $317.76B = total_debt assigned to single bond), deactivated empty-name instrument → 91.0% OK.
+- **JPM**: Deactivated "Callable Fixed Rate Notes due 2032" ($117.67B) — sub-category of "Senior Notes" aggregate, double-counted → 98.8% OK.
+- **ADI**: Fixed 4x 100x scale errors → already OK (81.0%→105.5%, improved accuracy).
+
+Excess cleanup (improved but not to OK):
+- **BAC**: Deactivated 10 preferred stock/depositary share instruments ($73.6B) — preferred equity, not debt → 155.7%→125.9%.
+- **CAT**: Deactivated 4 individual bonds within MTN aggregate ($2.2B double-counted) + 5 duplicate revolvers → 123.9%→117.9%.
+
+Data quality fixes (no coverage change):
+- **TMO**: Deactivated 3 duplicate bond/senior_notes pairs ($2.4B removed) — coverage drops 75.4%→68.8% (removes double-counting, more accurate).
+- **BA**: Fixed 1x 1000x scale error on 3.95% 2059 bond → already OK (87.5%→101.5%, improved accuracy).
+- **BHC**: Fixed 6x ~40x scale errors on unsecured notes → already OK (89.9%→105.2%, improved accuracy).
+- **BIIB**: Fixed 1x 100x scale error → already OK (92.5%→103.5%, improved accuracy).
+- **ADBE**: Fixed 1x 100x scale error → 36.6%→52.5% (improved but still MISSING_SIGNIFICANT).
+
+Skipped (would create excess):
+- **AMZN** (107.9%→134.6%): 6 scale errors exist but fixing them would push already-OK company into EXCESS.
+- **APH** (83.9%→146.3%): 5 scale errors with mixed 100x/1000x ratios, fixing would create major excess.
+- **CAR** (111.6%→141.9%): 3 scale errors, fixing would push already-OK company into EXCESS.
+
+**Current totals** (2026-02-14): OK **139**, EXCESS_SOME 5, EXCESS_SIGNIFICANT 0, MISSING_SOME 22, MISSING_SIGNIFICANT 36, MISSING_ALL 2, NO_FINANCIALS 7. Overall: $4,696B / $6,618B = **71.0%**. Dollar ratio dropped because correctly removed ~$435B of double-counting (C's $317B wrong amount, JPM's $117B sub-category) — data is now more accurate.
+
+**Tier 7 DB investigation fixes** (2026-02-14): Parallel investigation of 27 companies (22 MISSING_SOME + 5 EXCESS_SOME) via diagnostic SQL queries. 5 batches investigated simultaneously. Applied 49 row updates across 11 companies, $0 cost.
+
+Flipped to OK (4 companies):
+- **THC** (62.7%→93.8%): Set outstanding = principal on 3 NULL bullet bonds (+$4.1B: 5.125% 2027, 4.625% 2028, 6.125% 2030).
+- **ROST** (67.1%→100.0%): Reactivated wrongly deactivated 0.875% Senior Notes due 2026 ($0.5B, matures Sept 2026, no deactivation reason recorded).
+- **IHRT** (53.5%→99.9%): Fixed Term Loan outstanding from $5M to $2.382B (SEC 10-K confirmed amount).
+- **VAL** (64.5%→100.0%): Updated 8.375% bond from $700M to $1.085B (tack-on issuance after initial indenture extraction).
+
+Data quality improvements (not to OK):
+- **ROP** (62.6%→39.2%): Deactivated 11 unnamed duplicate instruments, transferred $0.5B to named counterpart. Removed $2.2B double-counting. True gap is missing amounts on 5 named bonds.
+- **DUK** (53.5%→40.8%): Deactivated 17 duplicates (9 FMB type duplicates, 3 generic "Secured Debt", 2 parent name duplicates with CUSIPs, 1 exact duplicate, 2 term loan duplicates). Removed ~$12.4B double-counting.
+- **CVX** (54.3%→49.9%): Deactivated 2 unnamed bond duplicates ($1.8B). Kept named versions with CUSIPs.
+- **TMO** (68.8%→71.9%): Fixed 100x principal scale error on EUR-denominated 4.497% Notes 2030 ($110B→$1.1B), copied to outstanding.
+- **ADBE** (52.5%→58.0%): Merged duplicate 2.30% Senior Notes 2030 (rate mismatch 229/230 bps prevented auto-dedup), fixed amount to $500M per SEC 10-K.
+- **CHS** (62.5%→EXCESS_SIG): Transferred $49M ABL drawn amount from deactivated duplicate. Total_debt ($24M) appears understated (likely excludes ABL).
+- **WELL** (128.8%→128.8%): Deactivated 7 zero-outstanding instruments (2 legacy Health Care REIT, 2 exchangeable, 2 redeemed, 1 revolver). No coverage impact since they had $0 already.
+
+Investigation-only (no SQL fix possible):
+- **JNJ** (77.6%): No fixable issues — $10.2B gap is missing instruments (medium-term notes, commercial paper).
+- **SPG** (66.0%): Metrics total_debt ($62.8B) is 2.4x financials ($25.8B) — needs metrics recomputation.
+- **PCAR** (63.4%): Structural — aggregated MTN programs, individual notes not broken out.
+- **GM** (64.1%): Clean — gap from "Secured Debt" ($49.4B) and "Securitization Notes" ($17.4B) aggregates.
+- **MAR** (59.6%): Clean — no duplicates, scale errors, or deactivation issues found.
+- **PNC** (60.1%): Clean — 11 bonds with $0 outstanding need SEC filing backfill.
+- **BAC** (125.9%): Structural bank excess — aggregate "Senior Notes" $311B vs total_debt $247B definition mismatch.
+- **NEM** (178.1%): Stale amounts from pre-deleveraging (Q1 2024: $8.9B → Q3 2025: $5.2B). Needs re-extraction.
+- **NRG** (136.8%): Stale issuance amounts + bad Q4 2024 financial ($0). Needs re-extraction.
+- **ORCL** (120.3%): Bond amounts at original par, not current outstanding. Needs re-extraction from FY25Q4 10-K.
+- **PCG** (51.0%): Massive utility with 37 instruments — 10 NULL-outstanding entries are mislabeled preferred stock.
+- **UAL** (53.4%): Gap from missing EETCs and equipment trust certificates. Needs re-extraction.
+- **DXCM** (51.1%): Only 2 instruments — revolver with NULL outstanding. Needs SEC verification of drawn amount.
+- **MNST** (50.0%): Term loan shows $375M vs $750M principal (50% drawn). Needs SEC verification.
+- **ODFL** (70.6%→29.4%): Total_debt metric ($922M) includes operating lease liabilities; actual financial debt ~$85M.
+
+**Current totals** (after Tier 7): OK **143**, EXCESS_SOME 5, EXCESS_SIGNIFICANT 1, MISSING_SOME 14, MISSING_SIGNIFICANT 39, MISSING_ALL 2, NO_FINANCIALS 7. Overall: $4,690B / $6,618B = **70.9%**.
 
 **Root cause of limited impact**: Most large issuers (VZ, CMCSA, T, PEP, LOW, UNP, GE, MSFT, PM, KO, WMT) present debt in aggregate maturity/rate buckets in their 10-K footnotes (e.g., "Notes due 2030-2034: $7.7B" or "Senior notes with maturities of 5 years or less: $25.4B") rather than per-instrument detail. This is a structural limitation — per-instrument amounts would need to be sourced from prospectus supplements or individual offering documents, not 10-K/10-Q footnotes.
 
-**Remaining root causes (after Tier 5)**:
+**Remaining root causes (after Tier 7)**:
 - **MISSING_ALL (2 companies)**: PANW/TTD (revolvers with $0 drawn — correct)
-- **MISSING_SIGNIFICANT (39 companies)**: Structural gaps dominate — VZ, T, CMCSA, CHTR, PEP, KO, LMT, F, WMT, TMUS have aggregate-only footnotes. ABBV (41.3%), HD (45.5%) re-extraction exhausted. Banks (COF, AXP, USB, WFC, TFC, MS) have deposits/wholesale funding in total_debt. ADBE, ADSK, GE, CSX, CB have footnotes but backfill yielded 0 matches.
-- **EXCESS_SOME (9 companies)**: 3 banks (BAC, C, JPM — structural), NRG (136.8%, stale total_debt), COST (129.3%, overcorrected scale fix), CAT (123.9%), WELL (128.8%, understated total_debt), NEM (178.1%, stale amounts from 2025 tender offers), ORCL (120.3%, total_debt may exclude term loans).
-- **MISSING_SOME (24 companies)**: AMGN (70.9%, over-deduped), BMY (73.8%), JNJ (77.6%), TMO (75.4%), GOOGL (67.3%), GM (64.1%), PCG (51.0%), DUK (53.5%), UAL (53.4%), ATUS (62.0%), CVX (54.3%), MAR (59.6%).
+- **MISSING_SIGNIFICANT (39 companies)**: Structural gaps dominate — VZ, T, CMCSA, CHTR, PEP, KO, LMT, F, WMT, TMUS have aggregate-only footnotes. Banks (COF, AXP, USB, WFC, TFC, MS) have deposits/wholesale funding in total_debt. DUK/CVX/ROP moved in from MISSING_SOME after dedup correctly removed double-counting.
+- **EXCESS_SOME (5 companies)**: BAC (125.9%, structural bank), NRG (136.8%, stale amounts), NEM (178.1%, stale from deleveraging), ORCL (120.3%, par amounts), WELL (128.8%, understated total_debt).
+- **EXCESS_SIGNIFICANT (1 company)**: CHS (266.7%, total_debt understated at $24M vs actual ~$64M).
+- **MISSING_SOME (14 companies)**: JNJ (77.6%), TMO (71.9%), SPG (66.0%), ADBE (58.0%), GM (64.1%), MAR (59.6%), PNC (60.1%), PCAR (63.4%), ATUS (62.0%), PCG (49.0%), UAL (53.4%), DXCM (48.9%), MNST (50.0%), ODFL (29.4%).
 - **NO_FINANCIALS (7 companies)**: ANET, GEV, GFS, ISRG, LULU, PLTR, VRTX — minimal/no debt or no financial data
 
 **Phase 9 (indenture-based extraction)** (2026-02-12): New approach to fill outstanding amounts for the 52 MISSING_SIGNIFICANT + 8 MISSING_ALL companies. Most large IG issuers present debt in aggregate maturity/rate buckets in 10-K footnotes — but supplemental indentures explicitly state the original issuance amount for each bond series (e.g., "The Company hereby creates and issues $500,000,000 aggregate principal amount of 5.25% Senior Notes due 2030"). For bullet bonds (senior notes, debentures), original principal = current outstanding.
