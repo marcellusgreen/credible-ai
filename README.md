@@ -476,6 +476,8 @@ docker-compose up -d
 | `STRIPE_WEBHOOK_SECRET` | Optional | Stripe webhook verification |
 | `SENTRY_DSN` | Optional | Sentry error tracking |
 | `SLACK_WEBHOOK_URL` | Optional | Slack alerts for error spikes |
+| `POSTHOG_API_KEY` | Optional | PostHog analytics (backend event tracking) |
+| `POSTHOG_HOST` | Optional | PostHog host (default: `https://us.i.posthog.com`) |
 
 ## Extraction
 
@@ -581,6 +583,7 @@ credible/
 │   │   ├── database.py            # Database connection
 │   │   ├── cache.py               # Redis cache client
 │   │   ├── auth.py                # API key generation, validation, tier config
+│   │   ├── posthog.py             # PostHog analytics client
 │   │   ├── monitoring.py          # Redis-based API metrics
 │   │   ├── alerting.py            # Slack webhook alerts
 │   │   └── scheduler.py           # APScheduler (pricing + alert jobs)

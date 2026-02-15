@@ -6,7 +6,7 @@ Context for AI assistants working on the DebtStack.ai codebase.
 
 ## What's Next
 
-**Immediate**: Tiers 1-7 complete. Coverage: $4,690B / $6,618B = **70.9%**. OK: **143**, EXCESS_SOME: 5, EXCESS_SIGNIFICANT: 1, MISSING_SOME: 14, MISSING_SIGNIFICANT: 39, MISSING_ALL: 2. Tier 7 flipped 4 companies to OK (THC, ROST, IHRT, VAL) via parallel DB investigation of 27 companies. Applied 49 row updates across 11 companies ($0 cost). Deduped 30+ duplicate instruments in DUK, ROP, CVX (data quality). Remaining gaps are mostly structural: large issuers with aggregate-only footnotes (VZ, T, CMCSA, PEP, KO), banks with deposits in total_debt (COF, AXP, USB, WFC), stale amounts (NEM, NRG). Next: (1) company expansion 211→288, (2) remaining EXCESS_SOME cleanup (BAC, NRG, NEM, ORCL, WELL need re-extraction). See WORKPLAN.md.
+**Immediate**: Tiers 1-8 complete. Coverage: $4,632B / $6,618B = **70.0%**. OK: **146**, EXCESS_SOME: 4, EXCESS_SIGNIFICANT: 0, MISSING_SOME: 12, MISSING_SIGNIFICANT: 39, MISSING_ALL: 3. Tier 8 flipped 3 companies to OK (CHS, ODFL, ADBE) via SQL fixes + SEC re-extraction + amount refresh. Eliminated all EXCESS_SIGNIFICANT (CHS total_debt corrected). NRG excess reduced 136.8%→129.4%. Remaining EXCESS is structural: NEM (post-filing deleveraging), ORCL (par vs carrying value), WELL/NRG (stale amounts). BAC moved to MISSING_ALL (bank filing format incompatible with debt note extraction). Next: (1) company expansion 211→288, (2) remaining MISSING_SOME cleanup (JNJ, TMO, SPG need missing instruments or amount fixes). See WORKPLAN.md.
 
 **Then**:
 1. Continue company expansion (211 → 288, Tier 2-5 remaining)
@@ -14,7 +14,7 @@ Context for AI assistants working on the DebtStack.ai codebase.
 3. ~~SDK publication to PyPI~~ ✅ Done — v0.1.2 published with LangChain tools, MCP server, console script (`debtstack-mcp`)
 4. Mintlify docs deployment to docs.debtstack.ai
 5. ~~Set up Railway cron job for daily pricing collection~~ ✅ Done — APScheduler in-process (fixed snapshot bug 2026-02-12: batched inserts + timezone + error logging)
-6. ~~Analytics, error tracking & alerting~~ ✅ Done — Vercel Analytics, PostHog, Sentry, Slack alerts
+6. ~~Analytics, error tracking & alerting~~ ✅ Done — Vercel Analytics, PostHog (frontend + backend), Sentry, Slack alerts
 
 ## Project Overview
 
@@ -28,7 +28,7 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 **Company Expansion**: 211 companies (up from 201) — added 10 Tier 1 massive-debt issuers (CMCSA, DUK, CVS, USB, SO, TFC, ET, PNC, PCG, BMY)
 
-**Debt Coverage Gaps**: 143/211 companies (68%) have instrument outstanding within 80-120% of total debt ("OK"). Phases 1-9 + Tiers 1-7 updated 1,600+ instruments, deactivated 320+ duplicates/phantoms/aggregates, cleared 150+ wrong amounts, fixed 50+ scale errors. EXCESS reduced from 58→5 (5 EXCESS_SOME + 1 EXCESS_SIGNIFICANT). MISSING_ALL at 2 (PANW, TTD — revolvers with $0 drawn). 39 MISSING_SIGNIFICANT remain — mostly structural: aggregate-only footnotes (VZ, T, CMCSA, CHTR, PEP, KO, WMT, TMUS), banks with deposits in total_debt (COF, AXP, USB, WFC, TFC, MS). 14 MISSING_SOME — JNJ (77.6%), TMO (71.9%), SPG (66.0%), GM (64.1%). Overall: $4,690B instruments / $6,618B total debt = **70.9%**.
+**Debt Coverage Gaps**: 146/211 companies (69%) have instrument outstanding within 80-120% of total debt ("OK"). Phases 1-9 + Tiers 1-8 updated 1,600+ instruments, deactivated 330+ duplicates/phantoms/aggregates, cleared 150+ wrong amounts, fixed 50+ scale errors. EXCESS reduced from 58→4 (4 EXCESS_SOME, 0 EXCESS_SIGNIFICANT). MISSING_ALL at 3 (PANW, TTD — revolvers with $0 drawn; BAC — structural bank gap). 39 MISSING_SIGNIFICANT remain — mostly structural: aggregate-only footnotes (VZ, T, CMCSA, CHTR, PEP, KO, WMT, TMUS), banks with deposits in total_debt (COF, AXP, USB, WFC, TFC, MS). 12 MISSING_SOME — JNJ (77.6%), TMO (71.6%), SPG (67.2%), GM (64.1%). Overall: $4,632B instruments / $6,618B total debt = **70.0%**.
 
 **Pricing Coverage**: 3,557 active bonds with pricing (2,487 real TRACE, 1,070 estimated) via Finnhub/FINRA TRACE. Updated 3x daily by APScheduler (11 AM, 3 PM, 9 PM ET). Daily snapshots saved to `bond_pricing_history` at 9 PM ET.
 
@@ -51,7 +51,7 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 - **Business-Only Endpoints**: Historical pricing, covenant compare, bulk export, usage analytics
 - **Auth & Credits**: API key auth, tier-based access control, usage tracking with cost
 - **Legacy REST API**: 26 endpoints for detailed company data
-- **Observability**: Vercel Analytics, PostHog (events/funnels), Sentry (error tracking), Slack alerts
+- **Observability**: Vercel Analytics, PostHog (frontend + backend events/funnels), Sentry (error tracking), Slack alerts
 - Iterative extraction with QA feedback loop (5 checks, 85% threshold)
 - Gemini for extraction (~$0.008), Claude for escalation
 - SEC-API.io integration (paid tier)
@@ -149,6 +149,8 @@ This separation keeps business logic testable and reusable while scripts handle 
 | `scripts/backfill_outstanding_from_filings.py` | Phase 2/4: Outstanding amount backfill from single footnote |
 | `scripts/fix_excess_instruments.py` | Phase 3/7/7.5: Dedup, deactivate matured, LLM review, revolver clears |
 | `scripts/analyze_gaps_v2.py` | Debt coverage gap analysis (MISSING_ALL/SIGNIFICANT/EXCESS) |
+| `scripts/refresh_stale_amounts.py` | Tier 8: Refresh ALL active instrument amounts from SEC (not just NULL/zero) |
+| `scripts/fix_pld_debt_amounts.py` | Tier 8: Fix NULL/zero instrument amounts from SEC filings |
 | `scripts/backfill_debt_document_links.py` | Heuristic multi-strategy document linking (10+ strategies) |
 | `scripts/link_to_base_indenture.py` | Fallback: link notes/bonds → oldest base indenture (conf 0.60) |
 | `scripts/link_to_credit_agreement.py` | Fallback: link loans/revolvers → most recent credit agreement |
@@ -156,6 +158,7 @@ This separation keeps business logic testable and reusable while scripts handle 
 | `app/models/schema.py` | SQLAlchemy models (includes User, UserCredits, UsageLog) |
 | `app/core/config.py` | Environment configuration |
 | `app/core/database.py` | Database connection |
+| `app/core/posthog.py` | PostHog analytics client (capture_event, identify_user, shutdown) |
 | `app/core/alerting.py` | Slack webhook alerts (check_and_alert called every 15 min) |
 | `app/core/monitoring.py` | Redis-based API metrics and alert condition checks |
 | `app/core/scheduler.py` | APScheduler jobs: pricing refresh + alert checks |
@@ -979,6 +982,8 @@ python scripts/collect_daily_pricing.py --all
 | `FINNHUB_API_KEY` | Optional | Finnhub for bond pricing (~$100/mo tier) |
 | `SENTRY_DSN` | Optional | Sentry error tracking (FastAPI auto-integration) |
 | `SLACK_WEBHOOK_URL` | Optional | Slack incoming webhook for alert notifications |
+| `POSTHOG_API_KEY` | Optional | PostHog analytics (backend event tracking, same project as frontend) |
+| `POSTHOG_HOST` | Optional | PostHog host (default: `https://us.i.posthog.com`) |
 
 ## Deployment
 

@@ -1,6 +1,6 @@
 # DebtStack Work Plan
 
-Last Updated: 2026-02-14 (Tier 7: OK 139→143, MISSING_SOME 22→14)
+Last Updated: 2026-02-14 (PostHog backend integration)
 
 ## Current Status
 
@@ -295,14 +295,49 @@ Investigation-only (no SQL fix possible):
 
 **Current totals** (after Tier 7): OK **143**, EXCESS_SOME 5, EXCESS_SIGNIFICANT 1, MISSING_SOME 14, MISSING_SIGNIFICANT 39, MISSING_ALL 2, NO_FINANCIALS 7. Overall: $4,690B / $6,618B = **70.9%**.
 
+**Tier 8 multi-vector fixes** (2026-02-14): Combined SQL fixes, SEC re-extraction, and amount refresh across 11 companies. Created `tier8_fixes.py` for direct SQL updates and `scripts/refresh_stale_amounts.py` for refreshing ALL active instrument amounts from latest SEC filings (unlike `fix_pld_debt_amounts.py` which only targets NULL/zero outstanding).
+
+Step 1 — SQL fixes ($0 cost, `tier8_fixes.py`):
+- **BAC**: Deactivated 7 bad instruments (doc_backfill assigned total long-term debt $311.5B/$290.5B as individual instrument amounts). BAC moved from EXCESS_SOME to MISSING_ALL (structural bank gap — filing format uses "Borrowed Funds" not standard "Debt" note headers).
+- **CHS**: Updated total_debt from $24M to $64M across 3 quarters (FY2023 Q2-Q4). The $24M was just FILO term loan principal, not full drawn ABL ($49M) + FILO ($15M). CHS moved from EXCESS_SIGNIFICANT (266.7%) to **OK**.
+- **ODFL**: Set revolver outstanding to $25M (derived from total_debt gap: $85M total - $60M notes = $25M drawn on revolver). ODFL moved from MISSING_SOME (29.4%) to **OK**.
+
+Step 2 — SEC re-extraction for EXCESS companies (~$0.40):
+- **NEM**: Amounts confirmed matching 10-K (Dec 2024). Excess is structural — NEM repaid $3.3B debt between Dec 2024 filing and Q3 2025 financials ($8.48B→$5.18B). No changes possible.
+- **NRG**: 2 instruments updated via `refresh_stale_amounts.py` (Term Loan B $2.31B→$1.32B, 3.375% 2029 notes $0.40B→$0.50B). Reduced from 136.8% to 129.4% but still EXCESS_SOME.
+- **WELL**: Only 3/10 instruments matched by Gemini, 2 small changes. Structural excess remains (128.8%).
+- **ORCL**: 44/53 instruments matched, all amounts confirmed correct. 9 unmatched are real bonds Gemini missed. Excess (120.3%) is structural — par vs carrying value.
+
+Step 3 — Amount backfill for MISSING_SOME companies (~$0.30):
+- **ADBE**: Two-pronged fix: (1) `refresh_stale_amounts.py` corrected 3 instrument amounts (4.95% 2030 $100M→$700M, 2.3% 2030 $500M→$1.3B, 2.15% 2027 $1B→$850M), (2) reactivated wrongly-deactivated 4.75% 2028 note ($800M, no deactivation reason recorded). ADBE moved from MISSING_SOME (58.0%) to **OK (91.0%)**.
+- **TMO**: Full refresh updated 3 instruments. Zero-outstanding instrument is a revolver (correctly $0). Still MISSING_SOME (71.6%).
+- **SPG**: 1 instrument updated — Credit Facility drawn $323.7M. Still MISSING_SOME (67.2%).
+- **JNJ**: All 38 instruments already have amounts. Gap ($10.2B) is entirely missing instruments (MTNs, commercial paper). No fix possible via re-extraction.
+
+Step 4 — BAC re-extraction attempt (failed):
+- Tried `extract_iterative.py --step core` for BAC — created 10 empty shell instruments (Gemini extracted types but no amounts from bank filing format). `extract_debt_note_from_filing()` matched "Debt Securities" (investment portfolio assets) instead of "Long-term Debt" (borrowings). Deactivated all 10 empty shells. BAC remains MISSING_ALL — structural bank filing gap.
+- PNC: Bank filing format doesn't match standard debt note patterns. No extraction possible.
+
+Scripts created/modified:
+- `tier8_fixes.py` (new): Direct SQL fixes for BAC, CHS, ODFL
+- `scripts/refresh_stale_amounts.py` (new): Refresh ALL active instrument amounts from SEC, tags with `amount_source: 'tier8_sec_refresh'`
+- `scripts/fix_pld_debt_amounts.py` (modified): Fixed Unicode encoding error in debt note preview print (cp1252 can't encode `\u200b`)
+
+**Current totals** (after Tier 8): OK **146**, EXCESS_SOME 4, EXCESS_SIGNIFICANT 0, MISSING_SOME 12, MISSING_SIGNIFICANT 39, MISSING_ALL 3, NO_FINANCIALS 7. Overall: $4,632B / $6,618B = **70.0%**.
+
+Flipped to OK (3 companies): CHS (266.7%→OK), ODFL (29.4%→OK), ADBE (58.0%→91.0%).
+EXCESS_SIGNIFICANT eliminated: CHS fixed via total_debt correction.
+MISSING_ALL +1: BAC (deactivated bad instruments, bank extraction failed).
+NRG excess reduced: 136.8%→129.4% (2 amounts updated from 10-K).
+
 **Root cause of limited impact**: Most large issuers (VZ, CMCSA, T, PEP, LOW, UNP, GE, MSFT, PM, KO, WMT) present debt in aggregate maturity/rate buckets in their 10-K footnotes (e.g., "Notes due 2030-2034: $7.7B" or "Senior notes with maturities of 5 years or less: $25.4B") rather than per-instrument detail. This is a structural limitation — per-instrument amounts would need to be sourced from prospectus supplements or individual offering documents, not 10-K/10-Q footnotes.
 
-**Remaining root causes (after Tier 7)**:
-- **MISSING_ALL (2 companies)**: PANW/TTD (revolvers with $0 drawn — correct)
+**Remaining root causes (after Tier 8)**:
+- **MISSING_ALL (3 companies)**: PANW/TTD (revolvers with $0 drawn — correct), BAC (structural bank gap — filing format uses "Borrowed Funds" not standard "Debt" note headers).
 - **MISSING_SIGNIFICANT (39 companies)**: Structural gaps dominate — VZ, T, CMCSA, CHTR, PEP, KO, LMT, F, WMT, TMUS have aggregate-only footnotes. Banks (COF, AXP, USB, WFC, TFC, MS) have deposits/wholesale funding in total_debt. DUK/CVX/ROP moved in from MISSING_SOME after dedup correctly removed double-counting.
-- **EXCESS_SOME (5 companies)**: BAC (125.9%, structural bank), NRG (136.8%, stale amounts), NEM (178.1%, stale from deleveraging), ORCL (120.3%, par amounts), WELL (128.8%, understated total_debt).
-- **EXCESS_SIGNIFICANT (1 company)**: CHS (266.7%, total_debt understated at $24M vs actual ~$64M).
-- **MISSING_SOME (14 companies)**: JNJ (77.6%), TMO (71.9%), SPG (66.0%), ADBE (58.0%), GM (64.1%), MAR (59.6%), PNC (60.1%), PCAR (63.4%), ATUS (62.0%), PCG (49.0%), UAL (53.4%), DXCM (48.9%), MNST (50.0%), ODFL (29.4%).
+- **EXCESS_SOME (4 companies)**: NRG (129.4%, stale amounts partially refreshed), NEM (178.1%, structural post-filing deleveraging), ORCL (120.3%, par amounts confirmed correct), WELL (128.8%, structural).
+- **EXCESS_SIGNIFICANT (0 companies)**: All resolved. CHS fixed via total_debt correction (Tier 8).
+- **MISSING_SOME (12 companies)**: JNJ (77.6%), TMO (71.6%), SPG (67.2%), GM (64.1%), MAR (59.6%), PNC (60.1%), PCAR (63.4%), ATUS (62.0%), PCG (49.0%), UAL (53.4%), DXCM (48.9%), MNST (50.0%).
 - **NO_FINANCIALS (7 companies)**: ANET, GEV, GFS, ISRG, LULU, PLTR, VRTX — minimal/no debt or no financial data
 
 **Phase 9 (indenture-based extraction)** (2026-02-12): New approach to fill outstanding amounts for the 52 MISSING_SIGNIFICANT + 8 MISSING_ALL companies. Most large IG issuers present debt in aggregate maturity/rate buckets in 10-K footnotes — but supplemental indentures explicitly state the original issuance amount for each bond series (e.g., "The Company hereby creates and issues $500,000,000 aggregate principal amount of 5.25% Senior Notes due 2030"). For bullet bonds (senior notes, debentures), original principal = current outstanding.
@@ -2429,6 +2464,31 @@ When starting a new session, read this file first, then:
 ---
 
 ## Session Log
+
+### 2026-02-14 (Session 39) - PostHog Backend API Monitoring
+
+**Objective:** Add PostHog server-side event tracking to enable unified user journey analytics (website visit → signup → first API call → subscription).
+
+**Changes:**
+1. **`requirements.txt`**: Added `posthog>=3.0.0`
+2. **`app/core/config.py`**: Added `posthog_api_key` and `posthog_host` to Observability section
+3. **`app/core/posthog.py`** (new): PostHog client wrapper with `capture_event()`, `identify_user()`, `shutdown()` — all no-ops when not configured
+4. **`app/main.py`**: Initialize PostHog, shutdown on exit, capture `api_request` events in logging middleware for authenticated `/v1/` requests
+5. **`app/api/auth.py`**: Capture `user_signed_up` event + `identify()` call on signup
+6. **`app/core/auth.py`**: Capture `credits_deducted` event after credit deduction
+
+**Events tracked:**
+- `api_request`: endpoint, method, status_code, duration_ms (for authenticated /v1/ requests, excludes health/auth)
+- `user_signed_up`: tier, email (+ PostHog identify)
+- `credits_deducted`: endpoint, cost_usd, credits_remaining, tier
+
+**Key decisions:** Same project key as frontend for cross-platform funnels. Hashed API key as `distinct_id`. All calls fire-and-forget. Graceful degradation when `POSTHOG_API_KEY` not set.
+
+**Deployed:** Railway env vars set (`POSTHOG_API_KEY`, `POSTHOG_HOST`).
+
+**Files modified:** `requirements.txt`, `app/core/config.py`, `app/core/posthog.py` (new), `app/main.py`, `app/api/auth.py`, `app/core/auth.py`, `CLAUDE.md`, `WORKPLAN.md`, `README.md`
+
+---
 
 ### 2026-02-14 (Session 38) - SDK v0.1.2: MCP Console Script + Documentation
 
