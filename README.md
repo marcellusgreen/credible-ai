@@ -1,8 +1,10 @@
 # DebtStack.ai
 
-*Formerly Credible AI - the GitHub repo URL reflects the old name*
-
 > The credit API for AI agents
+
+[![PyPI](https://img.shields.io/pypi/v/debtstack-ai)](https://pypi.org/project/debtstack-ai/)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![API Status](https://img.shields.io/badge/API-live-brightgreen)](https://api.debtstack.ai/v1/ping)
 
 Corporate structure and debt analysis is complex. Even with AI, achieving accuracy, speed, and cost-effectiveness requires significant engineering. DebtStack.ai does this hard work once, giving you instant API access to pre-computed, quality-assured credit data.
 
@@ -16,6 +18,66 @@ Corporate structure and debt analysis is complex. Even with AI, achieving accura
 - **Expertise required**: Understanding 10-K structure, Exhibit 21, debt footnotes, VIEs, and credit agreement terminology
 
 **The Solution**: DebtStack runs extraction once with rigorous QA, then serves pre-computed data via fast API.
+
+## Quick Start
+
+### 1. Get Your API Key
+
+Sign up at [debtstack.ai](https://debtstack.ai) or via the API:
+
+```bash
+curl -X POST "https://api.debtstack.ai/v1/auth/signup" \
+  -H "Content-Type: application/json" \
+  -d '{"email": "you@example.com", "password": "your-password"}'
+```
+
+### 2. Install the SDK (or use curl)
+
+```bash
+pip install debtstack-ai
+```
+
+### 3. Query
+
+**Python SDK:**
+
+```python
+from debtstack import DebtStackClient
+import asyncio
+
+async def main():
+    async with DebtStackClient(api_key="ds_your_api_key") as client:
+        # Screen for high-leverage companies
+        risky = await client.search_companies(
+            sector="Telecommunications",
+            min_leverage=4.0,
+            fields="ticker,name,net_leverage_ratio",
+            sort="-net_leverage_ratio"
+        )
+        print(risky)
+
+asyncio.run(main())
+```
+
+**curl:**
+
+```bash
+export DEBTSTACK_API_KEY="ds_your_api_key_here"
+
+# Search companies with field selection
+curl -H "X-API-Key: $DEBTSTACK_API_KEY" \
+  "https://api.debtstack.ai/v1/companies?ticker=AAPL,MSFT,GOOGL&fields=ticker,name,net_leverage_ratio"
+
+# Search bonds with pricing
+curl -H "X-API-Key: $DEBTSTACK_API_KEY" \
+  "https://api.debtstack.ai/v1/bonds?seniority=senior_unsecured&min_ytm=8.0"
+
+# Traverse entity relationships (find guarantors)
+curl -H "X-API-Key: $DEBTSTACK_API_KEY" \
+  -X POST "https://api.debtstack.ai/v1/entities/traverse" \
+  -H "Content-Type: application/json" \
+  -d '{"start":{"type":"bond","id":"893830AK8"},"relationships":["guarantees"]}'
+```
 
 ## Current Database
 
@@ -39,176 +101,17 @@ Coverage spans all major sectors:
 
 - **Primitives API**: 11 core endpoints optimized for AI agents with field selection and filtering
 - **Three-Tier Pricing**: Pay-as-You-Go ($0 + per-call), Pro ($199/mo unlimited), Business ($499/mo full access)
-- **Authentication**: API key auth with tier-based access control and credit tracking
-- **Observability**: Sentry error tracking, PostHog analytics, Slack alerting
-- **Iterative QA Extraction**: 5 automated verification checks with targeted fixes until 85%+ quality threshold
 - **Individual Debt Instruments**: Each bond, note, and credit facility extracted separately (not just totals)
 - **Structured Covenants**: 1,181 covenants (financial, negative, protective) linked to specific instruments
 - **Guarantee Relationships**: 3,831 guarantee records linking debt to guarantor subsidiaries
 - **Collateral Tracking**: 626 collateral records with asset types (equipment, vehicles, real estate, etc.)
 - **Corporate Ownership Hierarchy**: Nested parent-child structures from SEC Exhibit 21 and indenture parsing
-- **Ownership Transparency**: API indicates confidence level for each relationship (verified vs unknown)
-- **Direct/Indirect Subsidiaries**: Clear classification of ownership relationships where evidence exists
-- **Complex Corporate Structures**: Multiple owners, joint ventures, VIEs, partial ownership
 - **Financial Statements**: Quarterly income statement, balance sheet, cash flow from 10-Q/10-K
 - **Credit Ratios**: Leverage, interest coverage, margins, liquidity metrics
 - **Bond Pricing**: YTM and spread-to-treasury calculations (Finnhub/FINRA TRACE)
-- **Treasury Yield History**: 5+ years of daily US Treasury yields (1M-30Y tenors) for accurate historical spread analysis
+- **Treasury Yield History**: 5+ years of daily US Treasury yields (1M-30Y tenors)
 - **Document Search**: Full-text search across 4,957 indentures and 2,946 credit agreements
 - **Pre-computed Responses**: Sub-second API serving via cached JSON with ETag support
-
-## Data Quality Principles
-
-**Estimated data is always flagged.** When data cannot be extracted from SEC filings after repeated attempts and must be estimated or inferred, the API clearly indicates this:
-
-- `issue_date_estimated: true` - Issue date was inferred from maturity date and typical bond tenors (e.g., 10-year for senior notes), not extracted from the filing
-- Future estimated fields will follow the same pattern: `{field}_estimated: true`
-
-This transparency ensures you always know when you're working with extracted data vs. inferred data.
-
-### Leverage Ratio Data Quality
-
-Leverage ratios require TTM (Trailing Twelve Months) EBITDA calculations. We track data quality metadata so you know exactly how reliable each ratio is:
-
-```bash
-# Get leverage with data quality metadata
-curl "/v1/companies?ticker=AAPL&include_metadata=true"
-```
-
-Returns:
-```json
-{
-  "ticker": "AAPL",
-  "leverage_ratio": 0.63,
-  "_metadata": {
-    "leverage_data_quality": {
-      "ebitda_source": "annual_10k",     // Used 10-K annual figures
-      "ebitda_quarters": 4,               // Equivalent to 4 quarters
-      "is_annualized": false,             // Not extrapolated
-      "ebitda_estimated": false,          // D&A was available
-      "ttm_quarters": ["2025FY"]          // Period used
-    }
-  }
-}
-```
-
-**TTM EBITDA Calculation Rules:**
-- **10-K filing**: Use annual figures directly (already represents full year)
-- **10-Q filing**: Sum trailing 4 quarters
-- **<4 quarters available**: Annualize (flagged as `is_annualized: true`)
-- **No D&A data**: Use operating income as proxy (flagged as `ebitda_estimated: true`)
-
-### Ownership Relationship Transparency
-
-Corporate ownership hierarchies are complex. SEC Exhibit 21 lists subsidiaries but rarely shows intermediate holding structures. We only show parent-child relationships where we have evidence:
-
-```json
-{
-  "structure": {
-    "name": "Transocean Ltd.",
-    "ownership_confidence": "root",
-    "children": [
-      {
-        "name": "Transocean Inc.",
-        "ownership_confidence": "key_entity",
-        "children": [
-          {
-            "name": "Transocean Offshore Deepwater Holdings",
-            "ownership_confidence": "verified"
-          }
-        ]
-      }
-    ]
-  },
-  "ownership_coverage": {
-    "known_relationships": 3,
-    "unknown_relationships": 227,
-    "coverage_pct": 1.3
-  },
-  "other_subsidiaries": {
-    "count": 227,
-    "note": "Parent relationships unknown from public SEC filings"
-  }
-}
-```
-
-**Ownership confidence levels:**
-- `root` - Ultimate parent company
-- `key_entity` - Issuer or guarantor (relationship matters for credit analysis)
-- `verified` - Intermediate parent verified from indenture/credit agreement
-- `unknown` - From Exhibit 21 only (listed in `other_subsidiaries`, not in hierarchy tree)
-
-### Data Freshness Advantage
-
-DebtStack extracts directly from the latest SEC EDGAR filings, providing **12-18 months fresher data** than LLMs like ChatGPT or Gemini, which rely on stale training data.
-
-| Source | Data Period | NVDA EBITDA Example |
-|--------|-------------|---------------------|
-| **DebtStack** | Nov 2025 (FY2026 Q3) | $121B |
-| Gemini/ChatGPT | Q1 2025 (knowledge cutoff) | $39B |
-
-This matters for fast-growing companies where financial metrics change significantly between LLM training updates.
-
-## Quick Start
-
-### 1. Clone and Setup
-
-```bash
-git clone https://github.com/marcellusgreen/credible-ai.git
-cd credible
-pip install -r requirements.txt
-cp .env.example .env
-# Edit .env with your API keys
-```
-
-### 2. Database Setup
-
-**Neon Cloud (Recommended)**
-1. Create a free database at [neon.tech](https://neon.tech)
-2. Copy the connection string to `.env`:
-   ```
-   DATABASE_URL=postgresql+asyncpg://user:pass@host/db?sslmode=require
-   ```
-
-### 3. Run Migrations
-
-```bash
-alembic upgrade head
-```
-
-### 4. Run the API
-
-```bash
-uvicorn app.main:app --reload
-```
-
-### 5. Get Your API Key
-
-Sign up at [debtstack.ai](https://debtstack.ai) to get your API key. Three pricing tiers available:
-- **Pay-as-You-Go**: $0/month, pay per API call ($0.05-$0.15)
-- **Pro**: $199/month, unlimited queries
-- **Business**: $499/month, full access + historical pricing + bulk export
-
-### 6. Query
-
-```bash
-# Set your API key
-export DEBTSTACK_API_KEY="ds_your_api_key_here"
-
-# Search companies with field selection
-curl -H "X-API-Key: $DEBTSTACK_API_KEY" \
-  "https://api.debtstack.ai/v1/companies?ticker=AAPL,MSFT,GOOGL&fields=ticker,name,net_leverage_ratio"
-
-# Search bonds with pricing
-curl -H "X-API-Key: $DEBTSTACK_API_KEY" \
-  "https://api.debtstack.ai/v1/bonds?seniority=senior_unsecured&min_ytm=8.0"
-
-# Traverse entity relationships (find guarantors)
-curl -H "X-API-Key: $DEBTSTACK_API_KEY" \
-  -X POST "https://api.debtstack.ai/v1/entities/traverse" \
-  -H "Content-Type: application/json" \
-  -d '{"start":{"type":"bond","id":"893830AK8"},"relationships":["guarantees"]}'
-```
 
 ## API Endpoints
 
@@ -440,9 +343,172 @@ See `docs/PRIMITIVES_API_SPEC.md` for full specification.
 | `GET /v1/status` | API status and data coverage |
 | `GET /v1/sectors` | Sectors with company counts |
 
-## Deployment
+## Python SDK
 
-### Railway (Recommended)
+Install the SDK for programmatic access or AI agent integration:
+
+```bash
+pip install debtstack-ai              # Core SDK
+pip install debtstack-ai[langchain]   # LangChain tools (7 tools for credit analysis agents)
+pip install debtstack-ai[mcp]         # MCP server (8 tools for Claude Desktop/Code/Cursor)
+```
+
+**PyPI**: [pypi.org/project/debtstack-ai](https://pypi.org/project/debtstack-ai/)
+
+See `sdk/README.md` for full documentation including LangChain agent setup and MCP client configurations.
+
+## MCP + LangChain
+
+DebtStack integrates with AI agent frameworks out of the box:
+
+- **LangChain**: 7 tools for building credit analysis agents with any LLM. `pip install debtstack-ai[langchain]`
+- **MCP Server**: 8 tools for Claude Desktop, Claude Code, and Cursor. `pip install debtstack-ai[mcp]`
+
+See [`sdk/README.md`](sdk/README.md) for setup instructions, tool lists, and example queries.
+
+## Pricing
+
+| Tier | Price | Rate Limit | Includes |
+|------|-------|------------|----------|
+| **Pay-as-You-Go** | $0/month | 60/min | Pay per API call ($0.05-$0.15) |
+| **Pro** | $199/month | 100/min | Unlimited queries |
+| **Business** | $499/month | 500/min | Full access + historical pricing + bulk export + 5 team seats |
+
+Sign up at [debtstack.ai](https://debtstack.ai) or `POST /v1/auth/signup`.
+
+## Data Quality
+
+### Estimated Data Transparency
+
+**Estimated data is always flagged.** When data cannot be extracted from SEC filings after repeated attempts and must be estimated or inferred, the API clearly indicates this:
+
+- `issue_date_estimated: true` - Issue date was inferred from maturity date and typical bond tenors (e.g., 10-year for senior notes), not extracted from the filing
+- Future estimated fields will follow the same pattern: `{field}_estimated: true`
+
+This transparency ensures you always know when you're working with extracted data vs. inferred data.
+
+### Leverage Ratio Data Quality
+
+Leverage ratios require TTM (Trailing Twelve Months) EBITDA calculations. We track data quality metadata so you know exactly how reliable each ratio is:
+
+```bash
+# Get leverage with data quality metadata
+curl "/v1/companies?ticker=AAPL&include_metadata=true"
+```
+
+Returns:
+```json
+{
+  "ticker": "AAPL",
+  "leverage_ratio": 0.63,
+  "_metadata": {
+    "leverage_data_quality": {
+      "ebitda_source": "annual_10k",     // Used 10-K annual figures
+      "ebitda_quarters": 4,               // Equivalent to 4 quarters
+      "is_annualized": false,             // Not extrapolated
+      "ebitda_estimated": false,          // D&A was available
+      "ttm_quarters": ["2025FY"]          // Period used
+    }
+  }
+}
+```
+
+**TTM EBITDA Calculation Rules:**
+- **10-K filing**: Use annual figures directly (already represents full year)
+- **10-Q filing**: Sum trailing 4 quarters
+- **<4 quarters available**: Annualize (flagged as `is_annualized: true`)
+- **No D&A data**: Use operating income as proxy (flagged as `ebitda_estimated: true`)
+
+### Ownership Relationship Transparency
+
+Corporate ownership hierarchies are complex. SEC Exhibit 21 lists subsidiaries but rarely shows intermediate holding structures. We only show parent-child relationships where we have evidence:
+
+```json
+{
+  "structure": {
+    "name": "Transocean Ltd.",
+    "ownership_confidence": "root",
+    "children": [
+      {
+        "name": "Transocean Inc.",
+        "ownership_confidence": "key_entity",
+        "children": [
+          {
+            "name": "Transocean Offshore Deepwater Holdings",
+            "ownership_confidence": "verified"
+          }
+        ]
+      }
+    ]
+  },
+  "ownership_coverage": {
+    "known_relationships": 3,
+    "unknown_relationships": 227,
+    "coverage_pct": 1.3
+  },
+  "other_subsidiaries": {
+    "count": 227,
+    "note": "Parent relationships unknown from public SEC filings"
+  }
+}
+```
+
+**Ownership confidence levels:**
+- `root` - Ultimate parent company
+- `key_entity` - Issuer or guarantor (relationship matters for credit analysis)
+- `verified` - Intermediate parent verified from indenture/credit agreement
+- `unknown` - From Exhibit 21 only (listed in `other_subsidiaries`, not in hierarchy tree)
+
+### Data Freshness Advantage
+
+DebtStack extracts directly from the latest SEC EDGAR filings, providing **12-18 months fresher data** than LLMs like ChatGPT or Gemini, which rely on stale training data.
+
+| Source | Data Period | NVDA EBITDA Example |
+|--------|-------------|---------------------|
+| **DebtStack** | Nov 2025 (FY2026 Q3) | $121B |
+| Gemini/ChatGPT | Q1 2025 (knowledge cutoff) | $39B |
+
+This matters for fast-growing companies where financial metrics change significantly between LLM training updates.
+
+## Self-Hosting
+
+<details>
+<summary>Clone, setup, and run DebtStack locally</summary>
+
+### Clone and Setup
+
+```bash
+git clone https://github.com/marcellusgreen/credible-ai.git
+cd credible
+pip install -r requirements.txt
+cp .env.example .env
+# Edit .env with your API keys
+```
+
+### Database Setup
+
+**Neon Cloud (Recommended)**
+1. Create a free database at [neon.tech](https://neon.tech)
+2. Copy the connection string to `.env`:
+   ```
+   DATABASE_URL=postgresql+asyncpg://user:pass@host/db?sslmode=require
+   ```
+
+### Run Migrations
+
+```bash
+alembic upgrade head
+```
+
+### Run the API
+
+```bash
+uvicorn app.main:app --reload
+```
+
+### Deployment
+
+#### Railway (Recommended)
 
 1. **Connect GitHub**: Link your repo at [railway.app](https://railway.app)
 2. **Add Environment Variables**:
@@ -456,13 +522,13 @@ See `docs/PRIMITIVES_API_SPEC.md` for full specification.
 
 See `docs/DEPLOYMENT.md` for detailed instructions.
 
-### Docker
+#### Docker
 
 ```bash
 docker-compose up -d
 ```
 
-## Environment Variables
+### Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
@@ -479,7 +545,7 @@ docker-compose up -d
 | `POSTHOG_API_KEY` | Optional | PostHog analytics (backend event tracking) |
 | `POSTHOG_HOST` | Optional | PostHog host (default: `https://us.i.posthog.com`) |
 
-## Extraction
+### Extraction
 
 Extract new companies using the iterative extraction system:
 
@@ -565,7 +631,7 @@ Key utilities:
 - `print_header()`, `print_summary()` - Consistent CLI output
 - `create_base_parser()` - Common CLI arguments (`--ticker`, `--all`, `--limit`)
 
-## Project Structure
+### Project Structure
 
 ```
 credible/
@@ -622,19 +688,7 @@ credible/
 └── results/                       # Extraction outputs
 ```
 
-## Python SDK
-
-Install the SDK for programmatic access or AI agent integration:
-
-```bash
-pip install debtstack-ai              # Core SDK
-pip install debtstack-ai[langchain]   # LangChain tools (7 tools for credit analysis agents)
-pip install debtstack-ai[mcp]         # MCP server (8 tools for Claude Desktop/Code/Cursor)
-```
-
-**PyPI**: [pypi.org/project/debtstack-ai](https://pypi.org/project/debtstack-ai/)
-
-See `sdk/README.md` for full documentation including LangChain agent setup and MCP client configurations.
+</details>
 
 ## Documentation
 
