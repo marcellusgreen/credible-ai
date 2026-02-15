@@ -1,0 +1,17 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.marcellusgreen/debtstack-ai",
+  "title": "DebtStack.ai",
+  "description": "Corporate credit data for AI agents. Search companies by leverage, screen bonds by yield, map guarantor chains, traverse corporate structures, and search SEC filings — all with sub-100ms response times. Covers 211 companies (S&P 100 + NASDAQ 100), 4,496 debt instruments, and 14,511 searchable SEC filing sections.",
+  "version": "0.1.3",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "debtstack-ai",
+      "version": "0.1.3",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

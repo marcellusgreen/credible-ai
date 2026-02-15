@@ -1,5 +1,7 @@
 # DebtStack.ai Python SDK
 
+<!-- mcp-name: io.github.marcellusgreen/debtstack-ai -->
+
 **Corporate credit data for AI agents.**
 
 [![PyPI](https://img.shields.io/pypi/v/debtstack-ai)](https://pypi.org/project/debtstack-ai/)
