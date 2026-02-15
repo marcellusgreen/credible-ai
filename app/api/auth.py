@@ -39,6 +39,7 @@ from app.core.billing import (
     handle_credit_purchase,
 )
 from app.core.database import get_db
+from app.core.posthog import capture_event as posthog_capture, identify_user as posthog_identify
 from app.models import User, UserCredits
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -140,6 +141,18 @@ async def signup(
     await create_user_credits(user.id, "free", db)
 
     await db.commit()
+
+    # Track signup in PostHog
+    posthog_distinct_id = api_key_hashed
+    posthog_capture(
+        distinct_id=posthog_distinct_id,
+        event="user_signed_up",
+        properties={"tier": "free", "email": request.email},
+    )
+    posthog_identify(
+        distinct_id=posthog_distinct_id,
+        properties={"email": request.email, "tier": "free"},
+    )
 
     return SignupResponse(
         message="Account created successfully",

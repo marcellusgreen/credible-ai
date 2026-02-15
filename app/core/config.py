@@ -95,6 +95,8 @@ class Settings(BaseSettings):
     # ==========================================================================
     sentry_dsn: Optional[str] = None
     slack_webhook_url: Optional[str] = None
+    posthog_api_key: Optional[str] = None
+    posthog_host: str = "https://us.i.posthog.com"
 
     # ==========================================================================
     # Rate Limiting

@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.core.posthog import capture_event as posthog_capture
 from app.models import User, UserCredits
 
 settings = get_settings()
@@ -266,6 +267,19 @@ async def check_and_deduct_credits(
     user.credits.last_credit_usage = datetime.utcnow()
 
     await db.commit()
+
+    # Track credit deduction in PostHog
+    posthog_capture(
+        distinct_id=user.api_key_hash,
+        event="credits_deducted",
+        properties={
+            "endpoint": endpoint,
+            "cost_usd": float(cost),
+            "credits_remaining": float(user.credits.credits_remaining),
+            "tier": user.tier,
+        },
+    )
+
     return True, None
 
 

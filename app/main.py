@@ -26,6 +26,7 @@ from app.core.config import get_settings
 from app.core.cache import check_rate_limit, DEFAULT_RATE_LIMIT, DEFAULT_RATE_WINDOW
 from app.core.monitoring import record_request, record_rate_limit_hit
 from app.core.auth import hash_api_key
+from app.core.posthog import capture_event as posthog_capture, shutdown as posthog_shutdown
 from app.core.scheduler import start_scheduler, stop_scheduler
 
 settings = get_settings()
@@ -63,6 +64,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     yield
     # Shutdown
     stop_scheduler()
+    posthog_shutdown()
     logger.info("Shutting down DebtStack.ai API")
 
 
@@ -129,6 +131,26 @@ async def logging_middleware(request: Request, call_next):
         duration_ms=duration_ms,
         client_ip=client_ip,
     ))
+
+    # Track authenticated /v1/ API requests in PostHog
+    path = request.url.path
+    api_key = request.headers.get("X-API-Key")
+    if (
+        api_key
+        and path.startswith("/v1/")
+        and not path.startswith("/v1/auth")
+        and path not in ("/v1/ping", "/v1/health")
+    ):
+        posthog_capture(
+            distinct_id=hash_api_key(api_key),
+            event="api_request",
+            properties={
+                "endpoint": path,
+                "method": request.method,
+                "status_code": response.status_code,
+                "duration_ms": round(duration_ms, 2),
+            },
+        )
 
     response.headers["X-Request-ID"] = request_id
     return response
