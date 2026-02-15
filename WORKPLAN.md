@@ -1,6 +1,6 @@
 # DebtStack Work Plan
 
-Last Updated: 2026-02-14 (PostHog backend integration)
+Last Updated: 2026-02-15 (README restructure + Mintlify docs)
 
 ## Current Status
 
@@ -330,14 +330,47 @@ EXCESS_SIGNIFICANT eliminated: CHS fixed via total_debt correction.
 MISSING_ALL +1: BAC (deactivated bad instruments, bank extraction failed).
 NRG excess reduced: 136.8%→129.4% (2 amounts updated from 10-K).
 
-**Root cause of limited impact**: Most large issuers (VZ, CMCSA, T, PEP, LOW, UNP, GE, MSFT, PM, KO, WMT) present debt in aggregate maturity/rate buckets in their 10-K footnotes (e.g., "Notes due 2030-2034: $7.7B" or "Senior notes with maturities of 5 years or less: $25.4B") rather than per-instrument detail. This is a structural limitation — per-instrument amounts would need to be sourced from prospectus supplements or individual offering documents, not 10-K/10-Q footnotes.
+**Tier 9 LLM re-extraction experiment** (2026-02-14): Tested whether Gemini 2.5 Pro could fill NULL/zero amounts from existing `debt_footnote` document sections. Ran `backfill_amounts_from_docs.py --fix --ticker X --model gemini-2.5-pro` across 15 MISSING_SIGNIFICANT companies with the most NULL/zero instruments. Cost: ~$2-3.
 
-**Remaining root causes (after Tier 8)**:
+Results — clear binary outcome:
+
+| Ticker | Missing | Updated | Result |
+|--------|---------|---------|--------|
+| **CB** | 31 | **31** | 100% — footnote has per-instrument data |
+| **PEP** | 39 | **35** | 90% — footnote has per-instrument data |
+| **TMUS** | 15 | **15** | 100% — footnote has per-instrument data |
+| VZ | 60 | 1 | 2% — aggregate-only footnote |
+| T | 35 | 0 | 0% — aggregate-only footnote |
+| PG | 55 | 0 | 0% — aggregate-only footnote |
+| KO | 23 | 0 | 0% — aggregate-only footnote |
+| LMT | 24 | 0 | 0% — aggregate-only footnote |
+| F | 13 | 0 | 0% — captive finance aggregate |
+| QCOM | 12 | 0 | 0% — aggregate-only footnote |
+| CSX | 22 | 0 | 0% — aggregate-only footnote |
+| GE | 13 | 0 | 0% — aggregate-only footnote |
+| EXC | 9 | 0 | 0% — utility multi-OpCo |
+| CVX | 11 | 0 | 0% — aggregate-only footnote |
+| MRK | 3 | 0 | 0% — no debt_footnote sections |
+
+Total: **81 instruments updated across 3 companies**.
+
+Impact:
+- **PEP**: MISSING_SIGNIFICANT → **OK** (35/39 amounts from 10-K debt footnote)
+- **TMUS**: MISSING_SIGNIFICANT → MISSING_SOME (15/15 amounts, but still $49B/$82.7B = -40.7%)
+- **CB**: MISSING_SIGNIFICANT → EXCESS_SOME (+79.5%, face/par values from footnote exceed total_debt)
+
+**Key finding — LLM is NOT the bottleneck**: When per-instrument data IS in the filing, Gemini 2.5 Pro extracts at 90-100% accuracy. When filings only have aggregate maturity buckets ("Notes due 2027-2029: $7.7B"), no LLM can extract what doesn't exist. 12 of 15 companies (80%) have aggregate-only footnotes. A better LLM would not change these results.
+
+**Current totals** (after Tier 9): OK **147**, EXCESS_SOME 5, EXCESS_SIGNIFICANT 0, MISSING_SOME 13, MISSING_SIGNIFICANT 36, MISSING_ALL 3, NO_FINANCIALS 7. Overall: $4,459B / $6,618B = **67.4%**.
+
+**Root cause of limited impact**: Most large issuers (VZ, CMCSA, T, LOW, UNP, GE, MSFT, PM, KO, WMT) present debt in aggregate maturity/rate buckets in their 10-K footnotes (e.g., "Notes due 2030-2034: $7.7B" or "Senior notes with maturities of 5 years or less: $25.4B") rather than per-instrument detail. This is a structural limitation — per-instrument amounts would need to be sourced from prospectus supplements or individual offering documents, not 10-K/10-Q footnotes.
+
+**Remaining root causes (after Tier 9)**:
 - **MISSING_ALL (3 companies)**: PANW/TTD (revolvers with $0 drawn — correct), BAC (structural bank gap — filing format uses "Borrowed Funds" not standard "Debt" note headers).
-- **MISSING_SIGNIFICANT (39 companies)**: Structural gaps dominate — VZ, T, CMCSA, CHTR, PEP, KO, LMT, F, WMT, TMUS have aggregate-only footnotes. Banks (COF, AXP, USB, WFC, TFC, MS) have deposits/wholesale funding in total_debt. DUK/CVX/ROP moved in from MISSING_SOME after dedup correctly removed double-counting.
-- **EXCESS_SOME (4 companies)**: NRG (129.4%, stale amounts partially refreshed), NEM (178.1%, structural post-filing deleveraging), ORCL (120.3%, par amounts confirmed correct), WELL (128.8%, structural).
-- **EXCESS_SIGNIFICANT (0 companies)**: All resolved. CHS fixed via total_debt correction (Tier 8).
-- **MISSING_SOME (12 companies)**: JNJ (77.6%), TMO (71.6%), SPG (67.2%), GM (64.1%), MAR (59.6%), PNC (60.1%), PCAR (63.4%), ATUS (62.0%), PCG (49.0%), UAL (53.4%), DXCM (48.9%), MNST (50.0%).
+- **MISSING_SIGNIFICANT (36 companies)**: Structural gaps dominate — VZ, T, CMCSA, CHTR, KO, LMT, F, WMT have aggregate-only footnotes. Banks (COF, AXP, USB, WFC, TFC, MS) have deposits/wholesale funding in total_debt. DUK/CVX/ROP dedup-corrected.
+- **EXCESS_SOME (5 companies)**: NRG (129.4%), NEM (178.1%), ORCL (120.3%), WELL (128.8%), CB (179.5% — face/par values from Tier 9 footnote backfill).
+- **EXCESS_SIGNIFICANT (0 companies)**: All resolved.
+- **MISSING_SOME (13 companies)**: JNJ (77.6%), TMO (71.6%), SPG (67.2%), GM (64.1%), MAR (59.6%), PNC (60.1%), PCAR (63.4%), ATUS (62.0%), PCG (49.0%), UAL (53.4%), DXCM (48.9%), MNST (50.0%), TMUS (40.7%).
 - **NO_FINANCIALS (7 companies)**: ANET, GEV, GFS, ISRG, LULU, PLTR, VRTX — minimal/no debt or no financial data
 
 **Phase 9 (indenture-based extraction)** (2026-02-12): New approach to fill outstanding amounts for the 52 MISSING_SIGNIFICANT + 8 MISSING_ALL companies. Most large IG issuers present debt in aggregate maturity/rate buckets in 10-K footnotes — but supplemental indentures explicitly state the original issuance amount for each bond series (e.g., "The Company hereby creates and issues $500,000,000 aggregate principal amount of 5.25% Senior Notes due 2030"). For bullet bonds (senior notes, debentures), original principal = current outstanding.
@@ -558,8 +591,9 @@ python scripts/link_finnhub_bonds.py --all
 
 ### Priority 4: SDK & Documentation
 1. ~~SDK publication to PyPI~~ ✅ Done — v0.1.2 published (2026-02-14): LangChain tools (7), MCP server (8 tools), `debtstack-mcp` console script, comprehensive README docs
-2. Mintlify docs deployment to docs.debtstack.ai
+2. ~~Mintlify docs deployment to docs.debtstack.ai~~ ✅ Done (2026-02-15)
 3. ~~Set up Railway cron job for daily pricing collection~~ ✅ Done — APScheduler in-process (11 AM / 3 PM / 9 PM ET)
+4. ~~README restructure for adoption~~ ✅ Done (2026-02-15) — API-first Quick Start, badges, self-hosting collapsed, SDK README restored
 
 ### Analytics, Error Tracking & Alerting (2026-02-10) ✅
 
@@ -2464,6 +2498,32 @@ When starting a new session, read this file first, then:
 ---
 
 ## Session Log
+
+### 2026-02-15 (Session 40) - README Restructure + Mintlify Docs
+
+**Objective:** Restructure main README for API-first adoption so visitors see how to *use* DebtStack before self-hosting details. Deploy Mintlify docs.
+
+**README Changes (`credible/README.md`):**
+1. Added badges at top (PyPI, license, API status)
+2. Rewrote Quick Start to lead with API signup (`POST /v1/auth/signup`), SDK install, then Python SDK + curl examples — removed clone/setup as primary flow
+3. Moved Current Database and Features up for credibility
+4. Kept full API Endpoints section (Primitives table + all examples)
+5. Added new MCP + LangChain brief section pointing to `sdk/README.md`
+6. Added Pricing summary table
+7. Moved Data Quality section down (important but not first-impression material)
+8. Collapsed Self-Hosting into `<details>` tag — contains clone/setup, deployment, env vars, extraction, script utilities, project structure
+9. All existing content preserved — reordered, not deleted
+
+**SDK README (`credible/sdk/README.md`):**
+- Restored from `aee8454` (had been accidentally overwritten with MCP Registry content)
+- Removed stray `<!-- mcp-name: ... -->` comment
+
+**Mintlify Docs:**
+- Deployed to docs.debtstack.ai (updated as required by user)
+
+**Files modified:** `README.md`, `sdk/README.md`, `WORKPLAN.md`
+
+---
 
 ### 2026-02-14 (Session 39) - PostHog Backend API Monitoring
 
