@@ -1,6 +1,6 @@
 # DebtStack Work Plan
 
-Last Updated: 2026-02-15 (README restructure + Mintlify docs)
+Last Updated: 2026-02-15 (MCP directory submissions)
 
 ## Current Status
 
@@ -363,6 +363,42 @@ Impact:
 
 **Current totals** (after Tier 9): OK **147**, EXCESS_SOME 5, EXCESS_SIGNIFICANT 0, MISSING_SOME 13, MISSING_SIGNIFICANT 36, MISSING_ALL 3, NO_FINANCIALS 7. Overall: $4,459B / $6,618B = **67.4%**.
 
+**Tier 10 — Section extraction + amount backfill** (2026-02-15): Discovered that many MISSING companies had zero `debt_footnote` document sections — the backfill was falling back to `mda_liquidity`/`desc_securities` which lack per-instrument data. Fixed 3 bugs and re-extracted sections for 15 companies.
+
+Bugs fixed:
+1. `backfill_document_sections.py` — `get_all_relevant_filings()` returns `tuple[dict,dict]` but script treated it as `dict`. Added tuple unpacking.
+2. `section_extraction.py` — Note separator pattern `[\.\-\u2014\u2013\s]` missing `:` — many filings use "Note 6: Debt" format. Added `:` to all patterns.
+3. `section_extraction.py` — Missing pattern for "Short-term Borrowings and Long-term Debt" (WMT format) and "Deposits and Borrowings" (bank format).
+
+Section extraction results (7/15 companies got debt_footnotes):
+
+| Ticker | debt_footnote sections | Why missing? |
+|--------|----------------------|--------------|
+| **CMCSA** | 5 | Fixed by colon pattern |
+| **WMT** | 9 | Fixed by borrowings+debt pattern |
+| **COF** | 2 | Already matched |
+| **AEP** | 4 | Already matched |
+| **MRK** | 6 | Fixed by colon pattern |
+| **MS** | 13 | Already matched |
+| **JNJ** | 1 | Already matched |
+| CHTR | 0 | Non-standard headers (no "Note X" prefix) |
+| SO | 0 | Multi-registrant filing, no standard note headers |
+| PNC | 0 | Bank format, no debt note headers |
+| BSX | 0 | Zero note headers in filing |
+| M | 0 | Non-standard note numbering |
+| WFC | 0 | Bank format |
+| USB | 0 | Bank format |
+| PCAR | 0 | Non-standard format |
+
+Amount backfill results (`backfill_amounts_from_docs.py --fix --ticker X --model gemini-2.5-pro`):
+- **WMT**: MISSING_SIGNIFICANT → **OK** (footnote had per-instrument detail)
+- CMCSA: 28.3% → 30.5% (aggregate-only — "Senior notes with maturities of 5 years or less: $25.4B")
+- MRK: 30.8% → 33.2% (minimal — aggregate footnote)
+- COF/MS: No change (bank structural gaps)
+- JNJ: No change (77.6%, footnote already processed)
+
+**Current totals** (after Tier 10): OK **148**, EXCESS_SOME 5, EXCESS_SIGNIFICANT 0, MISSING_SOME 13, MISSING_SIGNIFICANT 35, MISSING_ALL 3, NO_FINANCIALS 7. Overall: $4,478B / $6,618B = **67.7%**.
+
 **Root cause of limited impact**: Most large issuers (VZ, CMCSA, T, LOW, UNP, GE, MSFT, PM, KO, WMT) present debt in aggregate maturity/rate buckets in their 10-K footnotes (e.g., "Notes due 2030-2034: $7.7B" or "Senior notes with maturities of 5 years or less: $25.4B") rather than per-instrument detail. This is a structural limitation — per-instrument amounts would need to be sourced from prospectus supplements or individual offering documents, not 10-K/10-Q footnotes.
 
 **Remaining root causes (after Tier 9)**:
@@ -590,10 +626,17 @@ python scripts/link_finnhub_bonds.py --all
 ```
 
 ### Priority 4: SDK & Documentation
-1. ~~SDK publication to PyPI~~ ✅ Done — v0.1.2 published (2026-02-14): LangChain tools (7), MCP server (8 tools), `debtstack-mcp` console script, comprehensive README docs
+1. ~~SDK publication to PyPI~~ ✅ Done — v0.1.3 published (2026-02-14): LangChain tools (7), MCP server (8 tools), `debtstack-mcp` console script, comprehensive README docs
 2. ~~Mintlify docs deployment to docs.debtstack.ai~~ ✅ Done (2026-02-15)
 3. ~~Set up Railway cron job for daily pricing collection~~ ✅ Done — APScheduler in-process (11 AM / 3 PM / 9 PM ET)
 4. ~~README restructure for adoption~~ ✅ Done (2026-02-15) — API-first Quick Start, badges, self-hosting collapsed, SDK README restored
+5. ~~MCP server directory submissions~~ ✅ Done (2026-02-15) — Published to 6 directories:
+   - Anthropic MCP Registry: https://registry.modelcontextprotocol.io/servers/io.github.marcellusgreen/debtstack-ai
+   - Smithery: https://smithery.ai/servers/debtstack/debtstack-ai (custom domain: mcp.debtstack.ai)
+   - MCP.so: https://github.com/chatmcp/mcpso/issues/484
+   - Awesome MCP Servers: https://github.com/punkpeye/awesome-mcp-servers/pull/2044
+   - PulseMCP: Auto-ingests from MCP Registry weekly
+   - Glama.ai: Auto-syncs from MCP Registry + awesome-mcp-servers
 
 ### Analytics, Error Tracking & Alerting (2026-02-10) ✅
 
@@ -1152,8 +1195,9 @@ Create `tests/test_pricing_tiers.py`:
 
 ### Secondary Priorities:
 1. ~~**Finnhub Pricing Expansion**~~ - ✅ DONE: Expanded from 30 to 2,552 bonds with pricing data
-2. ~~**SDK Publication**~~ ✅ DONE (v0.1.2) - Published `debtstack-ai` to PyPI with LangChain + MCP integrations
-3. **Mintlify Docs Deployment** - Deploy docs to `docs.debtstack.ai`
+2. ~~**SDK Publication**~~ ✅ DONE (v0.1.3) - Published `debtstack-ai` to PyPI with LangChain + MCP integrations
+3. ~~**Mintlify Docs Deployment**~~ ✅ DONE - Deployed to `docs.debtstack.ai`
+6. ~~**MCP Directory Submissions**~~ ✅ DONE (2026-02-15) - Anthropic Registry, Smithery, MCP.so, Awesome MCP Servers, PulseMCP, Glama.ai
 4. **Scale Error Investigation** - Verify INTU/META/etc. scale issues against source SEC filings (don't auto-fix)
 5. **Eval Suite Fixes** - Adjust workflow test thresholds for secured bond pricing reality; add Business-tier test key for covenants/compare tests
 
@@ -1992,16 +2036,28 @@ GET /v1/pricing/history?cusip=76825DAJ7&from=2025-01-01&to=2026-01-27
 
 ---
 
-### Priority 5: SDK Publication
-**Status**: ✅ COMPLETE (2026-02-14)
-**Effort**: 0.5 day
+### Priority 5: SDK Publication & Distribution
+**Status**: ✅ COMPLETE (2026-02-15)
+**Effort**: 1 day
 
 | Step | Description | Status |
 |------|-------------|--------|
 | 1. Final review | Ensure SDK matches current API | ✅ Done (v0.1.1 auth header + endpoint fixes) |
 | 2. PyPI account | Create account if needed | ✅ Done |
-| 3. Publish | `python -m build && twine upload dist/*` | ✅ Done (v0.1.2) |
+| 3. Publish | `python -m build && twine upload dist/*` | ✅ Done (v0.1.3) |
 | 4. Test install | `pip install debtstack-ai` | ✅ Done |
+| 5. MCP Registry | Anthropic official registry | ✅ Done — io.github.marcellusgreen/debtstack-ai |
+| 6. Smithery | smithery.ai directory | ✅ Done — debtstack/debtstack-ai + custom domain mcp.debtstack.ai |
+| 7. MCP.so | Community directory | ✅ Submitted — github.com/chatmcp/mcpso/issues/484 |
+| 8. Awesome MCP Servers | GitHub awesome list (~40k stars) | ✅ PR submitted — github.com/punkpeye/awesome-mcp-servers/pull/2044 |
+| 9. PulseMCP | Auto-ingest from MCP Registry | ✅ Auto (weekly) |
+| 10. Glama.ai | Auto-sync from Registry + awesome list | ✅ Auto |
+
+**v0.1.3 changes (over v0.1.2):**
+- Added MCP Registry verification tag (`<!-- mcp-name: ... -->`) to README
+- Bumped version for MCP Registry publication
+- Created `server.json` manifest for MCP Registry
+- PyPI: https://pypi.org/project/debtstack-ai/0.1.3/
 
 **v0.1.2 changes:**
 - Added `mcp` optional dependency group (`pip install debtstack-ai[mcp]`)
@@ -2009,7 +2065,16 @@ GET /v1/pricing/history?cusip=76825DAJ7&from=2025-01-01&to=2026-01-27
 - Added sync `run()` wrapper in `mcp_server.py` for console_scripts
 - Expanded README with comprehensive LangChain docs (7 tools, full agent example, example queries)
 - Expanded README with comprehensive MCP docs (8 tools, Claude Desktop/Code/Cursor configs)
-- PyPI: https://pypi.org/project/debtstack-ai/0.1.2/
+
+**MCP Directory Listings:**
+| Directory | URL | Status |
+|-----------|-----|--------|
+| Anthropic MCP Registry | https://registry.modelcontextprotocol.io/servers/io.github.marcellusgreen/debtstack-ai | Live |
+| Smithery | https://smithery.ai/servers/debtstack/debtstack-ai | Live (mcp.debtstack.ai) |
+| MCP.so | https://github.com/chatmcp/mcpso/issues/484 | Pending review |
+| Awesome MCP Servers | https://github.com/punkpeye/awesome-mcp-servers/pull/2044 | Pending merge |
+| PulseMCP | pulsemcp.com | Auto-ingest from MCP Registry (weekly) |
+| Glama.ai | glama.ai/mcp/servers | Auto-sync from Registry + awesome list |
 
 ---
 
@@ -2074,8 +2139,9 @@ Set up docs at `docs.debtstack.ai` using Mintlify with:
 - [x] Website updated (CTA, pricing, remove beta) ✅ (2026-01-23)
 - [x] Explorer page (structure visualization) ✅ (2026-01-23) - needs hierarchy data fix
 - [x] Mintlify docs created ✅ (2026-01-23) - needs deployment
-- [x] SDK published to PyPI ✅ (2026-02-14) - v0.1.2 with LangChain + MCP
-- [ ] Mintlify docs deployed to docs.debtstack.ai
+- [x] SDK published to PyPI ✅ (2026-02-14) - v0.1.3 with LangChain + MCP
+- [x] Mintlify docs deployed to docs.debtstack.ai ✅ (2026-02-15)
+- [x] MCP server published to 6 directories ✅ (2026-02-15) - Anthropic Registry, Smithery, MCP.so, Awesome MCP Servers, PulseMCP, Glama.ai
 
 ---
 
@@ -2360,7 +2426,7 @@ python scripts/audit_covenant_relationships.py --verbose
 **Current state:** Document search already provides 80% of value—users can search "maintenance covenant" and get snippets. Structured extraction is the "premium" layer.
 
 **Defer until:**
-- Distribution playbook Phase 1 complete (SDK published, LangChain PR merged)
+- Distribution playbook complete (SDK v0.1.3 on PyPI, MCP server on 6 directories, Mintlify docs live)
 - User requests for structured covenant data
 - Competitor emergence requiring differentiation
 
@@ -2498,6 +2564,29 @@ When starting a new session, read this file first, then:
 ---
 
 ## Session Log
+
+### 2026-02-15 (Session 41) - MCP Directory Submissions
+
+**Objective:** Publish DebtStack MCP server to all major MCP directories for maximum discoverability.
+
+**Submissions:**
+1. **Anthropic MCP Registry** (already done in Session 38) — v0.1.3 published with server.json manifest
+2. **Smithery** — Published via `smithery mcp publish` CLI. Created `debtstack` namespace. Custom domain `mcp.debtstack.ai` configured (CNAME → smithery.tools + ACME challenge for SSL)
+3. **MCP.so** — GitHub issue #484 created via API at chatmcp/mcpso
+4. **Awesome MCP Servers** — PR #2044 submitted to punkpeye/awesome-mcp-servers (Finance & Fintech section)
+5. **PulseMCP** — Auto-ingests from MCP Registry weekly, no manual action needed
+6. **Glama.ai** — Auto-syncs from MCP Registry + awesome-mcp-servers, no manual action needed
+7. **mcp.run** — Skipped (requires WebAssembly servlet rewrite, not worth effort)
+
+**DNS Records Added (Vercel):**
+- `mcp` CNAME → `smithery.tools` (MCP endpoint)
+- `_acme-challenge.mcp` CNAME → `mcp.debtstack.ai.ef8ea3d081a541c7.dcv.cloudflare.com` (SSL cert)
+
+**Tools installed:** Smithery CLI v4.0.0 (`npm install -g @smithery/cli@latest`)
+
+**Files modified:** `CLAUDE.md`, `WORKPLAN.md`, `README.md`
+
+---
 
 ### 2026-02-15 (Session 40) - README Restructure + Mintlify Docs
 

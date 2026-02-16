@@ -364,6 +364,14 @@ DebtStack integrates with AI agent frameworks out of the box:
 - **LangChain**: 7 tools for building credit analysis agents with any LLM. `pip install debtstack-ai[langchain]`
 - **MCP Server**: 8 tools for Claude Desktop, Claude Code, and Cursor. `pip install debtstack-ai[mcp]`
 
+**MCP Server Directories:**
+
+| Directory | Link |
+|-----------|------|
+| Anthropic MCP Registry | [registry.modelcontextprotocol.io](https://registry.modelcontextprotocol.io/servers/io.github.marcellusgreen/debtstack-ai) |
+| Smithery | [smithery.ai](https://smithery.ai/servers/debtstack/debtstack-ai) |
+| MCP Endpoint | [mcp.debtstack.ai](https://mcp.debtstack.ai) |
+
 See [`sdk/README.md`](sdk/README.md) for setup instructions, tool lists, and example queries.
 
 ## Pricing

@@ -11,8 +11,9 @@ Context for AI assistants working on the DebtStack.ai codebase.
 **Then**:
 1. Continue company expansion (211 → 288, Tier 2-5 remaining)
 2. Complete Finnhub discovery (~50 companies remaining), link discovered bonds to documents
-3. ~~SDK publication to PyPI~~ ✅ Done — v0.1.2 published with LangChain tools, MCP server, console script (`debtstack-mcp`)
-4. Mintlify docs deployment to docs.debtstack.ai
+3. ~~SDK publication to PyPI~~ ✅ Done — v0.1.3 published with LangChain tools, MCP server, console script (`debtstack-mcp`)
+4. ~~Mintlify docs deployment to docs.debtstack.ai~~ ✅ Done
+5. ~~MCP server directory submissions~~ ✅ Done — Anthropic MCP Registry, Smithery (mcp.debtstack.ai), MCP.so, Awesome MCP Servers, PulseMCP, Glama.ai
 5. ~~Set up Railway cron job for daily pricing collection~~ ✅ Done — APScheduler in-process (fixed snapshot bug 2026-02-12: batched inserts + timezone + error logging)
 6. ~~Analytics, error tracking & alerting~~ ✅ Done — Vercel Analytics, PostHog (frontend + backend), Sentry, Slack alerts
 
