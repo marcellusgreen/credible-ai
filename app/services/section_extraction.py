@@ -81,30 +81,35 @@ EXHIBIT_22_PATTERNS = [
 # SEC API renders content without newlines, so we use lookahead to next Note
 # Some companies use "Note X" prefix, others just use "X." (number with period)
 DEBT_FOOTNOTE_PATTERNS = [
-    # "Note X - Debt" or "Note X—Debt" (em-dash) - capture until next Note
-    r"(?i)(Note\s*\d+[\.\-\u2014\u2013\s]+(?:Long[\-\u2014\u2013\s]*Term\s+)?Debt)\s*[.\s](.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
-    r"(?i)(Note\s*\d+[\.\-\u2014\u2013\s]+Debt\s+and\s+(?:Credit\s+)?Facilities)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
-    r"(?i)(Note\s*\d+[\.\-\u2014\u2013\s]+Borrowings)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
-    r"(?i)(Note\s*\d+[\.\-\u2014\u2013\s]+Notes\s+Payable)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
+    # Note separator: matches ".", "-", ":", em-dash, en-dash, whitespace
+    # "Note X - Debt", "Note X: Debt", "Note X—Debt" (em-dash) - capture until next Note
+    r"(?i)(Note\s*\d+[\.\-:\u2014\u2013\s]+(?:Long[\-\u2014\u2013\s]*Term\s+)?Debt)\s*[.\s](.{1000,}?)(?=Note\s*\d+[\.\-:\u2014\u2013]|\Z)",
+    r"(?i)(Note\s*\d+[\.\-:\u2014\u2013\s]+Debt\s+and\s+(?:Credit\s+)?Facilities)\s*(.{1000,}?)(?=Note\s*\d+[\.\-:\u2014\u2013]|\Z)",
+    r"(?i)(Note\s*\d+[\.\-:\u2014\u2013\s]+Borrowings)\s*(.{1000,}?)(?=Note\s*\d+[\.\-:\u2014\u2013]|\Z)",
+    r"(?i)(Note\s*\d+[\.\-:\u2014\u2013\s]+Notes\s+Payable)\s*(.{1000,}?)(?=Note\s*\d+[\.\-:\u2014\u2013]|\Z)",
     # Additional patterns for variations
-    r"(?i)(Note\s*\d+[\.\-\u2014\u2013\s]+Financing\s+Arrangements?)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
-    r"(?i)(Note\s*\d+[\.\-\u2014\u2013\s]+(?:Short[\-\s]*Term\s+and\s+)?Long[\-\s]*Term\s+Debt)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
-    r"(?i)(Note\s*\d+[\.\-\u2014\u2013\s]+Credit\s+Facilities?\s+and\s+Debt)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
-    r"(?i)(Note\s*\d+[\.\-\u2014\u2013\s]+Indebtedness)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
+    r"(?i)(Note\s*\d+[\.\-:\u2014\u2013\s]+Financing\s+Arrangements?)\s*(.{1000,}?)(?=Note\s*\d+[\.\-:\u2014\u2013]|\Z)",
+    r"(?i)(Note\s*\d+[\.\-:\u2014\u2013\s]+(?:Short[\-\s]*Term\s+and\s+)?Long[\-\s]*Term\s+Debt)\s*(.{1000,}?)(?=Note\s*\d+[\.\-:\u2014\u2013]|\Z)",
+    # "Short-term Borrowings and Long-term Debt" (WMT format)
+    r"(?i)(Note\s*\d+[\.\-:\u2014\u2013\s]+Short[\-\s]*[Tt]erm\s+Borrowings?\s+and\s+Long[\-\s]*[Tt]erm\s+Debt)\s*(.{1000,}?)(?=Note\s*\d+[\.\-:\u2014\u2013]|\Z)",
+    # "Deposits and Borrowings" (bank format - COF, USB)
+    r"(?i)(Note\s*\d+[\.\-:\u2014\u2013\s]+Deposits?\s+and\s+Borrowings?)\s*(.{1000,}?)(?=Note\s*\d+[\.\-:\u2014\u2013]|\Z)",
+    r"(?i)(Note\s*\d+[\.\-:\u2014\u2013\s]+Credit\s+Facilities?\s+and\s+Debt)\s*(.{1000,}?)(?=Note\s*\d+[\.\-:\u2014\u2013]|\Z)",
+    r"(?i)(Note\s*\d+[\.\-:\u2014\u2013\s]+Indebtedness)\s*(.{1000,}?)(?=Note\s*\d+[\.\-:\u2014\u2013]|\Z)",
     # "Long-Term Obligations" (used by KDP, others)
-    r"(?i)(Note\s*\d+[\.\-\u2014\u2013\s]+Long[\-\s]*Term\s+Obligations?)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
+    r"(?i)(Note\s*\d+[\.\-:\u2014\u2013\s]+Long[\-\s]*Term\s+Obligations?)\s*(.{1000,}?)(?=Note\s*\d+[\.\-:\u2014\u2013]|\Z)",
     # "Senior Notes" or "Debt Securities"
-    r"(?i)(Note\s*\d+[\.\-\u2014\u2013\s]+Senior\s+Notes)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
-    r"(?i)(Note\s*\d+[\.\-\u2014\u2013\s]+Debt\s+Securities)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
+    r"(?i)(Note\s*\d+[\.\-:\u2014\u2013\s]+Senior\s+Notes)\s*(.{1000,}?)(?=Note\s*\d+[\.\-:\u2014\u2013]|\Z)",
+    r"(?i)(Note\s*\d+[\.\-:\u2014\u2013\s]+Debt\s+Securities)\s*(.{1000,}?)(?=Note\s*\d+[\.\-:\u2014\u2013]|\Z)",
     # Numbered sections without "Note" prefix: "3. Long-Term Obligations"
     # Used by KDP and others - "X. Long-Term Obligations and Borrowing Arrangements"
     r"(?i)(\d+\.\s*Long[\-\s]*Term\s+Obligations?\s*(?:and\s+Borrowing\s+Arrangements?)?)(.{1000,}?)(?=\d+\.\s*[A-Z]|\Z)",
     r"(?i)(\d+\.\s*(?:Long[\-\s]*Term\s+)?Debt(?:\s+and\s+(?:Credit\s+)?Facilities)?)(.{1000,}?)(?=\d+\.\s*[A-Z]|\Z)",
     r"(?i)(\d+\.\s*Borrowings?\s*(?:and\s+(?:Credit\s+)?(?:Facilities|Arrangements))?)(.{1000,}?)(?=\d+\.\s*[A-Z]|\Z)",
     # Pattern without "Note X" prefix - just section headers
-    r"(?i)(Long[\-\s]*Term\s+Debt\s+and\s+(?:Credit\s+)?Facilities)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|Item\s+\d|\Z)",
+    r"(?i)(Long[\-\s]*Term\s+Debt\s+and\s+(?:Credit\s+)?Facilities)\s*(.{1000,}?)(?=Note\s*\d+[\.\-:\u2014\u2013]|Item\s+\d|\Z)",
     # Look for debt schedule tables (common format)
-    r"(?i)(The\s+components\s+of\s+(?:long[\-\s]*term\s+)?debt)\s*(.{1000,}?)(?=Note\s*\d+[\.\-\u2014\u2013]|\Z)",
+    r"(?i)(The\s+components\s+of\s+(?:long[\-\s]*term\s+)?debt)\s*(.{1000,}?)(?=Note\s*\d+[\.\-:\u2014\u2013]|\Z)",
 ]
 
 # Pattern for MD&A Liquidity section

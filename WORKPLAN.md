@@ -1,6 +1,6 @@
 # DebtStack Work Plan
 
-Last Updated: 2026-02-15 (MCP directory submissions)
+Last Updated: 2026-02-15 (README restructure, Tier 10 fixes, Railway port fix)
 
 ## Current Status
 
@@ -2613,9 +2613,9 @@ When starting a new session, read this file first, then:
 
 ---
 
-### 2026-02-15 (Session 40) - README Restructure + Mintlify Docs
+### 2026-02-15 (Session 40) - README Restructure, Tier 10 Fixes, Railway Port Fix
 
-**Objective:** Restructure main README for API-first adoption so visitors see how to *use* DebtStack before self-hosting details. Deploy Mintlify docs.
+**Objective:** Restructure main README for API-first adoption. Commit Tier 10 section extraction bug fixes. Fix Railway deployment crash.
 
 **README Changes (`credible/README.md`):**
 1. Added badges at top (PyPI, license, API status)
@@ -2635,7 +2635,19 @@ When starting a new session, read this file first, then:
 **Mintlify Docs:**
 - Deployed to docs.debtstack.ai (updated as required by user)
 
-**Files modified:** `README.md`, `sdk/README.md`, `WORKPLAN.md`
+**Tier 10 Section Extraction Fixes (`app/services/section_extraction.py`):**
+- Fixed 3 bugs causing zero `debt_footnote` extraction for many companies:
+  1. Added `:` to note separator character class (matches "Note 6: Debt" used by CMCSA, etc.)
+  2. Added "Short-term Borrowings and Long-term Debt" pattern (WMT format)
+  3. Added "Deposits and Borrowings" pattern (bank format — COF, USB)
+- Fixed tuple unpacking bug in `backfill_document_sections.py` — `get_all_relevant_filings()` returns `(filings_content, filing_urls)` tuple
+- Fixed encoding error in `fix_pld_debt_amounts.py` preview output
+
+**Railway Port Fix (`railway.json`):**
+- Railway `startCommand` was passing `$PORT` as literal string (exec, no shell)
+- Fixed by wrapping in `sh -c 'uvicorn ... --port ${PORT:-8000}'`
+
+**Files modified:** `README.md`, `sdk/README.md`, `WORKPLAN.md`, `CLAUDE.md`, `railway.json`, `app/services/section_extraction.py`, `scripts/backfill_document_sections.py`, `scripts/fix_pld_debt_amounts.py`
 
 ---
 

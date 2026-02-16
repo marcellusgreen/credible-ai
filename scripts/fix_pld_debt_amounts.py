@@ -288,7 +288,8 @@ async def main():
 
         # Show a preview of the debt note
         print(f"\nDebt note preview (first 500 chars):")
-        print(debt_note[:500])
+        preview = debt_note[:500].encode('ascii', errors='replace').decode('ascii')
+        print(preview)
         print("...")
 
         # Step 3: Build instrument list and call Gemini

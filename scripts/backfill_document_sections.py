@@ -61,7 +61,12 @@ async def download_filings(ticker: str, cik: str, sec_api_key: str = None) -> di
     if sec_api_key:
         print(f"    Downloading via SEC-API...")
         sec_client = SecApiClient(sec_api_key)
-        filings = await sec_client.get_all_relevant_filings(ticker, cik=cik)
+        result = await sec_client.get_all_relevant_filings(ticker, cik=cik)
+        # get_all_relevant_filings returns (filings_content, filing_urls) tuple
+        if isinstance(result, tuple):
+            filings = result[0]
+        else:
+            filings = result
         exhibit_21 = sec_client.get_exhibit_21(ticker)
         if exhibit_21:
             filings['exhibit_21'] = exhibit_21
