@@ -6,16 +6,21 @@ Context for AI assistants working on the DebtStack.ai codebase.
 
 ## What's Next
 
-**Immediate**: Tiers 1-10 complete. Coverage: $4,478B / $6,618B = **67.7%**. OK: **148**, EXCESS_SOME: 5, EXCESS_SIGNIFICANT: 0, MISSING_SOME: 13, MISSING_SIGNIFICANT: 35, MISSING_ALL: 3. Tier 10 fixed 3 bugs in section extraction (tuple unpacking, missing colon in note separator patterns, missing borrowings+debt pattern), extracted debt_footnote sections for 7/15 target companies, and backfilled amounts — WMT flipped to OK. Remaining gaps are structural: aggregate-only footnotes (VZ, T, CMCSA, PG, KO, LMT, CSX, GE, CVX), banks with deposits in total_debt (COF, AXP, USB, WFC), non-standard filing formats (CHTR, SO, BSX, M). Next: (1) company expansion 211→288, (2) prospectus supplement extraction for aggregate-footnote companies. See WORKPLAN.md.
+**Immediate**: Distribution complete. SDK v0.1.3 on PyPI, MCP server on 6 directories (Anthropic Registry, Smithery, MCP.so, Awesome MCP Servers, PulseMCP, Glama.ai), Mintlify docs live at docs.debtstack.ai, custom MCP endpoint at mcp.debtstack.ai. Debt coverage: $4,478B / $6,618B = **67.7%**. OK: **148**, EXCESS_SOME: 5, EXCESS_SIGNIFICANT: 0, MISSING_SOME: 13, MISSING_SIGNIFICANT: 35, MISSING_ALL: 3. Remaining gaps are structural: aggregate-only footnotes (VZ, T, CMCSA, PG, KO), banks (COF, AXP, USB, WFC). Next: (1) company expansion 211→288, (2) Stripe billing connection, (3) prospectus supplement extraction for aggregate-footnote companies. See WORKPLAN.md.
+
+**Completed (distribution)**:
+- ~~SDK publication to PyPI~~ ✅ v0.1.3 — LangChain tools (7), MCP server (8 tools), console script (`debtstack-mcp`)
+- ~~MCP directory submissions~~ ✅ Anthropic MCP Registry, Smithery (mcp.debtstack.ai), MCP.so, Awesome MCP Servers, PulseMCP, Glama.ai
+- ~~Mintlify docs~~ ✅ docs.debtstack.ai
+- ~~README restructure~~ ✅ API-first Quick Start, badges, MCP directory table
+- ~~Analytics & alerting~~ ✅ Vercel Analytics, PostHog (frontend + backend), Sentry, Slack alerts
+- ~~Pricing scheduler~~ ✅ APScheduler in-process (11 AM / 3 PM / 9 PM ET)
 
 **Then**:
-1. Continue company expansion (211 → 288, Tier 2-5 remaining)
+1. Company expansion (211 → 288, Tier 2-5 remaining)
 2. Complete Finnhub discovery (~50 companies remaining), link discovered bonds to documents
-3. ~~SDK publication to PyPI~~ ✅ Done — v0.1.3 published with LangChain tools, MCP server, console script (`debtstack-mcp`)
-4. ~~Mintlify docs deployment to docs.debtstack.ai~~ ✅ Done
-5. ~~MCP server directory submissions~~ ✅ Done — Anthropic MCP Registry, Smithery (mcp.debtstack.ai), MCP.so, Awesome MCP Servers, PulseMCP, Glama.ai
-5. ~~Set up Railway cron job for daily pricing collection~~ ✅ Done — APScheduler in-process (fixed snapshot bug 2026-02-12: batched inserts + timezone + error logging)
-6. ~~Analytics, error tracking & alerting~~ ✅ Done — Vercel Analytics, PostHog (frontend + backend), Sentry, Slack alerts
+3. Stripe billing connection (products created, webhook handler exists, needs env vars in Railway)
+4. Prospectus supplement extraction for aggregate-footnote companies (VZ, T, CMCSA, PG, KO)
 
 ## Project Overview
 

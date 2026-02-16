@@ -2352,7 +2352,7 @@ python scripts/enrich_ownership_opencorporates.py --all
 - Won't help with US (Delaware) or offshore (Bermuda) - those registries don't disclose ownership
 
 **Defer until:**
-- Core product distribution complete (SDK, docs)
+- ~~Core product distribution complete (SDK, docs, MCP directories)~~ ✅ DONE
 - User requests for better ownership coverage
 - OpenCorporates API access approved
 
@@ -2565,24 +2565,49 @@ When starting a new session, read this file first, then:
 
 ## Session Log
 
-### 2026-02-15 (Session 41) - MCP Directory Submissions
+### 2026-02-15 (Session 41) - MCP Directory Submissions + Distribution Complete
 
-**Objective:** Publish DebtStack MCP server to all major MCP directories for maximum discoverability.
+**Objective:** Publish DebtStack MCP server to all major MCP directories for maximum discoverability. Complete distribution pipeline.
 
-**Submissions:**
-1. **Anthropic MCP Registry** (already done in Session 38) — v0.1.3 published with server.json manifest
-2. **Smithery** — Published via `smithery mcp publish` CLI. Created `debtstack` namespace. Custom domain `mcp.debtstack.ai` configured (CNAME → smithery.tools + ACME challenge for SSL)
-3. **MCP.so** — GitHub issue #484 created via API at chatmcp/mcpso
-4. **Awesome MCP Servers** — PR #2044 submitted to punkpeye/awesome-mcp-servers (Finance & Fintech section)
+**MCP Directory Submissions:**
+1. **Anthropic MCP Registry** (done in prior session) — v0.1.3 published with server.json manifest. Live at registry.modelcontextprotocol.io
+2. **Smithery** — Published via `smithery mcp publish` CLI. Created `debtstack` namespace. Custom domain `mcp.debtstack.ai` configured with DNS (CNAME → smithery.tools + ACME challenge for SSL). SSL verified working.
+3. **MCP.so** — GitHub issue #484 created via API at chatmcp/mcpso (pending review)
+4. **Awesome MCP Servers** — PR #2044 submitted to punkpeye/awesome-mcp-servers Finance & Fintech section (pending merge)
 5. **PulseMCP** — Auto-ingests from MCP Registry weekly, no manual action needed
 6. **Glama.ai** — Auto-syncs from MCP Registry + awesome-mcp-servers, no manual action needed
 7. **mcp.run** — Skipped (requires WebAssembly servlet rewrite, not worth effort)
+
+**Smithery Setup Details:**
+- Installed Smithery CLI v4.0.0 (`npm install -g @smithery/cli@latest`)
+- Authenticated via `smithery auth login` (browser-based)
+- Created namespace: `smithery namespace create debtstack`
+- Published with config schema (DEBTSTACK_API_KEY required)
+- Custom domain configured in Smithery dashboard + Vercel DNS
 
 **DNS Records Added (Vercel):**
 - `mcp` CNAME → `smithery.tools` (MCP endpoint)
 - `_acme-challenge.mcp` CNAME → `mcp.debtstack.ai.ef8ea3d081a541c7.dcv.cloudflare.com` (SSL cert)
 
-**Tools installed:** Smithery CLI v4.0.0 (`npm install -g @smithery/cli@latest`)
+**Pending Actions (for next sessions):**
+- Check MCP.so issue #484 — should be approved/listed within a few days
+- Check Awesome MCP Servers PR #2044 — needs maintainer merge
+- PulseMCP auto-ingest should happen within 1 week
+- Smithery listing shows "No capabilities found" — could improve by adding tool descriptions in Smithery dashboard
+
+**Distribution Pipeline Complete:**
+| Channel | Status | URL |
+|---------|--------|-----|
+| PyPI | ✅ Live | pypi.org/project/debtstack-ai/ |
+| Anthropic MCP Registry | ✅ Live | registry.modelcontextprotocol.io/servers/io.github.marcellusgreen/debtstack-ai |
+| Smithery | ✅ Live | smithery.ai/servers/debtstack/debtstack-ai (mcp.debtstack.ai) |
+| MCP.so | ⏳ Pending | github.com/chatmcp/mcpso/issues/484 |
+| Awesome MCP Servers | ⏳ Pending | github.com/punkpeye/awesome-mcp-servers/pull/2044 |
+| PulseMCP | ⏳ Auto (weekly) | pulsemcp.com |
+| Glama.ai | ⏳ Auto | glama.ai/mcp/servers |
+| Mintlify Docs | ✅ Live | docs.debtstack.ai |
+| Website | ✅ Live | debtstack.ai |
+| API | ✅ Live | api.debtstack.ai |
 
 **Files modified:** `CLAUDE.md`, `WORKPLAN.md`, `README.md`
 
