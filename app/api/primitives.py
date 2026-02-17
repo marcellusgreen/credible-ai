@@ -128,18 +128,18 @@ async def search_companies(
     # Parse and validate fields
     selected_fields = parse_fields(fields, COMPANY_FIELDS)
 
-    # Build query
-    query = select(CompanyMetrics, Company).join(
-        Company, CompanyMetrics.company_id == Company.id
+    # Build query — LEFT JOIN so companies without metrics still appear
+    query = select(Company, CompanyMetrics).outerjoin(
+        CompanyMetrics, Company.id == CompanyMetrics.company_id
     )
-    count_query = select(func.count()).select_from(CompanyMetrics)
+    count_query = select(func.count()).select_from(Company)
 
     filters = []
 
     # Ticker filter (comma-separated)
     ticker_list = parse_comma_list(ticker)
     if ticker_list:
-        filters.append(CompanyMetrics.ticker.in_(ticker_list))
+        filters.append(Company.ticker.in_(ticker_list))
 
     # Classification filters
     if sector:
@@ -179,8 +179,8 @@ async def search_companies(
 
     if filters:
         query = query.where(and_(*filters))
-        count_query = count_query.join(
-            Company, CompanyMetrics.company_id == Company.id
+        count_query = count_query.outerjoin(
+            CompanyMetrics, Company.id == CompanyMetrics.company_id
         ).where(and_(*filters))
 
     # Get total count
@@ -188,7 +188,7 @@ async def search_companies(
 
     # Apply sorting
     sort_column_map = {
-        "ticker": CompanyMetrics.ticker,
+        "ticker": Company.ticker,
         "name": Company.name,
         "sector": CompanyMetrics.sector,
         "total_debt": CompanyMetrics.total_debt,
@@ -199,7 +199,7 @@ async def search_companies(
         "nearest_maturity": CompanyMetrics.nearest_maturity,
         "subordination_score": CompanyMetrics.subordination_score,
     }
-    query = apply_sort(query, sort, sort_column_map, CompanyMetrics.ticker)
+    query = apply_sort(query, sort, sort_column_map, Company.ticker)
 
     # Apply pagination
     query = query.offset(offset).limit(limit)
@@ -210,7 +210,7 @@ async def search_companies(
     # Fetch metadata if requested
     metadata_map = {}
     if include_metadata:
-        company_ids = [c.id for _, c in rows]
+        company_ids = [c.id for c, _ in rows]
         if company_ids:
             meta_result = await db.execute(
                 select(ExtractionMetadata).where(ExtractionMetadata.company_id.in_(company_ids))
@@ -220,39 +220,39 @@ async def search_companies(
 
     # Build response with field selection
     data = []
-    for m, c in rows:
+    for c, m in rows:
         company_data = {
-            "ticker": m.ticker,
+            "ticker": c.ticker,
             "name": c.name,
-            "sector": m.sector,
-            "industry": m.industry,
+            "sector": m.sector if m else None,
+            "industry": m.industry if m else None,
             "cik": c.cik,
-            "total_debt": m.total_debt,
-            "secured_debt": m.secured_debt,
-            "unsecured_debt": m.unsecured_debt,
-            "net_debt": m.net_debt,
-            "leverage_ratio": float(m.leverage_ratio) if m.leverage_ratio else None,
-            "net_leverage_ratio": float(m.net_leverage_ratio) if m.net_leverage_ratio else None,
-            "interest_coverage": float(m.interest_coverage) if m.interest_coverage else None,
-            "secured_leverage": float(m.secured_leverage) if m.secured_leverage else None,
-            "entity_count": m.entity_count,
-            "guarantor_count": m.guarantor_count,
-            "subordination_risk": m.subordination_risk,
-            "subordination_score": float(m.subordination_score) if m.subordination_score else None,
-            "has_structural_sub": m.has_structural_sub,
-            "has_floating_rate": m.has_floating_rate,
-            "has_near_term_maturity": m.has_near_term_maturity,
-            "has_holdco_debt": m.has_holdco_debt,
-            "has_opco_debt": m.has_opco_debt,
-            "has_unrestricted_subs": m.has_unrestricted_subs,
-            "nearest_maturity": m.nearest_maturity.isoformat() if m.nearest_maturity else None,
-            "weighted_avg_maturity": float(m.weighted_avg_maturity) if m.weighted_avg_maturity else None,
-            "debt_due_1yr": m.debt_due_1yr,
-            "debt_due_2yr": m.debt_due_2yr,
-            "debt_due_3yr": m.debt_due_3yr,
-            "sp_rating": m.sp_rating,
-            "moodys_rating": m.moodys_rating,
-            "rating_bucket": m.rating_bucket,
+            "total_debt": m.total_debt if m else None,
+            "secured_debt": m.secured_debt if m else None,
+            "unsecured_debt": m.unsecured_debt if m else None,
+            "net_debt": m.net_debt if m else None,
+            "leverage_ratio": float(m.leverage_ratio) if m and m.leverage_ratio else None,
+            "net_leverage_ratio": float(m.net_leverage_ratio) if m and m.net_leverage_ratio else None,
+            "interest_coverage": float(m.interest_coverage) if m and m.interest_coverage else None,
+            "secured_leverage": float(m.secured_leverage) if m and m.secured_leverage else None,
+            "entity_count": m.entity_count if m else None,
+            "guarantor_count": m.guarantor_count if m else None,
+            "subordination_risk": m.subordination_risk if m else None,
+            "subordination_score": float(m.subordination_score) if m and m.subordination_score else None,
+            "has_structural_sub": m.has_structural_sub if m else None,
+            "has_floating_rate": m.has_floating_rate if m else None,
+            "has_near_term_maturity": m.has_near_term_maturity if m else None,
+            "has_holdco_debt": m.has_holdco_debt if m else None,
+            "has_opco_debt": m.has_opco_debt if m else None,
+            "has_unrestricted_subs": m.has_unrestricted_subs if m else None,
+            "nearest_maturity": m.nearest_maturity.isoformat() if m and m.nearest_maturity else None,
+            "weighted_avg_maturity": float(m.weighted_avg_maturity) if m and m.weighted_avg_maturity else None,
+            "debt_due_1yr": m.debt_due_1yr if m else None,
+            "debt_due_2yr": m.debt_due_2yr if m else None,
+            "debt_due_3yr": m.debt_due_3yr if m else None,
+            "sp_rating": m.sp_rating if m else None,
+            "moodys_rating": m.moodys_rating if m else None,
+            "rating_bucket": m.rating_bucket if m else None,
         }
 
         # Add metadata if requested
@@ -275,7 +275,7 @@ async def search_companies(
                     "warnings": meta.warnings if meta.warnings else [],
                 })
             # Add leverage data quality info from source_filings
-            if m.source_filings:
+            if m and m.source_filings:
                 sf = m.source_filings
                 metadata["leverage_data_quality"] = {
                     "ebitda_source": sf.get("ebitda_source"),  # "annual_10k" or "quarterly_sum"
@@ -1785,15 +1785,15 @@ async def _batch_search_companies(params: dict, db: AsyncSession) -> dict:
 
     selected_fields = parse_fields(fields_param, COMPANY_FIELDS) if fields_param else None
 
-    query = select(CompanyMetrics, Company).join(
-        Company, CompanyMetrics.company_id == Company.id
+    query = select(Company, CompanyMetrics).outerjoin(
+        CompanyMetrics, Company.id == CompanyMetrics.company_id
     )
 
     filters = []
 
     ticker_list = parse_comma_list(ticker) if ticker else []
     if ticker_list:
-        filters.append(CompanyMetrics.ticker.in_(ticker_list))
+        filters.append(Company.ticker.in_(ticker_list))
     if sector:
         filters.append(CompanyMetrics.sector.ilike(f"%{sector}%"))
     if industry:
@@ -1823,20 +1823,20 @@ async def _batch_search_companies(params: dict, db: AsyncSession) -> dict:
         query = query.where(and_(*filters))
 
     # Count
-    count_query = select(func.count()).select_from(CompanyMetrics)
+    count_query = select(func.count()).select_from(Company)
     if filters:
-        count_query = count_query.join(Company, CompanyMetrics.company_id == Company.id).where(and_(*filters))
+        count_query = count_query.outerjoin(CompanyMetrics, Company.id == CompanyMetrics.company_id).where(and_(*filters))
     total = await db.scalar(count_query)
 
     # Sort
     sort_column_map = {
-        "ticker": CompanyMetrics.ticker,
+        "ticker": Company.ticker,
         "name": Company.name,
         "total_debt": CompanyMetrics.total_debt,
         "leverage_ratio": CompanyMetrics.leverage_ratio,
         "net_leverage_ratio": CompanyMetrics.net_leverage_ratio,
     }
-    query = apply_sort(query, sort, sort_column_map, CompanyMetrics.ticker)
+    query = apply_sort(query, sort, sort_column_map, Company.ticker)
     query = query.offset(offset).limit(limit)
 
     result = await db.execute(query)
@@ -1845,7 +1845,7 @@ async def _batch_search_companies(params: dict, db: AsyncSession) -> dict:
     # Fetch metadata if requested
     metadata_map = {}
     if include_metadata:
-        company_ids = [c.id for _, c in rows]
+        company_ids = [c.id for c, _ in rows]
         if company_ids:
             meta_result = await db.execute(
                 select(ExtractionMetadata).where(ExtractionMetadata.company_id.in_(company_ids))
@@ -1854,17 +1854,17 @@ async def _batch_search_companies(params: dict, db: AsyncSession) -> dict:
                 metadata_map[meta.company_id] = meta
 
     data = []
-    for m, c in rows:
+    for c, m in rows:
         company_data = {
-            "ticker": m.ticker,
+            "ticker": c.ticker,
             "name": c.name,
-            "sector": m.sector,
-            "total_debt": m.total_debt,
-            "leverage_ratio": float(m.leverage_ratio) if m.leverage_ratio else None,
-            "net_leverage_ratio": float(m.net_leverage_ratio) if m.net_leverage_ratio else None,
-            "has_structural_sub": m.has_structural_sub,
-            "has_floating_rate": m.has_floating_rate,
-            "has_near_term_maturity": m.has_near_term_maturity,
+            "sector": m.sector if m else None,
+            "total_debt": m.total_debt if m else None,
+            "leverage_ratio": float(m.leverage_ratio) if m and m.leverage_ratio else None,
+            "net_leverage_ratio": float(m.net_leverage_ratio) if m and m.net_leverage_ratio else None,
+            "has_structural_sub": m.has_structural_sub if m else None,
+            "has_floating_rate": m.has_floating_rate if m else None,
+            "has_near_term_maturity": m.has_near_term_maturity if m else None,
         }
 
         if include_metadata:
@@ -1877,7 +1877,7 @@ async def _batch_search_companies(params: dict, db: AsyncSession) -> dict:
                     "warnings": meta.warnings if meta.warnings else [],
                 })
             # Add leverage data quality info
-            if m.source_filings:
+            if m and m.source_filings:
                 sf = m.source_filings
                 metadata["leverage_data_quality"] = {
                     "ebitda_quarters": sf.get("ebitda_quarters"),
