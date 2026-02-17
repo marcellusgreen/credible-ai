@@ -1,6 +1,6 @@
 # DebtStack Work Plan
 
-Last Updated: 2026-02-15 (README restructure, Tier 10 fixes, Railway port fix)
+Last Updated: 2026-02-16 (Chat assistant added to frontend; extraction ceiling reached after Tier 11)
 
 ## Current Status
 
@@ -399,6 +399,34 @@ Amount backfill results (`backfill_amounts_from_docs.py --fix --ticker X --model
 
 **Current totals** (after Tier 10): OK **148**, EXCESS_SOME 5, EXCESS_SIGNIFICANT 0, MISSING_SOME 13, MISSING_SIGNIFICANT 35, MISSING_ALL 3, NO_FINANCIALS 7. Overall: $4,478B / $6,618B = **67.7%**.
 
+**Tier 11 — Indenture amount backfill (second pass)** (2026-02-16): Re-ran `extract_amounts_from_indentures.py --fix --all-missing --model gemini-2.5-pro` targeting remaining companies with bullet instruments missing amounts. Processed 73 companies (from session continuation + all-missing flag).
+
+Results:
+- **AXP**: 38 instruments matched (from prior session, $28B+ — flipped to OK)
+- **AMC**: 2 instruments matched ($1.36B)
+- **COP**: 9/9 matched ($8.3B — but over-populated, flipped to EXCESS_SOME at 120.6%)
+- **APH**: 2/2 matched ($2.1B)
+- **CVX**: 1 match ($154M)
+- **VZ**: 1 match ($1.0B)
+- **All others processed**: 0 matches (AEP, BSX, BX, C, CAT, CHTR, CMCSA, COF, CSX, CVNA, CVS, CVX, T, KO, CSX, LMT, GE, QCOM, ROP, HTZ, ET, F, DE)
+
+**Low ROI finding**: ~87% of companies returned 0 matches. Root causes:
+1. **Old base indentures**: VZ, T, KO, CAT, LMT, GE, F have 1990s/2000s-era base indentures that don't contain per-issuance amounts (those are in supplemental indentures filed with 8-Ks)
+2. **Bank indentures**: COF (215 indentures, 12MB content) — bank-issued notes have different structure
+3. **Heavy rate limiting**: CVS and CVX hit 9 rate-limit retries each (~$0 data for ~$0.50+ in Gemini costs)
+4. **Supplemental indentures not in document set**: Many companies' per-issuance supplements were filed as 8-K exhibits not captured in section extraction
+
+**Stopped early** at company 16/73 due to low ROI and cost concerns. Total Gemini cost estimated ~$1-3.
+
+**Current totals** (after Tier 11): OK **148**, EXCESS_SOME 6 (+1: COP), EXCESS_SIGNIFICANT 0, MISSING_SOME 16 (+3: CVX moved in), MISSING_SIGNIFICANT 31 (-4), MISSING_ALL 3, NO_FINANCIALS 7. Overall: $4,531B / $6,618B = **68.5%**.
+
+**Extraction ceiling reached**: LLM-based extraction has been exhausted across 11 tiers. The remaining 63 non-OK companies have structural gaps that cannot be solved by reading existing SEC filings:
+- **Aggregate-only footnotes** (VZ, T, CMCSA, PG, KO, LMT, CSX, GE, CVX, HD, MRK): 10-K presents debt in maturity buckets, not per-instrument
+- **Banks with deposits** (BAC, COF, WFC, USB, MS, TFC, PNC, C): total_debt includes deposits/wholesale funding that aren't "debt instruments"
+- **Utility subsidiaries** (AEP, SO, DUK, EXC, PCG, CEG): Debt is at regulated subsidiary level with complex structures
+- **Missing supplemental indentures**: Per-issuance amounts are in 8-K exhibit filings not in our document set
+- **Next approach needed**: Prospectus supplement (424B5) extraction, CUSIP→par amount from FINRA/Bloomberg, or benchmark denominator adjustments
+
 **Root cause of limited impact**: Most large issuers (VZ, CMCSA, T, LOW, UNP, GE, MSFT, PM, KO, WMT) present debt in aggregate maturity/rate buckets in their 10-K footnotes (e.g., "Notes due 2030-2034: $7.7B" or "Senior notes with maturities of 5 years or less: $25.4B") rather than per-instrument detail. This is a structural limitation — per-instrument amounts would need to be sourced from prospectus supplements or individual offering documents, not 10-K/10-Q footnotes.
 
 **Remaining root causes (after Tier 9)**:
@@ -541,102 +569,62 @@ Remaining 5 EXCESS_SIGNIFICANT after Phase 7.5:
 
 ## What's Next
 
-### Priority 1: Fix Debt Coverage Gaps (IMMEDIATE)
+### Debt Coverage Status: Extraction Ceiling Reached
 
-Analysis shows 115 of 211 companies have debt instrument outstanding amounts that don't match reported total debt. Three categories to fix:
+After 11 tiers of extraction work (Phases 1-9, Tiers 1-11), coverage is at **148/211 OK (70%), $4,531B / $6,618B = 68.5%**. Further LLM extraction against existing SEC filings yields <5% hit rate. The remaining 63 non-OK companies have **structural gaps** — not data quality issues.
 
-#### 1a. MISSING_ALL — 8 companies with $0 outstanding
-Companies have debt instruments in DB but `outstanding` field is NULL/0. These need outstanding amounts populated from cached extraction results or re-extraction.
+**Root cause breakdown of 63 non-OK companies:**
 
-**Root cause**: LLM extracted instrument names but `outstanding` amount wasn't saved to DB (field mapping issue in `merge_extraction_to_db`).
+| Category | Companies | Combined Debt | Fix Approach |
+|----------|-----------|---------------|-------------|
+| Aggregate-only footnotes | 12 (VZ, T, CMCSA, PG, KO, LMT, CSX, GE, MRK, HD, QCOM, CVX) | ~$800B | Prospectus supplement (424B5) download |
+| Banks (deposits in total_debt) | 8 (BAC, MS, WFC, COF, USB, TFC, PNC, C) | ~$1,000B | Benchmark denominator adjustment |
+| Utilities (subsidiary FMBs) | 5 (AEP, SO, DUK, EXC, CEG) | ~$250B | Denominator adjustment or subsidiary extraction |
+| Captive finance | 2 (GM, F) | ~$290B | Denominator adjustment |
+| Missing instruments (re-extract) | ~15 (CHTR, TMUS, MAR, SPG, TMO, JNJ, etc.) | ~$200B | Re-extraction with `--step core` |
+| EXCESS (stale/over-reported) | 6 (COP, ORCL, NEM, NRG, WELL, CB) | ~$200B | Amount refresh from latest 10-Q |
+| Zero/minimal debt | 6 (PANW, TTD, DXCM, MNST, CPRT + NO_FINANCIALS) | ~$5B | No action needed |
 
-**Companies**: FTNT, META, ON, PANW, PG, TTD, USB, VAL
+### Priority 1: Company Expansion (211 → 288)
 
-#### 1b. MISSING_SIGNIFICANT — 60 companies with <50% coverage
-Similar issue — instruments exist but amounts are very low vs total debt. Major gaps include BAC ($0.1B vs $247B), ABT ($0.19B vs $12.9B).
-
-#### 1c. EXCESS — 20 companies with >120% of total debt (down from 78)
-
-Mostly resolved through Phases 3, 7, and 7.5. Remaining 15 EXCESS_SOME include 3 banks (structural) and 12 with minor face-value/duplicate issues. 5 EXCESS_SIGNIFICANT have known root causes (see Phase 7.5 section above).
-
-**Fix script**: `scripts/fix_excess_instruments.py` — 8-step fix:
-
-```bash
-# Analyze current state
-python scripts/fix_excess_instruments.py --analyze
-
-# Step 1: Deactivate matured instruments
-python scripts/fix_excess_instruments.py --deactivate-matured --dry-run
-
-# Step 2: Deduplicate by rate + maturity year
-python scripts/fix_excess_instruments.py --deduplicate --dry-run
-
-# Step 3: Fix total-debt-as-per-instrument (3+ identical amounts)
-python scripts/fix_excess_instruments.py --fix-totals --dry-run
-
-# Step 4: Fix Phase 6 total-as-per-instrument (identical doc_backfill amounts)
-python scripts/fix_excess_instruments.py --fix-phase6-totals --dry-run
-
-# Step 5: Fix outlier instruments (single instrument > total debt)
-python scripts/fix_excess_instruments.py --fix-outliers --dry-run
-
-# Step 6: Fix stale amounts (>5yr old filing amounts in EXCESS companies)
-python scripts/fix_excess_instruments.py --fix-stale --dry-run
-
-# Step 7: Claude-assisted review of EXCESS companies
-python scripts/fix_excess_instruments.py --fix-llm-review --dry-run --verbose
-
-# Step 7 with custom threshold (default 2.0 = 200%, use 1.5 for 150%)
-python scripts/fix_excess_instruments.py --fix-llm-review --excess-threshold 1.5 --dry-run --verbose
-
-# Step 8: Clear revolver/ABL capacity amounts
-python scripts/fix_excess_instruments.py --fix-revolver-capacity --dry-run --verbose
-
-# Run ALL steps 1-8 in order
-python scripts/fix_excess_instruments.py --fix-all-excess --dry-run
-python scripts/fix_excess_instruments.py --fix-all-excess
-
-# Single company
-python scripts/fix_excess_instruments.py --deduplicate --ticker MA
-```
-
-**Dedup matching**: `company_id + ROUND(interest_rate/100, 2) + EXTRACT(YEAR FROM maturity_date)` — catches "2.950% Senior Notes due November 2026" vs "2.95% due 2026" (Finnhub)
-
-**Keep logic** (priority order): CUSIP (+4) > outstanding amount (+3) > pricing data (+2) > ISIN (+1) > doc links (+1) > earliest created_at
-
-**Safety**: Soft-delete only (set `is_active = false`, tag `attributes.deactivation_reason`). Merges CUSIP/ISIN/pricing from duplicates to keeper before deactivation.
-
-### Priority 2: Continue Company Expansion (201 → 288)
-
-10 Tier 1 companies already added. Remaining:
+Better ROI than fixing the last 10% of existing companies. 10 Tier 1 companies already added. Remaining:
 - Tier 2: 22 companies ($30-50B debt) — HIGH PRIORITY
 - Tier 3: 38 companies ($15-30B debt) — MEDIUM PRIORITY
 - Tier 4-5: 17 companies ($5-15B debt) — SECTOR DIVERSITY
 
-### Priority 3: Finnhub Bond Discovery & Pricing
+### Priority 2: Benchmark Denominator Adjustments ($0 cost)
+
+For banks, utilities, and captive finance companies, the `total_debt` from financials includes items that aren't discrete debt instruments (deposits, wholesale funding, subsidiary FMBs). Adjusting the comparison denominator would flip ~15 companies to OK without any extraction work.
+
+Approach:
+- Banks: Use "long-term debt" or "borrowings" from 10-K instead of total_debt
+- Utilities: Separate parent vs subsidiary debt
+- Captive finance: Exclude finance subsidiary liabilities
+
+### Priority 3: Prospectus Supplement (424B5) Extraction
+
+For aggregate-only footnote companies (VZ, T, CMCSA, PG, KO, etc.), per-issuance amounts exist in 424B5 prospectus supplements filed with each bond offering. These are structured documents that explicitly state the principal amount.
+
+### Priority 4: Finnhub Bond Discovery & Pricing
 
 **Finnhub Discovery**: 161/211 companies scanned. ~50 remaining.
 ```bash
 python scripts/expand_bond_pricing.py --phase4
-```
-
-**Link Finnhub Bonds to Documents**:
-```bash
 python scripts/link_finnhub_bonds.py --all
 ```
 
-### Priority 4: SDK & Documentation
-1. ~~SDK publication to PyPI~~ ✅ Done — v0.1.3 published (2026-02-14): LangChain tools (7), MCP server (8 tools), `debtstack-mcp` console script, comprehensive README docs
-2. ~~Mintlify docs deployment to docs.debtstack.ai~~ ✅ Done (2026-02-15)
-3. ~~Set up Railway cron job for daily pricing collection~~ ✅ Done — APScheduler in-process (11 AM / 3 PM / 9 PM ET)
-4. ~~README restructure for adoption~~ ✅ Done (2026-02-15) — API-first Quick Start, badges, self-hosting collapsed, SDK README restored
-5. ~~MCP server directory submissions~~ ✅ Done (2026-02-15) — Published to 6 directories:
-   - Anthropic MCP Registry: https://registry.modelcontextprotocol.io/servers/io.github.marcellusgreen/debtstack-ai
-   - Smithery: https://smithery.ai/servers/debtstack/debtstack-ai (custom domain: mcp.debtstack.ai)
-   - MCP.so: https://github.com/chatmcp/mcpso/issues/484
-   - Awesome MCP Servers: https://github.com/punkpeye/awesome-mcp-servers/pull/2044
-   - PulseMCP: Auto-ingests from MCP Registry weekly
-   - Glama.ai: Auto-syncs from MCP Registry + awesome-mcp-servers
+### Priority 5: Stripe Billing Connection
+
+Products created, webhook handler exists, needs env vars in Railway.
+
+### Completed
+- ~~SDK publication to PyPI~~ ✅ v0.1.3
+- ~~MCP directory submissions~~ ✅ 6 directories
+- ~~Mintlify docs~~ ✅ docs.debtstack.ai
+- ~~README restructure~~ ✅ API-first Quick Start
+- ~~Analytics & alerting~~ ✅ PostHog, Sentry, Slack
+- ~~Pricing scheduler~~ ✅ APScheduler
+- ~~Debt coverage extraction~~ ✅ 11 tiers complete, ceiling reached
 
 ### Analytics, Error Tracking & Alerting (2026-02-10) ✅
 

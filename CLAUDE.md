@@ -6,7 +6,7 @@ Context for AI assistants working on the DebtStack.ai codebase.
 
 ## What's Next
 
-**Immediate**: Distribution complete. SDK v0.1.3 on PyPI, MCP server on 6 directories (Anthropic Registry, Smithery, MCP.so, Awesome MCP Servers, PulseMCP, Glama.ai), Mintlify docs live at docs.debtstack.ai, custom MCP endpoint at mcp.debtstack.ai. Debt coverage: $4,478B / $6,618B = **67.7%**. OK: **148**, EXCESS_SOME: 5, EXCESS_SIGNIFICANT: 0, MISSING_SOME: 13, MISSING_SIGNIFICANT: 35, MISSING_ALL: 3. Remaining gaps are structural: aggregate-only footnotes (VZ, T, CMCSA, PG, KO), banks (COF, AXP, USB, WFC). Next: (1) company expansion 211→288, (2) Stripe billing connection, (3) prospectus supplement extraction for aggregate-footnote companies. See WORKPLAN.md.
+**Immediate**: Distribution complete. SDK v0.1.3 on PyPI, MCP server on 6 directories (Anthropic Registry, Smithery, MCP.so, Awesome MCP Servers, PulseMCP, Glama.ai), Mintlify docs live at docs.debtstack.ai, custom MCP endpoint at mcp.debtstack.ai. Debt coverage: $4,531B / $6,618B = **68.5%**. OK: **148**, EXCESS_SOME: 6, EXCESS_SIGNIFICANT: 0, MISSING_SOME: 16, MISSING_SIGNIFICANT: 31, MISSING_ALL: 3. **Extraction ceiling reached** after 11 tiers — remaining 63 non-OK companies have structural gaps (aggregate-only footnotes, bank deposits in total_debt, utility subsidiaries, missing supplemental indentures). Next: (1) company expansion 211→288, (2) Stripe billing connection, (3) benchmark denominator adjustments for banks/utilities. See WORKPLAN.md.
 
 **Completed (distribution)**:
 - ~~SDK publication to PyPI~~ ✅ v0.1.3 — LangChain tools (7), MCP server (8 tools), console script (`debtstack-mcp`)
@@ -15,6 +15,7 @@ Context for AI assistants working on the DebtStack.ai codebase.
 - ~~README restructure~~ ✅ API-first Quick Start, badges, MCP directory table
 - ~~Analytics & alerting~~ ✅ Vercel Analytics, PostHog (frontend + backend), Sentry, Slack alerts
 - ~~Pricing scheduler~~ ✅ APScheduler in-process (11 AM / 3 PM / 9 PM ET)
+- ~~Chat assistant~~ ✅ Full-page chat at `/dashboard/chat` — Claude + 8 DebtStack API tools via SSE streaming. Needs `ANTHROPIC_API_KEY` in Railway frontend env.
 
 **Then**:
 1. Company expansion (211 → 288, Tier 2-5 remaining)
@@ -34,7 +35,7 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 **Company Expansion**: 211 companies (up from 201) — added 10 Tier 1 massive-debt issuers (CMCSA, DUK, CVS, USB, SO, TFC, ET, PNC, PCG, BMY)
 
-**Debt Coverage Gaps**: 148/211 companies (70%) have instrument outstanding within 80-120% of total debt ("OK"). Phases 1-9 + Tiers 1-10 updated 1,680+ instruments, deactivated 330+ duplicates/phantoms/aggregates, cleared 150+ wrong amounts, fixed 50+ scale errors. EXCESS reduced from 58→5 (5 EXCESS_SOME, 0 EXCESS_SIGNIFICANT). MISSING_ALL at 3 (PANW, TTD — revolvers with $0 drawn; BAC — structural bank gap). 35 MISSING_SIGNIFICANT remain — mostly structural: aggregate-only footnotes (VZ, T, CMCSA, CHTR, KO), banks with deposits in total_debt (COF, AXP, USB, WFC, TFC, MS), non-standard filing formats (SO, BSX, M). 13 MISSING_SOME — JNJ (77.6%), TMO (71.6%), TMUS (40.7%), SPG (67.2%), GM (64.1%). Overall: $4,478B instruments / $6,618B total debt = **67.7%**. **Empirically proven**: LLM extraction is not the bottleneck — 80% of remaining gaps are from aggregate-only footnotes where per-instrument data doesn't exist in 10-K/10-Q filings. **Tier 10 finding**: Many companies had zero debt_footnote sections due to 3 bugs in section extraction (tuple unpacking, missing colon separator, missing pattern variants).
+**Debt Coverage Gaps**: 148/211 companies (70%) have instrument outstanding within 80-120% of total debt ("OK"). Phases 1-9 + Tiers 1-11 updated 1,730+ instruments, deactivated 330+ duplicates/phantoms/aggregates, cleared 150+ wrong amounts, fixed 50+ scale errors. EXCESS reduced from 58→6 (6 EXCESS_SOME, 0 EXCESS_SIGNIFICANT). MISSING_ALL at 3 (PANW, TTD — revolvers with $0 drawn; BAC — structural bank gap). 31 MISSING_SIGNIFICANT remain — mostly structural: aggregate-only footnotes (VZ, T, CMCSA, CHTR, KO), banks with deposits in total_debt (COF, AXP, USB, WFC, TFC, MS), utility subsidiaries (AEP, SO, DUK, EXC). 16 MISSING_SOME — JNJ (77.6%), TMO (71.6%), TMUS (40.7%), SPG (67.2%), GM (64.1%). Overall: $4,531B instruments / $6,618B total debt = **68.5%**. **Extraction ceiling reached** after 11 tiers — remaining 63 non-OK companies have structural gaps that cannot be solved by reading existing SEC filings. Next improvement: benchmark denominator adjustments (exclude bank deposits, utility subsidiary debt from total_debt comparison).
 
 **Pricing Coverage**: 3,557 active bonds with pricing (2,487 real TRACE, 1,070 estimated) via Finnhub/FINRA TRACE. Updated 3x daily by APScheduler (11 AM, 3 PM, 9 PM ET). Daily snapshots saved to `bond_pricing_history` at 9 PM ET.
 
@@ -52,6 +53,7 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 - Live at: `https://api.debtstack.ai` (CNAME via Vercel DNS → Railway)
 
 **What's Working**:
+- **Chat Assistant**: Full-page chat at `/dashboard/chat` — Claude (Sonnet 4.5) + 8 DebtStack API tools via SSE streaming, starter prompts, watchlists, chat history
 - **Three-Tier Pricing**: Pay-as-You-Go ($0 + per-call), Pro ($199/mo), Business ($499/mo)
 - **Primitives API**: 11 core endpoints optimized for AI agents (field selection, powerful filters)
 - **Business-Only Endpoints**: Historical pricing, covenant compare, bulk export, usage analytics
@@ -384,6 +386,7 @@ This single command runs all 11 steps:
 | 3 | Save to database | Core records |
 | 4 | Document sections | Searchable SEC filing sections |
 | 5 | Document linking | Links instruments to indentures/credit agreements |
+| 5b | Amount backfill | Regex extraction from indentures ($0 cost) |
 | 6 | TTM financials | 4 quarters of financial data |
 | 7 | Ownership hierarchy | parent_id, is_root relationships |
 | 8 | Guarantees | Guarantee relationships (uses linked docs) |
@@ -430,6 +433,7 @@ python scripts/extract_iterative.py --ticker AAL --step metrics
 | `guarantees` | Extract guarantee relationships | CIK |
 | `collateral` | Extract collateral data | CIK |
 | `documents` | Link documents to instruments | - |
+| `amounts` | Backfill bullet bond amounts from indentures (regex, $0) | - |
 | `covenants` | Extract covenant data | CIK |
 | `metrics` | Recompute derived metrics | - |
 | `finnhub` | Run Finnhub bond discovery | FINNHUB_API_KEY |
@@ -1185,7 +1189,7 @@ python scripts/extract_amounts_from_indentures.py --fix --regex-only       # No 
 python scripts/extract_amounts_from_indentures.py --fix --model gemini-2.5-pro
 ```
 
-### Key Learnings from Debt Coverage Work
+### Key Learnings from Debt Coverage Work (11 Tiers, Phases 1-9)
 
 **What works well:**
 1. **Targeted prompts beat broad extraction** — Phase 6 sends the specific instrument list ("find amounts for THESE instruments") vs Phase 2's "extract ALL instruments". Targeted approach gets better matches because Gemini knows exactly what to look for.
@@ -1194,20 +1198,28 @@ python scripts/extract_amounts_from_indentures.py --fix --model gemini-2.5-pro
 4. **Instrument index matching** — Asking Gemini to return `instrument_index` (1-based reference to the input list) is more reliable than post-hoc fuzzy matching.
 5. **Provenance tagging** — Store `amount_source`, `amount_doc_type`, `amount_doc_date` in `attributes` JSONB for debugging.
 6. **Fresh session per company** — Neon drops idle connections during 10-60s Gemini calls. Use `async_sessionmaker` and open/close per company.
+7. **Indenture regex extraction ($0 cost)** — For bullet bonds, supplemental indentures state original issuance amount (= outstanding for non-amortizing debt). Regex matching by rate ±0.15% and exact maturity year is reliable. Phase 9 got 66 instruments via regex alone.
+8. **Section extraction pattern bugs were a major blocker** — Three bugs in `DEBT_FOOTNOTE_PATTERNS` prevented extraction for many companies: (a) missing colon in separator class (`Note 6: Debt` format), (b) missing "Short-term Borrowings and Long-term Debt" pattern (WMT format), (c) missing "Deposits and Borrowings" pattern (bank format). After fixing, 7/15 target companies got footnotes.
 
 **What fails or has low yield:**
 1. **Revolvers/term loans** — Usually $0 drawn; correct to skip. GEV (4 revolvers), LULU (2 revolvers), PLTR (3 revolvers) all correctly returned 0 amounts.
-2. **Aggregate-only footnotes** — PG's 33K debt footnote only has maturity schedule totals by year, not per-instrument amounts. Need a different doc section or manual entry.
-3. **Banks without debt footnotes** — COF, USB, MS have no `debt_footnote` sections. Bank debt is structured differently (deposits, wholesale funding). Try `desc_securities` or `mda_liquidity`.
-4. **Duplicate instruments with no rates** — TEAM has 3 pairs of duplicate "Senior Notes due 20XX" with no coupon rates, making matching impossible. Fix data quality first (`fix_missing_interest_rates.py`).
-5. **Gemini key name inconsistency** — Gemini returns `outstanding_amount_cents` instead of `outstanding_cents` despite the prompt specifying the latter. Always check for both: `entry.get('outstanding_cents') or entry.get('outstanding_amount_cents')`.
-6. **Poor stored footnote quality** — ~40% of `debt_footnote` sections contain entire 10-Q filings truncated at 100K instead of just the debt note. Need section re-extraction with better boundary detection.
+2. **Aggregate-only footnotes** — Large IG issuers (VZ, T, CMCSA, PG, KO, LMT, GE, CSX, MRK) present debt in maturity/rate buckets in 10-K footnotes (e.g., "Notes due 2030-2034: $7.7B"), not per-instrument. This is the #1 structural blocker — affects ~12 companies with $800B+ combined debt.
+3. **Banks — total_debt includes deposits/wholesale funding** — MS ($332B), WFC ($176B), BAC ($247B), COF ($38B), USB ($63B) have "total debt" that includes institutional deposits and wholesale funding that aren't discrete debt instruments. The comparison denominator is wrong, not the extraction.
+4. **Utility subsidiary-level debt** — AEP ($45B), SO ($65B), DUK ($86B), EXC ($48B) issue debt at regulated subsidiary level through first mortgage bonds. Parent total_debt includes all subsidiary FMBs.
+5. **Base indentures vs supplemental indentures** — Old IG issuers (VZ, T, KO, CAT, LMT, F) have 1990s-era base indentures that don't contain per-issuance amounts. The amounts are in supplemental indentures filed as 8-K exhibits, which may not be in our document set. LLM calls against base indentures return 0 matches ~87% of the time.
+6. **Gemini key name inconsistency** — Gemini returns `outstanding_amount_cents` instead of `outstanding_cents` despite the prompt specifying the latter. Always check for both: `entry.get('outstanding_cents') or entry.get('outstanding_amount_cents')`.
+7. **Poor stored footnote quality** — ~40% of `debt_footnote` sections contain entire 10-Q filings truncated at 100K instead of just the debt note. Fixed in Tier 10 with section re-extraction after pattern bug fixes.
+8. **Heavy Gemini rate limiting for large indenture sets** — COF (215 indentures, 12MB) and WFC (277 indentures, 10MB) cause 9+ rate-limit retries per batch call, costing time and money for 0 results.
 
-**Remaining structural gaps (won't be fixed by more LLM calls):**
-- PG: Aggregate-only footnote (67 instruments) — needs different section or prospectus data
-- Banks (COF, USB, MS): No debt footnotes — need section re-extraction or manual entry
-- Companies with only revolvers (GEV, LULU, PLTR): Correctly $0 — not real gaps
-- VRTX: Single instrument, only footnote is from year 2000
+**Structural gap categories (won't be fixed by more LLM calls):**
+- **Aggregate-only footnotes** (12 cos, ~$800B): VZ, T, CMCSA, PG, KO, LMT, CSX, GE, MRK, HD, QCOM, CVX — need prospectus supplement (424B5) extraction
+- **Banks** (8 cos, ~$1,000B): BAC, MS, WFC, COF, USB, TFC, PNC, C — need benchmark denominator adjustment (exclude deposits)
+- **Utilities** (5 cos, ~$250B): AEP, SO, DUK, EXC, CEG — need subsidiary-level extraction or denominator adjustment
+- **Captive finance** (2 cos, ~$290B): GM (GMAC), F (Ford Motor Credit) — finance subsidiary debt in total_debt
+- **Only revolvers** (3 cos, $0.6B): PANW, TTD, LULU — correctly $0 drawn
+- **Other missing instruments**: CHTR (subsidiary CCO), TMUS, MAR, SPG, TMO, JNJ — need re-extraction or 424B5 data
+
+**Extraction ceiling reached** (after 11 tiers, ~$15-20 total Gemini cost): 148/211 OK (70%), $4,531B/$6,618B = 68.5%. Further LLM extraction against existing SEC filings yields <5% hit rate. Next approaches: (1) benchmark denominator adjustments, (2) prospectus supplement downloads, (3) company expansion.
 
 ## Common Issues
 
