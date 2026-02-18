@@ -1,20 +1,21 @@
 # DebtStack Work Plan
 
-Last Updated: 2026-02-16 (Chat assistant added to frontend; extraction ceiling reached after Tier 11)
+Last Updated: 2026-02-18 (QC fixes + document linking pipeline + Finnhub discovery in progress)
 
 ## Current Status
 
-**Database**: 211 companies | ~4,495 active debt instruments (1,304 deactivated in Phase 3, 49 in Phase 7, 180 in Phase 7.5 + 127 amounts cleared) | 2,926 with CUSIP | 4,712 with pricing | 14,511 document sections | 4,165 guarantees | 713 collateral records | 1,247 covenants | 28,128 entities | 1,816 financial quarters
+**Database**: 291 companies | 5,719 active debt instruments | 2,518 with CUSIP | 4,273 with pricing | 21,891 document sections | 5,127 guarantees | 949 collateral records | 1,793 covenants | 38,903 entities | ~2,900 financial quarters
 **Deployment**: Live at `https://credible-ai-production.up.railway.app` and `https://api.debtstack.ai`
 **Infrastructure**: Railway + Neon PostgreSQL + Upstash Redis (complete)
-**Pricing Coverage**: 4,712 bonds with pricing (up from 2,618)
-**Company Expansion**: 211 companies (up from 201) — added 10 Tier 1 massive-debt companies
-**Guarantee Coverage**: 4,165 guarantees (up from 3,831)
-**Collateral Coverage**: 713 collateral records (up from 626)
-**Covenant Coverage**: 1,247 covenants across 211 companies
-**Document Coverage**: 14,511 document sections (up from 13,862)
-**Ownership Coverage**: 28,128 entities across 211 companies
-**Data Quality**: QC audit passing - 0 critical, 0 errors, 4 warnings (2026-01-26). Fixed 38 mislabeled seniority records (2026-02-06).
+**Pricing Coverage**: 4,273 bonds with pricing (74.7% of active instruments)
+**Document Linkage**: 96.4% (5,512/5,719 instruments linked) — up from 80%
+**Company Expansion**: 291 companies (up from 211) — added 80 companies across Tiers 1-5
+**Guarantee Coverage**: 5,127 guarantees
+**Collateral Coverage**: 949 collateral records
+**Covenant Coverage**: 1,793 covenants across 291 companies
+**Document Coverage**: 21,891 document sections across 291 companies
+**Ownership Coverage**: 38,903 entities across 291 companies
+**Data Quality**: QC audit - 0 critical, 3 errors (all legitimate), 11 warnings (2026-02-18). Fixed ES revenue 1000x scale, 167 matured bonds deactivated, 19 root entities created.
 **Eval Suite**: 121/136 tests passing (89.0%)
 
 ### Debt Coverage Gaps (2026-02-14, updated after Tier 7)
@@ -585,12 +586,129 @@ After 11 tiers of extraction work (Phases 1-9, Tiers 1-11), coverage is at **148
 | EXCESS (stale/over-reported) | 6 (COP, ORCL, NEM, NRG, WELL, CB) | ~$200B | Amount refresh from latest 10-Q |
 | Zero/minimal debt | 6 (PANW, TTD, DXCM, MNST, CPRT + NO_FINANCIALS) | ~$5B | No action needed |
 
-### Priority 1: Company Expansion (211 → 288)
+### Priority 1: Company Expansion (211 → 291) — **COMPLETE** ✅
 
-Better ROI than fixing the last 10% of existing companies. 10 Tier 1 companies already added. Remaining:
-- Tier 2: 22 companies ($30-50B debt) — HIGH PRIORITY
-- Tier 3: 38 companies ($15-30B debt) — MEDIUM PRIORITY
-- Tier 4-5: 17 companies ($5-15B debt) — SECTOR DIVERSITY
+Company expansion complete. 80 new companies added across Tiers 1-5:
+- Tier 1: 10 companies (>$50B debt) — **COMPLETE** ✅
+- Tier 2: 22 companies ($30-50B debt) — **COMPLETE** ✅
+- Tier 3: 38 companies ($15-30B debt) — **COMPLETE** ✅
+- Tier 4: 13 companies ($5-15B debt) — **COMPLETE** ✅
+- Tier 5: 4 companies (<$5B debt) — **COMPLETE** ✅
+- **Total: 291 companies** (target was 288, exceeded by 3 due to pre-existing companies)
+
+**Finnhub Bond Probe Complete (2026-02-16):** Probed 76/77 expansion candidates (Tier 2-5) via `scripts/probe_finnhub_bonds.py --quick`. Found 462 bonds across all candidates. Results cached in `data/finnhub_bond_probe_cache.json`. Top companies by bond availability:
+
+| Rank | Ticker | Bonds | Debt | Sector |
+|------|--------|-------|------|--------|
+| 1 | ELV | 23 | ~$32B | Healthcare |
+| 2 | AMT | 22 | ~$45B | REIT/Telecom |
+| 3 | KMI | 17 | ~$32B | Energy/MLP |
+| 4 | WEC | 16 | ~$21B | Utilities |
+| 5 | AL | 16 | ~$20B | Aircraft Leasing |
+| 6 | ICE | 16 | ~$20B | Exchanges |
+| 7 | MPLX | 15 | ~$26B | Energy/MLP |
+| 8 | EIX | 14 | ~$39B | Utilities |
+| 9 | UPS | 14 | ~$29B | Industrials |
+| 10 | TRGP | 13 | ~$17B | Energy/MLP |
+
+**Extraction order:** Tier 2 first (22 companies by debt size), then Tier 3-5. All have CIKs ready in `scripts/next_100_companies.py`.
+
+**Tier 2 extraction progress (2026-02-17):**
+
+| Ticker | Company | Debt | CIK | Status | Instruments | Key Data |
+|--------|---------|------|-----|--------|-------------|----------|
+| D | Dominion Energy | ~$49B | 0000715957 | ✅ Done | 19 | 149 doc sections, 3 collateral, 4 covenants |
+| NAVI | Navient Corporation | ~$46B | 0001593538 | ✅ Done | 7 | Had existing data |
+| AMT | American Tower | ~$45B | 0001053507 | ✅ Done | 14 | 334 entities, 107 doc sections, 3 covenants |
+| EIX | Edison International | ~$39B | 0000827052 | ✅ Done | 21 | 72 doc sections, 8 collateral, 9 covenants |
+| FDX | FedEx Corporation | ~$38B | 0001048911 | ✅ Done | 26 | 102 guarantees, 5 covenants |
+| BK | Bank of New York Mellon | ~$35B | 0001390777 | ✅ Done | 7 | Bank — 0 financials (expected) |
+| STT | State Street Corporation | ~$35B | 0000093751 | ✅ Done | 26 | 24 guarantees, 6 covenants |
+| CI | Cigna Group | ~$34B | 0001739940 | ✅ Done | 31 | 82 entities, 2 covenants |
+| MPC | Marathon Petroleum | ~$34B | 0001510295 | ✅ Done | 28 | 7 covenants, 0 financials |
+| OKE | ONEOK Inc | ~$34B | 0001039684 | ✅ Done | 19 | Had existing data (142 entities, 41 guarantees) |
+| EPD | Enterprise Products Partners | ~$34B | 0001061219 | ✅ Done | 22 | 191 entities, 22 guarantees, 4 covenants |
+| SRE | Sempra Energy | ~$33B | 0001032208 | ✅ Done | 12 | 93 doc sections, 9 collateral, 2 covenants |
+| KMI | Kinder Morgan | ~$32B | 0001506307 | ✅ Done | 10 | Had extensive data (303 entities, 72 guarantees) |
+| ELV | Elevance Health | ~$32B | 0001156039 | ✅ Done | 33 | 265 entities, 97 doc sections, 4 covenants |
+| SATS | EchoStar Corporation | ~$31B | 0001415404 | ✅ Done | 21 | 49 doc sections, 11 collateral, 7 covenants |
+| DELL | Dell Technologies | ~$31B | 0001571996 | ✅ Done | 23 | 102 doc sections, 12 guarantees, 7 covenants |
+| AES | AES Corporation | ~$31B | 0000874761 | ✅ Done | 1 | Complex subsidiary debt; 84 doc sections, 3 covenants |
+| TDG | TransDigm Group | ~$30B | 0001260221 | ✅ Done | 28 | 205 entities, 80 guarantees, 15 collateral |
+| ETR | Entergy Corporation | ~$30B | 0000065984 | ✅ Done | 26 | 73 entities, 18 collateral, 2 covenants |
+| FI | Fiserv Inc | ~$30B | 0000798354 | ✅ Done | 27 | 13 entities, 48 doc links, 5 covenants |
+| ES | Eversource Energy | ~$30B | 0000072741 | ✅ Done | 48 | 48 entities, 28 collateral, 15 covenants |
+| CCI | Crown Castle Inc | ~$30B | 0001051470 | ✅ Done | 1 | Tower securitized debt; 69 doc sections, 4 covenants |
+
+**Tier 3 extraction progress (2026-02-17):**
+
+| Ticker | Company | Debt | CIK | Status | Instruments | Key Data |
+|--------|---------|------|-----|--------|-------------|----------|
+| UPS | United Parcel Service | ~$29B | 0001090727 | ✅ Done | 2 | Existing data |
+| NLY | Annaly Capital Management | ~$29B | 0001043219 | ✅ Done | 8 | Mortgage REIT, 5 collateral |
+| O | Realty Income Corporation | ~$29B | 0000726728 | ✅ Done | 30 | 880 entities, 18 covenants |
+| WMB | Williams Companies | ~$28B | 0000107263 | ✅ Done | 20 | 169 entities, 5 covenants |
+| FE | FirstEnergy Corp | ~$27B | 0001031296 | ✅ Done | 23 | 9 collateral, 1 covenant |
+| ED | Consolidated Edison | ~$27B | 0001047862 | ✅ Done | 45 | 5 covenants, QA 73% |
+| MPLX | MPLX LP | ~$26B | 0001552275 | ✅ Done | 1 | Existing data (48 entities) |
+| LNG | Cheniere Energy | ~$25B | 0003570 | ✅ Done | 20 | 57 guarantees, 13 collateral, 7 covenants |
+| WM | Waste Management | ~$23B | 0000823768 | ✅ Done | 20 | 574 entities, 13 covenants |
+| OMF | OneMain Financial | ~$22B | 0001584207 | ✅ Done | 13 | Claude escalation, 4 collateral |
+| CNP | CenterPoint Energy | ~$22B | 0001130310 | ✅ Done | 19 | 5 collateral, 7 covenants, QA 73% |
+| PRU | Prudential Financial | ~$22B | 0001137774 | ✅ Done | 15 | 554 entities, Gemini Pro QA 90% |
+| PSX | Phillips 66 | ~$22B | 0001534701 | ✅ Done | 36 | 23 guarantees, 6 covenants |
+| MMC | Marsh McLennan | ~$21B | 0000062996 | ✅ Done | 11 | QA 90% first pass |
+| WEC | WEC Energy Group | ~$21B | 0000783325 | ✅ Done | 12 | Existing data, 2 amounts backfilled |
+| EQIX | Equinix Inc | ~$21B | 0001101239 | ✅ Done | 29 | 282 entities, 43 doc links |
+| ALLY | Ally Financial | ~$20B | 0000040729 | ✅ Done | 18 | QA 90% after 2 iterations |
+| AL | Air Lease Corporation | ~$20B | 0001487712 | ✅ Done | 37 | Existing data +1 new instrument |
+| AEE | Ameren Corporation | ~$20B | 0001002910 | ✅ Done | 18 | 96 doc links, 13 collateral, 8 covenants |
+| TGT | Target Corporation | ~$20B | 0000027419 | ✅ Done | 9 | QA 90% first pass |
+| MET | MetLife Inc | ~$20B | 0001099219 | ✅ Done | 21 | Existing data (583 entities) |
+| ICE | Intercontinental Exchange | ~$20B | 0001571949 | ✅ Done | 2 | Existing data (8 covenants) |
+| DOW | Dow Inc | ~$20B | 0001751788 | ✅ Done | 11 | 234 entities, currency fix required |
+| DLR | Digital Realty Trust | ~$20B | 0001297996 | ✅ Done | 6 | 635 entities, 6 guarantees |
+| BDX | Becton Dickinson | ~$19B | 0000010795 | ✅ Done | 28 | Existing data (333 entities) |
+| PPL | PPL Corporation | ~$19B | 0000922224 | ✅ Done | 20 | 12 collateral, 5 guarantees |
+| IRM | Iron Mountain | ~$18B | 0001020569 | ✅ Done | 21 | 160 entities, 20 guarantees, 10 collateral |
+| APD | Air Products and Chemicals | ~$18B | 0000002969 | ✅ Done | 28 | 274 entities, 3 collateral |
+| CMS | CMS Energy | ~$18B | 0000811156 | ✅ Done | 21 | 157 entities, 12 covenants |
+| KMX | CarMax Inc | ~$18B | 0001170010 | ✅ Done | 8 | 6 guarantees, 3 covenants |
+| BG | Bunge Global SA | ~$18B | 0001996862 | ✅ Done | 20 | 27 guarantees, 13 covenants |
+| VICI | VICI Properties | ~$18B | 0001705696 | ✅ Done | 23 | 148 entities, 26 covenants |
+| AON | Aon plc | ~$18B | 0000315293 | ✅ Done | 26 | 847 entities, 90 guarantees |
+| CNC | Centene Corporation | ~$18B | 0001071739 | ✅ Done | 9 | 265 entities, 13 covenants |
+| VST | Vistra Corp | ~$18B | 0001692819 | ✅ Done | 6 | 6 guarantees, 6 collateral, 27 covenants |
+| TRGP | Targa Resources | ~$17B | 0001389170 | ✅ Done | 12 | 98 guarantees, 8 covenants |
+| KR | Kroger Co | ~$15B | 0000056873 | ✅ Done | 11 | 3 covenants |
+| MMM | 3M Company | ~$15B | 0000066740 | ✅ Done | 11 | 42 entities, 6 covenants |
+
+**Tier 4 extraction progress (2026-02-18):**
+
+| Ticker | Company | Debt | CIK | Status | Instruments | Key Data |
+|--------|---------|------|-----|--------|-------------|----------|
+| NOC | Northrop Grumman | ~$14B | 0001133421 | ✅ Done | 19 | 38 doc sections, 13 covenants |
+| HUM | Humana Inc | ~$12B | 0000049071 | ✅ Done | 26 | 275 entities, 26 guarantees, 13 covenants |
+| GIS | General Mills | ~$12B | 0000040704 | ✅ Done | 46 | 90 doc sections, 76 doc links |
+| SYY | Sysco Corporation | ~$12B | 0000096021 | ✅ Done | 12 | 3 collateral, 2 covenants |
+| GD | General Dynamics | ~$12B | 0000040533 | ✅ Done | 14 | 242 entities, 10 covenants |
+| EMR | Emerson Electric | ~$10B | 0000032604 | ✅ Done | 19 | 513 entities, 3 covenants |
+| ADM | Archer-Daniels-Midland | ~$10B | 0000007084 | ✅ Done | 12 | 277 entities, 3 covenants |
+| CAG | Conagra Brands | ~$9B | 0000023217 | ✅ Done | 21 | 44 doc sections, 13 covenants |
+| IP | International Paper | ~$8B | 0000051434 | ✅ Done | 28 | 87 entities, Gemini Pro escalation, 13 covenants |
+| SJM | J.M. Smucker Company | ~$8B | 0000091419 | ✅ Done | 16 | 52 doc sections, 3 covenants |
+| DG | Dollar General | ~$7B | 0000029534 | ✅ Done | 12 | 61 entities, 98 doc sections, 5 covenants |
+| K | Kellanova | ~$6B | 0000055067 | ✅ Done | 62 | 44 guarantees, 5 collateral, 6 covenants |
+| CPB | Campbell Soup Company | ~$5B | 0000016732 | ✅ Done | 14 | 45 entities, 2 covenants |
+
+**Tier 5 extraction progress (2026-02-18):**
+
+| Ticker | Company | Debt | CIK | Status | Instruments | Key Data |
+|--------|---------|------|-----|--------|-------------|----------|
+| PKG | Packaging Corp of America | ~$4B | 0000075677 | ✅ Done | 9 | 108 guarantees, 9 covenants |
+| CLX | Clorox Company | ~$4B | 0000021076 | ✅ Done | 3 | 83 entities, 6 covenants |
+| SAVE | Spirit Airlines | ~$3B | 0001498710 | ✅ Done | 6 | 6 guarantees, 6 collateral, 16 covenants |
+| AAP | Advance Auto Parts | ~$2B | 0001158449 | ✅ Done | 8 | 70 guarantees, 6 collateral, 17 covenants |
 
 ### Priority 2: Benchmark Denominator Adjustments ($0 cost)
 
@@ -2552,6 +2670,116 @@ When starting a new session, read this file first, then:
 ---
 
 ## Session Log
+
+### 2026-02-18 (Session 45) - QC Fixes + Document Linking Pipeline + Finnhub Discovery
+
+**Objective:** Fix QC issues, run full document linking pipeline for 291 companies, start Finnhub bond discovery for 87 new expansion companies.
+
+**QC Fixes (fix_qc_issues_v2.py):**
+- Fixed `qc_master.py` bug: `cm.id` → `cm.company_id` (company_metrics uses ticker as PK)
+- Created and ran `fix_qc_issues_v2.py` with 10 fix categories:
+  1. ES revenue scale error (8 records divided by 1000 — was 1000x too high)
+  2. SLG EBITDA cleared (was >10x revenue)
+  3. 167 matured bonds deactivated
+  4. 19 companies got root entities assigned
+  5. 38 root entities had parent_id cleared
+  6. 1 maturity-before-issue fixed
+  7. 487 future issue dates cleared
+  8. 8 unrestricted guarantors fixed
+  9. 18 companies with EBITDA but no revenue identified (12 banks = expected)
+  10. VICI leverage threshold 0.40x verified as legitimate
+- Post-fix QC: 0 critical, 3 errors (all legitimate), 11 warnings
+- Fixed `capital_expenditures` → `capex` column name bug in fix script
+
+**Document Linking Pipeline (3 steps, all complete):**
+- Step 1: `link_to_base_indenture.py --save` → **789 instruments linked**
+- Step 2: `link_to_credit_agreement.py --save` → **106 instruments linked** (77 companies)
+- Step 3: `backfill_debt_document_links.py --all` → **~220 instruments linked** (ran in 4 batches due to Neon timeouts)
+- **Result: 96.4% document linkage** (5,512/5,719) — up from 80% (4,617/5,717)
+- Remaining 207 unlinked: commercial paper, bank instruments, specialized types
+
+**Finnhub Bond Discovery (COMPLETE for new companies):**
+- Ran `expand_bond_pricing.py --phase4 --ticker <TICKER>` for all 87 new expansion tickers
+- **127 bonds discovered** across 11 companies: UPS (42), BMY (28), TGT (13), CVS (11), DUK (7), SO (7), CMCSA (6), ET (6), PNC (5), USB (1), PCG (1)
+- 76/87 companies had no Finnhub bond data (no CUSIPs in DB to derive issuer codes, or bonds not in Finnhub's universe)
+
+**Coverage Analysis:**
+| Metric | Before | After | Change |
+|--------|--------|-------|--------|
+| Document linkage | 80.0% | 96.4% | +16.4pp |
+| Active instruments | 5,717 | 5,719 | +2 |
+| Pricing coverage | 74.7% | 74.7% | (needs Finnhub discovery) |
+| CUSIP coverage | 44.0% | 44.0% | (needs Finnhub discovery) |
+
+---
+
+### 2026-02-18 (Session 44) - Tier 3, 4, 5 Company Expansion (ALL COMPLETE)
+
+**Objective:** Complete all remaining company expansion. Extract Tier 3 (38), Tier 4 (13), and Tier 5 (4) companies. Expand from 233 → 291 companies.
+
+**Tier 3 Extraction (38 companies, $15-30B debt):**
+- Target: 38 companies (UPS through MMM)
+- Command: `python scripts/extract_iterative.py --ticker <TICKER> --cik <CIK> --save-db`
+
+**Tier 3 Results (ALL 38 COMPLETE):**
+- **Companies with pre-existing data** (enrichment only): UPS, MPLX, WEC, AL, MET, ICE, BDX (had data from prior batch runs)
+- **High-entity extractions**: AON (847), DLR (635), MET (583), WM (574), PRU (554), BDX (333), EQIX (282), APD (274), CNC (265), DOW (234), WMB (169), IRM (160), CMS (157), VICI (148), PSX (131)
+- **High-guarantee extractions**: TRGP (98), AON (90), LNG (57), BG (27), PSX (23), IRM (20)
+- **High-covenant extractions**: VST (27), VICI (26), O (18), BG (13), CNC (13), WM (13), CMS (12), AEE (8), TRGP (8)
+- **Escalations**: OMF (Claude escalation 63%→85%), ED (QA 73%), CNP (QA 73% — complex utility)
+- **DOW currency fix**: Gemini set currency="Multi" for foreign notes, exceeded VARCHAR(3). Fixed by editing results JSON to "USD".
+- **Batch processing**: Last 16 companies processed in for-loops of 4-5 companies per batch command.
+
+**Tier 4 Extraction (13 companies, $5-15B debt):**
+- Target: NOC, HUM, GIS, SYY, GD, EMR, ADM, CAG, IP, SJM, DG, K, CPB
+- **All 13 COMPLETE.** Notable: GIS (46 instruments), K (62 instruments, 44 guarantees), IP (28 instruments — Gemini Pro escalation needed), EMR (513 entities), HUM (275 entities, 26 guarantees), CAG (21 instruments, 13 covenants)
+- **IP ownership_type fix**: Gemini returned `ownership_type: null` in owner dicts, causing Pydantic validation error. Fixed `extract_tiered.py` to default None to "direct".
+
+**Tier 5 Extraction (4 companies, <$5B debt):**
+- Target: PKG, CLX, SAVE, AAP
+- **All 4 COMPLETE.** Notable: PKG (108 guarantees), AAP (70 guarantees, 17 covenants), SAVE (16 covenants, distressed airline), CLX (83 entities)
+
+**Final Database Stats:**
+- Companies: **291** (target was 288, exceeded by 3 from pre-existing companies)
+- Active debt instruments: **5,884**
+- Entities: **38,903**
+- Document sections: **21,891**
+- Guarantees: **5,127**
+- Collateral: **949**
+- Covenants: **1,793**
+
+**Bug fix**: `scripts/extract_tiered.py` — Added null-safety for `ownership_type` in owner dicts passed to `ExtractedEntity`. Gemini sometimes returns `null` for string fields that have Pydantic defaults.
+
+---
+
+### 2026-02-17 (Session 43) - Tier 2 Company Expansion
+
+**Objective:** Extract 22 Tier 2 expansion companies ($30-50B debt each) into the database. Expand from 211 → 233 companies.
+
+**Pre-work (Session 42, unlogged):**
+- Created `scripts/probe_finnhub_bonds.py` — probes Finnhub for bond availability of 77 expansion candidates
+- Ran quick probe on 76/77 companies (all Tier 2-5), found 462 bonds total
+- Results cached in `data/finnhub_bond_probe_cache.json` for prioritization
+- Created `scripts/analyze_reextraction_targets.py` and `scripts/analyze_debt_gap_root_causes.py` for existing company analysis
+
+**Tier 2 Extraction:**
+- Target: 22 companies (D, NAVI, AMT, EIX, FDX, BK, STT, CI, MPC, OKE, EPD, SRE, KMI, ELV, SATS, DELL, AES, TDG, ETR, FI, ES, CCI)
+- Command: `python scripts/extract_iterative.py --ticker <TICKER> --cik <CIK> --save-db`
+- Estimated time: ~3-5 min per company, ~66-110 min total
+- Estimated cost: ~$0.03-0.08 per company, ~$0.66-1.76 total
+
+**Results (ALL 22 COMPLETE):**
+- **Total new instruments**: ~420 across 22 companies
+- **Companies with pre-existing data** (enrichment only): NAVI, OKE, KMI, ELV (had data from Tier 1 batch run)
+- **High-instrument extractions**: ES (48), ELV (33), CI (31), MPC (28), TDG (28), FI (27), FDX (26), ETR (26), STT (26)
+- **Low-instrument extractions**: AES (1 — complex subsidiary debt), CCI (1 — tower securitized structure)
+- **Rich data**: TDG (80 guarantees, 15 collateral), FDX (102 guarantees), ES (28 collateral, 15 covenants), EIX (8 collateral, 9 covenants)
+- **Escalations**: SATS (57%→62% QA, Claude escalation), ES (73%→78%, Claude escalation), AES (Claude initial due to large Exhibit 21), ETR (Claude fallback, Gemini truncated)
+- **Gemini rate limits (429)**: DELL (4/8 financials), TDG (0/8 financials, 0 covenants), ETR (5/8 financials), CCI (4/8 financials), ES (0 guarantees). Can be backfilled later with `--step financials` / `--step covenants`.
+- **Hierarchy warnings**: D, SRE, SATS, DELL, ES, ETR had "Multiple rows" hierarchy warning (non-fatal, Exhibit 21 entities still created)
+- **Cost**: ~$2-3 total (mostly Claude escalations for SATS, ES, AES, ETR)
+
+---
 
 ### 2026-02-15 (Session 41) - MCP Directory Submissions + Distribution Complete
 

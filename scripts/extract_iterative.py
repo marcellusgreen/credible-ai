@@ -10,12 +10,13 @@ IDEMPOTENT: Safe to re-run for existing companies. Skips steps where:
   - Source data is unavailable (e.g., no Exhibit 21) - tracked via extraction_status
 Use --force to override skip logic.
 
-STEPS (16 total):
+STEPS (17 total):
   1. Download filings - never skipped
   2. Core extraction - skip if entity_count > 20 AND debt_count > 0
   3. Save to DB - uses merge logic to preserve existing data
   4. Document sections - skip if count > 5
   5. Document linking - skip if 50%+ of instruments already linked
+  5b. Amount backfill from indentures - regex-only ($0 cost), skip if no bullet instruments need amounts
   6. Financials (8 quarters) - skip if latest_quarter is current; uses 8 10-Qs (not 10-K)
   7. Ownership hierarchy - skip if status='no_data' (no Exhibit 21)
   8. Guarantees - skip if guarantee_count > 0 OR status='no_data'
@@ -66,7 +67,7 @@ Usage:
     python scripts/extract_iterative.py --ticker AAL --step metrics
 
     # Valid steps: core, financials, hierarchy, guarantees, collateral,
-    #              documents, covenants, metrics, finnhub, pricing, cache
+    #              documents, amounts, covenants, metrics, finnhub, pricing, cache
 
 Environment variables:
     GEMINI_API_KEY - Required for extraction
@@ -376,6 +377,7 @@ async def run_iterative_extraction(
         sys.exit(1)
 
     # Core extraction with QA loop
+    extraction_result = None
     result = None
     if not skip_core:
         print(f"\n[2/16] Running core extraction (entities + debt)...")
@@ -392,6 +394,7 @@ async def run_iterative_extraction(
             cik=cik,
             filings=filings,
         )
+        extraction_result = result  # Preserve before 'result' gets reused
 
         # Print extraction summary
         print(f"\n    Core Extraction Results:")
@@ -431,6 +434,7 @@ async def run_iterative_extraction(
                 summary='Skipped - data exists',
             ),
         )
+        extraction_result = result
 
     # Database operations
     company_id = existing_data.get('company_id') if existing_data.get('exists') else None
@@ -522,6 +526,87 @@ async def run_iterative_extraction(
             await engine.dispose()
         else:
             print(f"\n[5/16] Skipping document linking")
+
+        # Amount backfill from indentures (regex-only, $0 cost)
+        # Runs after document linking so it can use linked indenture docs
+        if company_id:
+            print(f"\n[5b/17] Backfilling amounts from indentures (regex, $0 cost)...")
+            try:
+                from sqlalchemy import select as sa_select
+                from scripts.extract_amounts_from_indentures import (
+                    get_bullet_instruments_needing_amounts,
+                    get_indenture_docs,
+                    get_linked_doc_ids,
+                    run_phase_a,
+                )
+                from app.models.schema import DebtInstrument
+
+                engine = create_async_engine(database_url, echo=False)
+                async_session = async_sessionmaker(engine, expire_on_commit=False)
+
+                async with async_session() as session:
+                    instruments = await get_bullet_instruments_needing_amounts(session, company_id)
+                    indenture_docs = await get_indenture_docs(session, company_id)
+
+                    if not instruments or not indenture_docs:
+                        print(f"    [SKIP] No bullet instruments needing amounts or no indentures ({len(instruments)} instruments, {len(indenture_docs)} indentures)")
+                    else:
+                        # Detach to dicts for use outside session
+                        instrument_data = [{
+                            'id': inst.id, 'name': inst.name, 'cusip': inst.cusip,
+                            'interest_rate': inst.interest_rate, 'maturity_date': inst.maturity_date,
+                            'instrument_type': inst.instrument_type,
+                            'attributes': dict(inst.attributes) if inst.attributes else {},
+                        } for inst in instruments]
+
+                        doc_data = [{
+                            'id': doc.id, 'filing_date': doc.filing_date,
+                            'content': doc.content, 'content_length': doc.content_length,
+                            'section_title': doc.section_title,
+                        } for doc in indenture_docs]
+
+                        # Get linked doc IDs and convert to index-based
+                        inst_ids = [inst.id for inst in instruments]
+                        raw_links = await get_linked_doc_ids(session, inst_ids)
+                        linked_doc_ids_by_idx = {}
+                        for i, inst_d in enumerate(instrument_data):
+                            if inst_d['id'] in raw_links:
+                                linked_doc_ids_by_idx[i] = raw_links[inst_d['id']]
+
+                        # Phase A only (regex, $0 cost)
+                        matches = run_phase_a(instrument_data, doc_data, linked_doc_ids_by_idx)
+
+                        if matches:
+                            # Apply matches to database
+                            for inst_idx, match_info in matches.items():
+                                inst_id = instrument_data[inst_idx]['id']
+                                result = await session.execute(
+                                    sa_select(DebtInstrument).where(DebtInstrument.id == inst_id)
+                                )
+                                db_inst = result.scalar_one_or_none()
+                                if db_inst:
+                                    db_inst.outstanding = match_info['amount_cents']
+                                    if not db_inst.principal or db_inst.principal <= 0:
+                                        db_inst.principal = match_info['amount_cents']
+                                    attrs = dict(db_inst.attributes) if db_inst.attributes else {}
+                                    attrs.update({
+                                        'amount_source': 'indenture_principal',
+                                        'amount_method': match_info.get('source', 'regex'),
+                                        'amount_doc_date': match_info.get('doc_date', ''),
+                                        'amount_confidence': 'high',
+                                        'amount_updated_at': datetime.now().strftime('%Y-%m-%d'),
+                                    })
+                                    if match_info.get('tap_count', 1) > 1:
+                                        attrs['amount_tap_count'] = match_info['tap_count']
+                                    db_inst.attributes = attrs
+                            await session.commit()
+                            print(f"    [OK] Matched {len(matches)}/{len(instrument_data)} bullet instruments from {len(doc_data)} indentures")
+                        else:
+                            print(f"    [OK] No regex matches from {len(doc_data)} indentures ({len(instrument_data)} instruments checked)")
+
+                await engine.dispose()
+            except Exception as e:
+                print(f"    [WARN] Amount backfill failed: {e}")
 
         # TTM Financials - check if new quarters might be available
         if not skip_ttm_financials and existing_data.get('has_financials') and not force:
@@ -901,12 +986,18 @@ async def run_iterative_extraction(
     print(f"\n{'='*70}")
     print(f"EXTRACTION COMPLETE: {ticker}")
     print(f"{'='*70}")
-    if not skip_core:
-        print(f"  QA Score: {result.final_qa_score:.0f}%")
-        print(f"  Total Cost: ${result.total_cost:.4f}")
-        print(f"  Duration: {result.total_duration:.1f}s")
+    if not skip_core and extraction_result:
+        qa_score = getattr(extraction_result, 'final_qa_score', None)
+        total_cost = getattr(extraction_result, 'total_cost', None)
+        total_duration = getattr(extraction_result, 'total_duration', None)
+        if qa_score is not None:
+            print(f"  QA Score: {qa_score:.0f}%")
+        if total_cost is not None:
+            print(f"  Total Cost: ${total_cost:.4f}")
+        if total_duration is not None:
+            print(f"  Duration: {total_duration:.1f}s")
 
-    return result
+    return extraction_result
 
 
 # =============================================================================
@@ -1099,7 +1190,7 @@ async def run_single_step(
     # Download filings if needed for certain steps
     filings = {}
     filing_urls = {}
-    steps_needing_filings = {"core", "financials", "hierarchy", "guarantees", "collateral", "covenants"}
+    steps_needing_filings = {"core", "hierarchy", "guarantees", "collateral", "covenants"}
     if step in steps_needing_filings:
         if not cik:
             print(f"Error: CIK required for step '{step}'. Use --cik or ensure company has CIK in database.")
@@ -1142,14 +1233,30 @@ async def run_single_step(
             print(f"  Extracting financials (8 quarters)...")
             from app.services.financial_extraction import extract_ttm_financials, save_financials_to_db
 
+            # Check if financial institution
             async with async_session() as session:
-                financials = await extract_ttm_financials(filings, gemini_api_key, ticker)
-                if financials:
-                    count = await save_financials_to_db(session, company_id, financials)
-                    print(f"    Saved {count} quarters of financial data")
-                    success = True
-                else:
-                    print(f"    No financials extracted")
+                is_fi = company.is_financial_institution if hasattr(company, 'is_financial_institution') else False
+
+            financials = await extract_ttm_financials(
+                ticker=ticker,
+                cik=cik,
+                use_claude=False,
+                is_financial_institution=is_fi,
+            )
+            if financials:
+                saved_count = 0
+                for fin in financials:
+                    try:
+                        async with async_session() as session:
+                            result = await save_financials_to_db(session, ticker, fin)
+                            if result:
+                                saved_count += 1
+                    except Exception as e:
+                        print(f"    [WARN] Failed to save quarter: {e}")
+                print(f"    Saved {saved_count} quarters of financial data")
+                success = saved_count > 0
+            else:
+                print(f"    No financials extracted")
 
         elif step == "hierarchy":
             print(f"  Extracting ownership hierarchy...")
@@ -1172,7 +1279,7 @@ async def run_single_step(
         elif step == "collateral":
             print(f"  Extracting collateral...")
             async with async_session() as session:
-                count = await extract_collateral(session, company_id, filings)
+                count = await extract_collateral(session, company_id, ticker, filings)
                 print(f"    Extracted {count} collateral records")
                 success = True
 
@@ -1182,6 +1289,74 @@ async def run_single_step(
                 count = await link_documents_to_instruments(session, company_id, ticker, use_llm=False)
                 print(f"    Created {count} document links")
                 success = True
+
+        elif step == "amounts":
+            print(f"  Backfilling amounts from indentures (regex, $0 cost)...")
+            from scripts.extract_amounts_from_indentures import (
+                get_bullet_instruments_needing_amounts,
+                get_indenture_docs,
+                get_linked_doc_ids,
+                run_phase_a,
+            )
+            from app.models.schema import DebtInstrument
+
+            async with async_session() as session:
+                instruments = await get_bullet_instruments_needing_amounts(session, company_id)
+                indenture_docs = await get_indenture_docs(session, company_id)
+
+                if not instruments or not indenture_docs:
+                    print(f"    No bullet instruments needing amounts or no indentures ({len(instruments)} instruments, {len(indenture_docs)} indentures)")
+                    success = True
+                else:
+                    instrument_data = [{
+                        'id': inst.id, 'name': inst.name, 'cusip': inst.cusip,
+                        'interest_rate': inst.interest_rate, 'maturity_date': inst.maturity_date,
+                        'instrument_type': inst.instrument_type,
+                        'attributes': dict(inst.attributes) if inst.attributes else {},
+                    } for inst in instruments]
+
+                    doc_data = [{
+                        'id': doc.id, 'filing_date': doc.filing_date,
+                        'content': doc.content, 'content_length': doc.content_length,
+                        'section_title': doc.section_title,
+                    } for doc in indenture_docs]
+
+                    inst_ids = [inst.id for inst in instruments]
+                    raw_links = await get_linked_doc_ids(session, inst_ids)
+                    linked_doc_ids_by_idx = {}
+                    for i, inst_d in enumerate(instrument_data):
+                        if inst_d['id'] in raw_links:
+                            linked_doc_ids_by_idx[i] = raw_links[inst_d['id']]
+
+                    matches = run_phase_a(instrument_data, doc_data, linked_doc_ids_by_idx)
+
+                    if matches:
+                        for inst_idx, match_info in matches.items():
+                            inst_id = instrument_data[inst_idx]['id']
+                            result = await session.execute(
+                                select(DebtInstrument).where(DebtInstrument.id == inst_id)
+                            )
+                            db_inst = result.scalar_one_or_none()
+                            if db_inst:
+                                db_inst.outstanding = match_info['amount_cents']
+                                if not db_inst.principal or db_inst.principal <= 0:
+                                    db_inst.principal = match_info['amount_cents']
+                                attrs = dict(db_inst.attributes) if db_inst.attributes else {}
+                                attrs.update({
+                                    'amount_source': 'indenture_principal',
+                                    'amount_method': match_info.get('source', 'regex'),
+                                    'amount_doc_date': match_info.get('doc_date', ''),
+                                    'amount_confidence': 'high',
+                                    'amount_updated_at': datetime.now().strftime('%Y-%m-%d'),
+                                })
+                                if match_info.get('tap_count', 1) > 1:
+                                    attrs['amount_tap_count'] = match_info['tap_count']
+                                db_inst.attributes = attrs
+                        await session.commit()
+                        print(f"    Matched {len(matches)}/{len(instrument_data)} bullet instruments via regex")
+                    else:
+                        print(f"    No regex matches from {len(doc_data)} indentures ({len(instrument_data)} instruments checked)")
+                    success = True
 
         elif step == "covenants":
             print(f"  Extracting covenants...")
@@ -1430,7 +1605,7 @@ def main():
 
     # Validate --step argument
     valid_steps = {"core", "financials", "hierarchy", "guarantees", "collateral",
-                   "documents", "covenants", "metrics", "finnhub", "pricing", "cache"}
+                   "documents", "amounts", "covenants", "metrics", "finnhub", "pricing", "cache"}
     if args.step and args.step not in valid_steps:
         print(f"Error: Invalid step '{args.step}'. Valid steps: {', '.join(sorted(valid_steps))}")
         sys.exit(1)

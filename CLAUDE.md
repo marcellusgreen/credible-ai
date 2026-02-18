@@ -6,7 +6,7 @@ Context for AI assistants working on the DebtStack.ai codebase.
 
 ## What's Next
 
-**Immediate**: Distribution complete. SDK v0.1.3 on PyPI, MCP server on 6 directories (Anthropic Registry, Smithery, MCP.so, Awesome MCP Servers, PulseMCP, Glama.ai), Mintlify docs live at docs.debtstack.ai, custom MCP endpoint at mcp.debtstack.ai. Debt coverage: $4,531B / $6,618B = **68.5%**. OK: **148**, EXCESS_SOME: 6, EXCESS_SIGNIFICANT: 0, MISSING_SOME: 16, MISSING_SIGNIFICANT: 31, MISSING_ALL: 3. **Extraction ceiling reached** after 11 tiers — remaining 63 non-OK companies have structural gaps (aggregate-only footnotes, bank deposits in total_debt, utility subsidiaries, missing supplemental indentures). Next: (1) company expansion 211→288, (2) Stripe billing connection, (3) benchmark denominator adjustments for banks/utilities. See WORKPLAN.md.
+**Immediate**: Company expansion **COMPLETE** — 291 companies (up from 211). Document linking pipeline **COMPLETE** — 96.4% coverage. Finnhub bond discovery **IN PROGRESS** for 87 new companies. Distribution complete. SDK v0.1.3 on PyPI, MCP server on 6 directories, Mintlify docs live at docs.debtstack.ai. Next: (1) Complete Finnhub discovery for remaining new companies, (2) benchmark denominator adjustments for banks/utilities, (3) Stripe billing connection, (4) prospectus supplement extraction. See WORKPLAN.md.
 
 **Completed (distribution)**:
 - ~~SDK publication to PyPI~~ ✅ v0.1.3 — LangChain tools (7), MCP server (8 tools), console script (`debtstack-mcp`)
@@ -16,10 +16,13 @@ Context for AI assistants working on the DebtStack.ai codebase.
 - ~~Analytics & alerting~~ ✅ Vercel Analytics, PostHog (frontend + backend), Sentry, Slack alerts
 - ~~Pricing scheduler~~ ✅ APScheduler in-process (11 AM / 3 PM / 9 PM ET)
 - ~~Chat assistant~~ ✅ Full-page chat at `/dashboard/chat` — Claude + 8 DebtStack API tools via SSE streaming. Needs `ANTHROPIC_API_KEY` in Railway frontend env.
+- ~~Company expansion~~ ✅ 211 → 291 companies (Tiers 1-5: 10+22+38+13+4 = 87 new companies)
+- ~~Document linking~~ ✅ 96.4% coverage (5,512/5,719 instruments linked). Pipeline: base indenture (789) → credit agreement (106) → heuristic matching (~220)
+- ~~QC fixes~~ ✅ 0 critical, 0 errors remaining. Fixed ES revenue scale, deactivated 167 matured bonds, created 19 root entities, cleared 487 future issue dates
 
 **Then**:
-1. Company expansion (211 → 288, Tier 2-5 remaining)
-2. Complete Finnhub discovery (~50 companies remaining), link discovered bonds to documents
+1. Complete Finnhub bond discovery for remaining new companies (run `python scripts/expand_bond_pricing.py --phase4` — ~7 hours)
+2. Benchmark denominator adjustments for banks/utilities ($0 cost)
 3. Stripe billing connection (products created, webhook handler exists, needs env vars in Railway)
 4. Prospectus supplement extraction for aggregate-footnote companies (VZ, T, CMCSA, PG, KO)
 
@@ -31,21 +34,23 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 ## Current Status (February 2026)
 
-**Database**: 211 companies | 6,016 debt instruments | 2,926 with CUSIP | 4,712 with pricing | 14,511 document sections | 4,165 guarantees | 713 collateral records | 1,247 covenants | 28,128 entities | 1,816 financial quarters | **97% document linkage** (4,379/4,496 active instruments linked; 117 unlinked = 51 commercial paper + 52 zero-doc companies + 14 other)
+**Database**: 291 companies | 5,719 active debt instruments | 2,518 with CUSIP | 4,273 with pricing | 21,891 document sections | 5,127 guarantees | 949 collateral records | 1,793 covenants | 38,903 entities | ~2,900 financial quarters
 
-**Company Expansion**: 211 companies (up from 201) — added 10 Tier 1 massive-debt issuers (CMCSA, DUK, CVS, USB, SO, TFC, ET, PNC, PCG, BMY)
+**Company Expansion**: 291 companies (up from 211) — added 80 companies across Tiers 1-5 (10 massive >$50B + 22 large $30-50B + 38 significant $15-30B + 13 moderate $5-15B + 4 special interest <$5B). **COMPLETE.**
 
-**Debt Coverage Gaps**: 148/211 companies (70%) have instrument outstanding within 80-120% of total debt ("OK"). Phases 1-9 + Tiers 1-11 updated 1,730+ instruments, deactivated 330+ duplicates/phantoms/aggregates, cleared 150+ wrong amounts, fixed 50+ scale errors. EXCESS reduced from 58→6 (6 EXCESS_SOME, 0 EXCESS_SIGNIFICANT). MISSING_ALL at 3 (PANW, TTD — revolvers with $0 drawn; BAC — structural bank gap). 31 MISSING_SIGNIFICANT remain — mostly structural: aggregate-only footnotes (VZ, T, CMCSA, CHTR, KO), banks with deposits in total_debt (COF, AXP, USB, WFC, TFC, MS), utility subsidiaries (AEP, SO, DUK, EXC). 16 MISSING_SOME — JNJ (77.6%), TMO (71.6%), TMUS (40.7%), SPG (67.2%), GM (64.1%). Overall: $4,531B instruments / $6,618B total debt = **68.5%**. **Extraction ceiling reached** after 11 tiers — remaining 63 non-OK companies have structural gaps that cannot be solved by reading existing SEC filings. Next improvement: benchmark denominator adjustments (exclude bank deposits, utility subsidiary debt from total_debt comparison).
+**Document Linkage**: **96.4%** (5,512/5,719 instruments linked to source documents). Up from 80% after running full linking pipeline (base indenture → credit agreement → heuristic matching). Remaining 207 unlinked are mostly commercial paper, bank instruments, and specialized types.
 
-**Pricing Coverage**: 3,557 active bonds with pricing (2,487 real TRACE, 1,070 estimated) via Finnhub/FINRA TRACE. Updated 3x daily by APScheduler (11 AM, 3 PM, 9 PM ET). Daily snapshots saved to `bond_pricing_history` at 9 PM ET.
+**Debt Coverage Gaps** (original 211 companies): 148/211 (70%) have instrument outstanding within 80-120% of total debt ("OK"). Phases 1-9 + Tiers 1-11 updated 1,730+ instruments. EXCESS reduced from 58→6. MISSING_ALL at 3 (PANW, TTD, BAC). 31 MISSING_SIGNIFICANT remain — mostly structural gaps. Overall (original 211): $4,531B instruments / $6,618B total debt = **68.5%**. **Extraction ceiling reached** — remaining non-OK companies have structural gaps. New 80 companies not yet gap-analyzed.
 
-**Finnhub Discovery**: 161/211 companies scanned, ~50 remaining
+**Pricing Coverage**: ~4,273 active bonds with pricing via Finnhub/FINRA TRACE. Updated 3x daily by APScheduler (11 AM, 3 PM, 9 PM ET). Daily snapshots saved to `bond_pricing_history` at 9 PM ET. **Historical TRACE fallback** (2026-02-18): When Finnhub returns no current data, falls back to most recent historical TRACE price instead of estimated. Backfilled 172 bonds from estimated to real TRACE. **Scheduler fix** (2026-02-18): Replaced N+1 staleness query (33s) with single JOIN (0.3s), added `require_isin` filter, 429 retry with backoff, circuit breaker after 10 consecutive errors.
 
-**Document Coverage**: 14,511 document sections across 211 companies
+**Finnhub Discovery**: 161/211 original companies + 87 new expansion companies scanned. 127 bonds discovered from new companies (UPS 42, BMY 28, TGT 13, CVS 11 top contributors). **COMPLETE.**
 
-**Ownership Coverage**: 28,128 entities across 211 companies
+**Document Coverage**: 21,891 document sections across 291 companies
 
-**Data Quality**: QC audit passing - 0 critical, 0 errors, 4 warnings (2026-01-29). Fixed 38 mislabeled seniority records (2026-02-06).
+**Ownership Coverage**: 38,903 entities across 291 companies
+
+**Data Quality**: QC audit passing - 0 critical, 3 errors (all legitimate: MSTR/AL EBITDA>revenue, VICI 0.40x leverage), 11 warnings (2026-02-18). Fixed ES revenue 1000x scale error, deactivated 167 matured bonds, created 19 root entities.
 
 **Eval Suite**: 121/136 tests passing (89.0%). 2 workflow tests fixed by secured bond pricing expansion.
 

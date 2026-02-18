@@ -947,7 +947,7 @@ class QCMaster:
             SELECT c.ticker
             FROM companies c
             LEFT JOIN company_metrics cm ON cm.company_id = c.id
-            WHERE cm.id IS NULL
+            WHERE cm.company_id IS NULL
         '''))
         rows = result.fetchall()
         if rows:

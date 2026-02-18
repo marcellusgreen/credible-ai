@@ -52,6 +52,10 @@ def convert_to_extraction_result(raw: dict, ticker: str) -> ExtractionResult:
         if not owners and e.get('parent_name'):
             # Legacy format
             owners = [{'parent_name': e['parent_name'], 'ownership_pct': e.get('ownership_pct', 100)}]
+        # Clean None values in owner dicts (Pydantic rejects None for str fields with defaults)
+        for o in owners:
+            if o.get('ownership_type') is None:
+                o['ownership_type'] = 'direct'
 
         entities.append(ExtractedEntity(
             name=e.get('name', ''),
