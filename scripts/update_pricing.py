@@ -111,13 +111,15 @@ async def update_all(stale_only: bool = True, stale_days: int = 1, limit: int = 
             bond_name = bond.name[:40] if bond.name else "Unknown"
             print(f"[{i+1}/{len(bonds)}] {bond_name}...")
 
-            # Get price (Finnhub or estimated)
+            # Get price (Finnhub, historical TRACE, or estimated)
             price = await get_bond_price(
                 cusip=bond.cusip,
                 isin=bond.isin,
                 coupon_rate_pct=bond.interest_rate / 100 if bond.interest_rate else None,
                 maturity_date=bond.maturity_date,
                 credit_rating=None,
+                session=session,
+                debt_instrument_id=bond.id,
             )
 
             if price.last_price:

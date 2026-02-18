@@ -3,7 +3,8 @@ Bond Pricing Service
 
 Fetches bond pricing data using a tiered approach:
 1. Finnhub API (TRACE data via ISIN) - requires premium subscription
-2. Estimated pricing based on treasury yields + credit spreads (fallback)
+2. Historical TRACE pricing from bond_pricing_history (fallback)
+3. Estimated pricing based on treasury yields + credit spreads (fallback)
 
 Finnhub API Documentation: https://finnhub.io/docs/api/bond-price
 """
@@ -20,7 +21,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import DebtInstrument, BondPricing, Company
+from app.models import DebtInstrument, BondPricing, BondPricingHistory, Company
 
 
 # Finnhub API configuration
@@ -374,6 +375,39 @@ async def fetch_finnhub_tick_data(isin: str, trade_date: date = None) -> BondPri
             return BondPrice(isin=isin, source="finnhub", error=f"Tick API error: {str(e)}")
 
 
+async def get_latest_historical_trace_price(
+    session: AsyncSession,
+    debt_instrument_id: UUID,
+) -> Optional[BondPrice]:
+    """
+    Get the most recent historical TRACE price for a bond.
+
+    Used as fallback when Finnhub returns no current data but we have
+    historical pricing from previous trades.
+    """
+    result = await session.execute(
+        select(BondPricingHistory)
+        .where(BondPricingHistory.debt_instrument_id == debt_instrument_id)
+        .where(BondPricingHistory.price.isnot(None))
+        .where(BondPricingHistory.price_source == "TRACE")
+        .order_by(BondPricingHistory.price_date.desc())
+        .limit(1)
+    )
+    hist = result.scalar_one_or_none()
+    if not hist:
+        return None
+
+    return BondPrice(
+        cusip=hist.cusip,
+        last_price=hist.price,
+        last_trade_date=datetime.combine(hist.price_date, datetime.min.time()),
+        volume=hist.volume,
+        yield_pct=Decimal(str(hist.ytm_bps / 100)) if hist.ytm_bps else None,
+        source="finnhub",
+        is_estimated=False,
+    )
+
+
 async def get_bond_price(
     cusip: Optional[str] = None,
     isin: Optional[str] = None,
@@ -381,12 +415,15 @@ async def get_bond_price(
     maturity_date: Optional[date] = None,
     credit_rating: Optional[str] = None,
     use_estimated_fallback: bool = True,
+    session: Optional[AsyncSession] = None,
+    debt_instrument_id: Optional[UUID] = None,
 ) -> BondPrice:
     """
     Get bond price using tiered approach.
 
     1. Try Finnhub API if ISIN available
-    2. Fall back to estimated pricing if enabled
+    2. Fall back to most recent historical TRACE price if available
+    3. Fall back to estimated pricing if enabled
 
     Args:
         cusip: CUSIP identifier
@@ -395,6 +432,8 @@ async def get_bond_price(
         maturity_date: Maturity date for estimated pricing
         credit_rating: Credit rating for estimated pricing
         use_estimated_fallback: Whether to use estimated pricing as fallback
+        session: Database session (needed for historical fallback)
+        debt_instrument_id: Bond ID (needed for historical fallback)
 
     Returns:
         BondPrice with real or estimated data
@@ -405,6 +444,14 @@ async def get_bond_price(
         if result.last_price is not None:
             result.cusip = cusip
             return result
+
+    # Fall back to most recent historical TRACE price
+    if session and debt_instrument_id:
+        hist_price = await get_latest_historical_trace_price(session, debt_instrument_id)
+        if hist_price is not None:
+            hist_price.cusip = cusip
+            hist_price.isin = isin
+            return hist_price
 
     # Fall back to estimated pricing
     if use_estimated_fallback and coupon_rate_pct and maturity_date:
@@ -600,13 +647,15 @@ async def update_company_pricing(
     }
 
     for bond in bonds:
-        # Get price (Finnhub or estimated)
+        # Get price (Finnhub, historical TRACE, or estimated)
         price = await get_bond_price(
             cusip=bond.cusip,
             isin=bond.isin,
             coupon_rate_pct=bond.interest_rate / 100 if bond.interest_rate else None,
             maturity_date=bond.maturity_date,
             credit_rating=None,  # TODO: Add rating to bond model
+            session=session,
+            debt_instrument_id=bond.id,
         )
 
         if price.last_price:

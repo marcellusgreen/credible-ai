@@ -66,6 +66,8 @@ async def update_current_prices(
             isin=bond.isin,
             coupon_rate_pct=bond.interest_rate / 100 if bond.interest_rate else None,
             maturity_date=bond.maturity_date,
+            session=session,
+            debt_instrument_id=bond.id,
         )
 
         if price.last_price:
