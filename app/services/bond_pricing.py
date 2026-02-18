@@ -234,7 +234,22 @@ async def fetch_finnhub_price(isin: str) -> BondPrice:
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
-            resp = await client.get(url, params=params)
+            max_retries = 3
+            for attempt in range(max_retries):
+                resp = await client.get(url, params=params)
+
+                if resp.status_code == 429:
+                    if attempt < max_retries - 1:
+                        wait = int(resp.headers.get("retry-after", 2 ** (attempt + 1)))
+                        await asyncio.sleep(wait)
+                        continue
+                    return BondPrice(
+                        isin=isin,
+                        source="finnhub",
+                        error="Finnhub rate limit exceeded after retries",
+                    )
+
+                break  # Got a non-429 response
 
             if resp.status_code == 401:
                 return BondPrice(
@@ -248,13 +263,6 @@ async def fetch_finnhub_price(isin: str) -> BondPrice:
                     isin=isin,
                     source="finnhub",
                     error="Finnhub premium subscription required for bond data",
-                )
-
-            if resp.status_code == 429:
-                return BondPrice(
-                    isin=isin,
-                    source="finnhub",
-                    error="Finnhub rate limit exceeded",
                 )
 
             if resp.status_code != 200:
@@ -555,6 +563,7 @@ async def get_bonds_needing_pricing(
     stale_only: bool = False,
     stale_days: int = 1,
     limit: int = 100,
+    require_isin: bool = False,
 ) -> list[DebtInstrument]:
     """
     Get bonds that need pricing updates.
@@ -563,7 +572,8 @@ async def get_bonds_needing_pricing(
     - Have maturity dates in the future
     - Have coupon rates (for estimation)
     - Optionally filtered by company ticker
-    - Optionally filtered to only stale prices
+    - Optionally filtered to only stale prices (using a single JOIN, not N+1)
+    - Optionally filtered to only bonds with ISINs (needed for Finnhub)
     """
     # Tradeable instrument types
     tradeable_types = [
@@ -571,47 +581,50 @@ async def get_bonds_needing_pricing(
         "convertible_notes", "senior_secured_notes", "subordinated_notes"
     ]
 
-    query = (
-        select(DebtInstrument)
-        .where(DebtInstrument.instrument_type.in_(tradeable_types))
-        .where(DebtInstrument.is_active == True)
-        .where(DebtInstrument.maturity_date > date.today())
-        .where(DebtInstrument.interest_rate.isnot(None))
-        .limit(limit)
-    )
+    if stale_only:
+        # Single query with LEFT JOIN to check staleness — avoids N+1
+        from sqlalchemy import or_, func
+
+        query = (
+            select(DebtInstrument)
+            .outerjoin(BondPricing, DebtInstrument.id == BondPricing.debt_instrument_id)
+            .where(DebtInstrument.instrument_type.in_(tradeable_types))
+            .where(DebtInstrument.is_active == True)
+            .where(DebtInstrument.maturity_date > date.today())
+            .where(DebtInstrument.interest_rate.isnot(None))
+            .where(
+                or_(
+                    # No pricing record at all
+                    BondPricing.id.is_(None),
+                    # Staleness exceeds threshold
+                    BondPricing.staleness_days.is_(None),
+                    BondPricing.staleness_days >= stale_days,
+                    # fetched_at is old
+                    BondPricing.fetched_at.is_(None),
+                    BondPricing.fetched_at < func.now() - timedelta(days=stale_days),
+                )
+            )
+        )
+    else:
+        query = (
+            select(DebtInstrument)
+            .where(DebtInstrument.instrument_type.in_(tradeable_types))
+            .where(DebtInstrument.is_active == True)
+            .where(DebtInstrument.maturity_date > date.today())
+            .where(DebtInstrument.interest_rate.isnot(None))
+        )
 
     if ticker:
         query = query.join(Company).where(Company.ticker == ticker.upper())
 
+    if require_isin:
+        query = query.where(DebtInstrument.isin.isnot(None))
+
+    # Order by staleness so oldest-fetched bonds get updated first
+    query = query.order_by(DebtInstrument.id).limit(limit)
+
     result = await session.execute(query)
-    bonds = list(result.scalars().all())
-
-    if stale_only:
-        # Filter to only stale bonds
-        filtered = []
-        for bond in bonds:
-            # Check if has recent pricing
-            pricing_result = await session.execute(
-                select(BondPricing)
-                .where(BondPricing.debt_instrument_id == bond.id)
-            )
-            pricing = pricing_result.scalar_one_or_none()
-
-            if not pricing:
-                # No pricing at all
-                filtered.append(bond)
-            elif pricing.staleness_days is None or pricing.staleness_days >= stale_days:
-                # Stale pricing
-                filtered.append(bond)
-            elif pricing.fetched_at:
-                # Check if data is old
-                age = datetime.now() - pricing.fetched_at.replace(tzinfo=None)
-                if age.days >= stale_days:
-                    filtered.append(bond)
-
-        bonds = filtered
-
-    return bonds
+    return list(result.scalars().all())
 
 
 async def update_company_pricing(

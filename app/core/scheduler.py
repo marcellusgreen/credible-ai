@@ -35,13 +35,19 @@ scheduler = AsyncIOScheduler(timezone="US/Eastern")
 
 
 async def refresh_current_prices() -> dict:
-    """Fetch latest TRACE prices and update the bond_pricing table."""
+    """Fetch latest TRACE prices and update the bond_pricing table.
+
+    Only fetches bonds with ISINs (required for Finnhub) that haven't been
+    updated in the last day. Processes up to 2,500 bonds per run.
+    """
     logger.info("scheduler.refresh_prices.start")
     stats = {
         "bonds_checked": 0,
         "prices_updated": 0,
         "prices_failed": 0,
+        "prices_no_data": 0,
         "yields_calculated": 0,
+        "consecutive_errors": 0,
     }
 
     try:
@@ -49,10 +55,12 @@ async def refresh_current_prices() -> dict:
             bonds = await get_bonds_needing_pricing(
                 session,
                 stale_only=True,
-                stale_days=0,
-                limit=5000,
+                stale_days=1,
+                limit=2500,
+                require_isin=True,
             )
             stats["bonds_checked"] = len(bonds)
+            logger.info("scheduler.refresh_prices.found", count=len(bonds))
 
             for bond in bonds:
                 try:
@@ -69,6 +77,7 @@ async def refresh_current_prices() -> dict:
 
                     if price.last_price:
                         stats["prices_updated"] += 1
+                        stats["consecutive_errors"] = 0
 
                         ytm_bps = None
                         spread_bps = None
@@ -96,8 +105,27 @@ async def refresh_current_prices() -> dict:
                             spread_bps=spread_bps,
                             treasury_benchmark=benchmark,
                         )
-                    else:
+                    elif price.error and "rate limit" in price.error.lower():
                         stats["prices_failed"] += 1
+                        stats["consecutive_errors"] += 1
+                        logger.warning(
+                            "scheduler.refresh_prices.rate_limited",
+                            bond_id=str(bond.id),
+                        )
+                        # Back off on rate limit
+                        await asyncio.sleep(10)
+                    else:
+                        stats["prices_no_data"] += 1
+                        stats["consecutive_errors"] = 0
+
+                    # Stop if too many consecutive errors (API key issue, etc.)
+                    if stats["consecutive_errors"] >= 10:
+                        logger.error(
+                            "scheduler.refresh_prices.abort",
+                            reason="10 consecutive errors",
+                            last_error=price.error if price else "unknown",
+                        )
+                        break
 
                     await asyncio.sleep(REQUEST_DELAY)
 
@@ -108,6 +136,14 @@ async def refresh_current_prices() -> dict:
                         error=str(exc),
                     )
                     stats["prices_failed"] += 1
+                    stats["consecutive_errors"] += 1
+
+                    if stats["consecutive_errors"] >= 10:
+                        logger.error(
+                            "scheduler.refresh_prices.abort",
+                            reason="10 consecutive exceptions",
+                        )
+                        break
 
     except Exception as exc:
         logger.error("scheduler.refresh_prices.error", error=str(exc))
