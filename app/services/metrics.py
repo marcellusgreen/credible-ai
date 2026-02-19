@@ -325,6 +325,11 @@ async def recompute_metrics_for_company(
     # Track debt discrepancy for data quality
     if debt_discrepancy_pct is not None:
         source_filings["debt_discrepancy_pct"] = round(debt_discrepancy_pct, 1)
+    # Store calculation inputs for API provenance chain
+    if ttm_ebitda:
+        source_filings["ttm_ebitda"] = ttm_ebitda
+    if total_debt:
+        source_filings["total_debt_used"] = total_debt
 
     # Build metrics dict
     metrics_data = {

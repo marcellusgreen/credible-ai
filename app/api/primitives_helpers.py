@@ -130,7 +130,7 @@ BOND_FIELDS = {
     "rate_type", "coupon_rate", "spread_bps", "benchmark", "floor_bps",
     "issue_date", "issue_date_estimated", "maturity_date",
     "is_active", "is_drawn",
-    "pricing", "guarantor_count",
+    "pricing", "guarantor_count", "source_documents",
 }
 
 PRICING_FIELDS = {
@@ -155,6 +155,8 @@ FINANCIALS_FIELDS = {
     "operating_cash_flow", "investing_cash_flow", "financing_cash_flow", "capex",
     # Derived
     "free_cash_flow", "gross_margin", "operating_margin", "net_margin",
+    # Provenance
+    "source_filing",
 }
 
 COLLATERAL_FIELDS = {

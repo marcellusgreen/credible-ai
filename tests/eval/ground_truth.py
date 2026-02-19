@@ -24,8 +24,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from app.models import (
     Company, CompanyMetrics, CompanyFinancials,
-    DebtInstrument, BondPricing, Entity, Guarantee,
-    Collateral, Covenant, DocumentSection,
+    DebtInstrument, DebtInstrumentDocument, BondPricing,
+    Entity, Guarantee, Collateral, Covenant, DocumentSection,
 )
 
 
@@ -369,6 +369,118 @@ class GroundTruthManager:
                 "threshold_type": c.threshold_type,
             } for c in covenants],
             source="covenants",
+            tier=1,
+        )
+
+    # =========================================================================
+    # VERIFIABILITY GROUND TRUTH (Tier 1 & 2)
+    # =========================================================================
+
+    async def get_source_document_count(self, ticker: str) -> Optional[GroundTruth]:
+        """
+        Count bonds with linked source documents for a company.
+        Tier 2: Cross-table (debt_instrument_documents JOIN debt_instruments).
+        """
+        company_result = await self.db.execute(
+            select(Company.id).where(Company.ticker == ticker.upper())
+        )
+        company_id = company_result.scalar_one_or_none()
+        if not company_id:
+            return None
+
+        # Count distinct bonds that have at least one document link
+        result = await self.db.execute(
+            select(func.count(func.distinct(DebtInstrumentDocument.debt_instrument_id)))
+            .join(DebtInstrument, DebtInstrumentDocument.debt_instrument_id == DebtInstrument.id)
+            .where(DebtInstrument.company_id == company_id)
+        )
+        count = result.scalar() or 0
+
+        return GroundTruth(
+            value=count,
+            source="count(distinct debt_instrument_documents.debt_instrument_id)",
+            tier=2,
+        )
+
+    async def get_source_documents_for_bond(self, cusip: str) -> Optional[GroundTruth]:
+        """
+        Get source document links for a specific bond by CUSIP.
+        Tier 1: Direct from debt_instrument_documents + document_sections.
+        """
+        # Find the debt instrument
+        debt_result = await self.db.execute(
+            select(DebtInstrument.id).where(DebtInstrument.cusip == cusip.upper())
+        )
+        debt_id = debt_result.scalar_one_or_none()
+        if not debt_id:
+            return None
+
+        # Get document links
+        result = await self.db.execute(
+            select(DebtInstrumentDocument, DocumentSection)
+            .join(DocumentSection, DebtInstrumentDocument.document_section_id == DocumentSection.id)
+            .where(DebtInstrumentDocument.debt_instrument_id == debt_id)
+        )
+        rows = result.all()
+
+        docs = [{
+            "doc_type": doc.doc_type,
+            "section_type": doc.section_type,
+            "sec_filing_url": doc.sec_filing_url,
+            "relationship": link.relationship_type,
+            "match_confidence": float(link.match_confidence) if link.match_confidence else None,
+            "match_method": link.match_method,
+        } for link, doc in rows]
+
+        return GroundTruth(
+            value=docs,
+            source="debt_instrument_documents JOIN document_sections",
+            tier=1,
+        )
+
+    async def get_financials_source_filing(self, ticker: str) -> Optional[GroundTruth]:
+        """
+        Get source_filing URL from the most recent financial record.
+        Tier 1: Direct from company_financials.source_filing.
+        """
+        company_result = await self.db.execute(
+            select(Company.id).where(Company.ticker == ticker.upper())
+        )
+        company_id = company_result.scalar_one_or_none()
+        if not company_id:
+            return None
+
+        fin_result = await self.db.execute(
+            select(CompanyFinancials)
+            .where(CompanyFinancials.company_id == company_id)
+            .order_by(CompanyFinancials.period_end_date.desc())
+            .limit(1)
+        )
+        financials = fin_result.scalar_one_or_none()
+        if not financials:
+            return None
+
+        return GroundTruth(
+            value=financials.source_filing,
+            source="company_financials.source_filing",
+            tier=1,
+        )
+
+    async def get_leverage_source_filings(self, ticker: str) -> Optional[GroundTruth]:
+        """
+        Get source_filings JSONB from company_metrics for leverage provenance.
+        Tier 1: Direct from company_metrics.source_filings.
+        """
+        result = await self.db.execute(
+            select(CompanyMetrics).where(CompanyMetrics.ticker == ticker.upper())
+        )
+        metrics = result.scalar_one_or_none()
+        if not metrics or not metrics.source_filings:
+            return None
+
+        return GroundTruth(
+            value=metrics.source_filings,
+            source="company_metrics.source_filings",
             tier=1,
         )
 

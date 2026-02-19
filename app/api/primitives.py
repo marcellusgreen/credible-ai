@@ -14,6 +14,11 @@ NOTE: Pricing data only includes actual TRACE market data, not estimated values.
 8. GET /v1/financials - Quarterly financial statements (income, balance sheet, cash flow)
 9. GET /v1/collateral - Collateral securing debt instruments
 
+Additional:
+10. GET /v1/covenants - Structured covenant data
+11. GET /v1/covenants/compare - Cross-company covenant comparison (Business only)
+12. POST /v1/coverage/request - Request coverage for non-covered companies
+
 DEPRECATED:
 - GET /v1/pricing - Use GET /v1/bonds?has_pricing=true instead
 """
@@ -36,8 +41,9 @@ from app.core.auth import (
 )
 from app.models import (
     Company, CompanyMetrics, CompanySnapshot, Entity, DebtInstrument,
-    Guarantee, BondPricing, DocumentSection, ExtractionMetadata,
-    CompanyFinancials, Collateral, Covenant, User, UsageLog,
+    DebtInstrumentDocument, Guarantee, BondPricing, DocumentSection,
+    ExtractionMetadata, CompanyFinancials, Collateral, Covenant, User,
+    UsageLog, CoverageRequest,
 )
 
 # Import shared helpers
@@ -277,7 +283,13 @@ async def search_companies(
             # Add leverage data quality info from source_filings
             if m and m.source_filings:
                 sf = m.source_filings
+                # Fallback: compute ttm_ebitda from total_debt / leverage_ratio
+                # if not yet stored in source_filings (metrics haven't been recomputed)
+                ttm_ebitda_used = sf.get("ttm_ebitda")
+                if not ttm_ebitda_used and m.total_debt and m.leverage_ratio and float(m.leverage_ratio) > 0:
+                    ttm_ebitda_used = int(m.total_debt / float(m.leverage_ratio))
                 metadata["leverage_data_quality"] = {
+                    # Existing fields
                     "ebitda_source": sf.get("ebitda_source"),  # "annual_10k" or "quarterly_sum"
                     "ebitda_quarters": sf.get("ebitda_quarters"),
                     "ebitda_quarters_with_da": sf.get("ebitda_quarters_with_da"),
@@ -285,6 +297,12 @@ async def search_companies(
                     "ebitda_estimated": sf.get("ebitda_estimated", False),
                     "ttm_quarters": sf.get("ttm_quarters", []),
                     "computed_at": sf.get("computed_at"),
+                    # Calculation inputs + sources
+                    "total_debt_used": sf.get("total_debt_used"),
+                    "ttm_ebitda_used": ttm_ebitda_used,
+                    "debt_filing_url": sf.get("debt_filing"),
+                    "ttm_filing_urls": sf.get("ttm_filings", []),
+                    "debt_discrepancy_pct": sf.get("debt_discrepancy_pct"),
                 }
             company_data["_metadata"] = metadata
 
@@ -539,6 +557,29 @@ async def search_bonds(
                 "estimated_value": coll.estimated_value,
             })
 
+    # Get source documents for returned bonds (only when requested)
+    source_docs_by_bond = {}
+    if bond_ids and (selected_fields is None or "source_documents" in selected_fields):
+        doc_result = await db.execute(
+            select(DebtInstrumentDocument, DocumentSection)
+            .join(DocumentSection, DebtInstrumentDocument.document_section_id == DocumentSection.id)
+            .where(DebtInstrumentDocument.debt_instrument_id.in_(bond_ids))
+            .order_by(DebtInstrumentDocument.match_confidence.desc())
+        )
+        for link, doc in doc_result.all():
+            if link.debt_instrument_id not in source_docs_by_bond:
+                source_docs_by_bond[link.debt_instrument_id] = []
+            source_docs_by_bond[link.debt_instrument_id].append({
+                "doc_type": doc.doc_type,
+                "section_type": doc.section_type,
+                "section_title": doc.section_title,
+                "filing_date": doc.filing_date.isoformat() if doc.filing_date else None,
+                "sec_filing_url": doc.sec_filing_url,
+                "relationship": link.relationship_type,
+                "match_confidence": float(link.match_confidence) if link.match_confidence else None,
+                "match_method": link.match_method,
+            })
+
     # Build response (always have 4 elements since we always join pricing)
     data = []
     for row in rows:
@@ -576,6 +617,7 @@ async def search_bonds(
             "guarantee_data_confidence": d.guarantee_data_confidence,
             "collateral": collateral_by_bond.get(d.id, []),
             "collateral_data_confidence": d.collateral_data_confidence,
+            "source_documents": source_docs_by_bond.get(d.id, []),
         }
 
         # Add pricing data (only actual TRACE pricing, not estimated)
@@ -1879,12 +1921,20 @@ async def _batch_search_companies(params: dict, db: AsyncSession) -> dict:
             # Add leverage data quality info
             if m and m.source_filings:
                 sf = m.source_filings
+                ttm_ebitda_used = sf.get("ttm_ebitda")
+                if not ttm_ebitda_used and m.total_debt and m.leverage_ratio and float(m.leverage_ratio) > 0:
+                    ttm_ebitda_used = int(m.total_debt / float(m.leverage_ratio))
                 metadata["leverage_data_quality"] = {
                     "ebitda_quarters": sf.get("ebitda_quarters"),
                     "ebitda_quarters_with_da": sf.get("ebitda_quarters_with_da"),
                     "is_annualized": sf.get("is_annualized", False),
                     "ebitda_estimated": sf.get("ebitda_estimated", False),
                     "ttm_quarters": sf.get("ttm_quarters", []),
+                    "total_debt_used": sf.get("total_debt_used"),
+                    "ttm_ebitda_used": ttm_ebitda_used,
+                    "debt_filing_url": sf.get("debt_filing"),
+                    "ttm_filing_urls": sf.get("ttm_filings", []),
+                    "debt_discrepancy_pct": sf.get("debt_discrepancy_pct"),
                 }
             company_data["_metadata"] = metadata
 
@@ -2509,6 +2559,8 @@ async def search_financials(
             "gross_margin": gross_margin,
             "operating_margin": operating_margin,
             "net_margin": net_margin,
+            # Provenance
+            "source_filing": fin.source_filing,
         }
 
         data.append(filter_dict(fin_data, selected_fields))
@@ -2579,6 +2631,7 @@ async def _compute_ttm_financials(db: AsyncSession, ticker_list: List[str], sele
                 "stockholders_equity": latest.stockholders_equity,
                 "operating_cash_flow": latest.operating_cash_flow,
                 "capex": latest.capex,
+                "source_filing": latest.source_filing,
             }
             # Compute free cash flow
             if latest.operating_cash_flow is not None and latest.capex is not None:
@@ -2634,6 +2687,7 @@ async def _compute_ttm_financials(db: AsyncSession, ticker_list: List[str], sele
                 "stockholders_equity": most_recent.stockholders_equity,
                 "operating_cash_flow": ocf,
                 "capex": capex,
+                "source_filing": most_recent.source_filing,
             }
             # Compute free cash flow
             if ocf is not None and capex is not None:
@@ -3457,3 +3511,75 @@ async def compare_covenants(
     }
 
     return etag_response(response_data, if_none_match)
+
+
+# =============================================================================
+# COVERAGE REQUEST
+# =============================================================================
+
+
+class CoverageRequestBody(BaseModel):
+    """Request body for coverage request."""
+    ticker: str = Field(..., description="Company ticker symbol")
+    company_name: str = Field(..., description="Full company name")
+    cik: Optional[str] = Field(None, description="SEC CIK number")
+    clerk_user_id: Optional[str] = Field(None, description="Clerk user ID (for frontend requests)")
+
+
+@router.post("/coverage/request", tags=["Coverage"])
+async def request_coverage(
+    body: CoverageRequestBody,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Request coverage for a company not currently in DebtStack.
+
+    Accepts requests from the chat frontend (authenticated via Clerk on the frontend side).
+    Creates a coverage_requests record for internal tracking and processing.
+    """
+    # Check for duplicate pending requests for the same ticker
+    existing = await db.execute(
+        select(CoverageRequest).where(
+            and_(
+                CoverageRequest.ticker == body.ticker.upper(),
+                CoverageRequest.status == "pending",
+            )
+        )
+    )
+    if existing.scalar_one_or_none():
+        return JSONResponse(
+            content={
+                "status": "already_requested",
+                "message": f"Coverage for {body.ticker.upper()} has already been requested.",
+            }
+        )
+
+    # Find a user to associate with — use the most recently created active user
+    # (In production, the frontend Clerk auth guarantees a valid user)
+    result = await db.execute(
+        select(User).where(User.is_active == True).order_by(desc(User.created_at)).limit(1)
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=400, detail="No active user found to associate with this request.")
+
+    # Create coverage request
+    coverage_req = CoverageRequest(
+        user_id=user.id,
+        company_name=body.company_name,
+        ticker=body.ticker.upper(),
+        cik=body.cik,
+        priority="normal",
+        notes="Requested via chat assistant",
+        status="pending",
+    )
+    db.add(coverage_req)
+    await db.commit()
+
+    return JSONResponse(
+        content={
+            "status": "requested",
+            "message": f"Coverage request for {body.company_name} ({body.ticker.upper()}) has been submitted.",
+            "request_id": str(coverage_req.id),
+        }
+    )
