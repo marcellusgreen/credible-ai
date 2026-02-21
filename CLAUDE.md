@@ -6,7 +6,7 @@ Context for AI assistants working on the DebtStack.ai codebase.
 
 ## What's Next
 
-**Immediate**: Company expansion **COMPLETE** — 291 companies (up from 211). Document linking pipeline **COMPLETE** — 96.4% coverage. Finnhub bond discovery **IN PROGRESS** for 87 new companies. Distribution complete. SDK v0.1.3 on PyPI, MCP server on 6 directories, Mintlify docs live at docs.debtstack.ai. Next: (1) Complete Finnhub discovery for remaining new companies, (2) benchmark denominator adjustments for banks/utilities, (3) Stripe billing connection, (4) prospectus supplement extraction. See WORKPLAN.md.
+**Immediate**: Prospectus section extraction **COMPLETE** — 3,139 sections across 167 companies ($0, regex only). Intermediate ownership extraction **COMPLETE** — 2,399 parents assigned, 2,393 ownership links across 167 companies (~$5-8 Gemini Flash). Neon batch commit fix applied to `extract_intermediate_ownership.py`. Overall 68.2% debt coverage (174 OK). Next: (1) benchmark denominator adjustments for banks/utilities ($0 cost), (2) Stripe billing connection. See WORKPLAN.md.
 
 **Completed (distribution)**:
 - ~~SDK publication to PyPI~~ ✅ v0.1.3 — LangChain tools (7), MCP server (8 tools), console script (`debtstack-mcp`)
@@ -15,16 +15,14 @@ Context for AI assistants working on the DebtStack.ai codebase.
 - ~~README restructure~~ ✅ API-first Quick Start, badges, MCP directory table
 - ~~Analytics & alerting~~ ✅ Vercel Analytics, PostHog (frontend + backend), Sentry, Slack alerts
 - ~~Pricing scheduler~~ ✅ APScheduler in-process (11 AM / 3 PM / 9 PM ET)
-- ~~Chat assistant~~ ✅ Full-page chat at `/dashboard/chat` — Claude + 8 DebtStack API tools via SSE streaming. Needs `ANTHROPIC_API_KEY` in Railway frontend env.
+- ~~Chat assistant~~ ✅ Full-page chat at `/dashboard/chat` — Gemini + 9 DebtStack API tools via SSE streaming (includes `research_company` for live SEC research of non-covered companies)
 - ~~Company expansion~~ ✅ 211 → 291 companies (Tiers 1-5: 10+22+38+13+4 = 87 new companies)
 - ~~Document linking~~ ✅ 96.4% coverage (5,512/5,719 instruments linked). Pipeline: base indenture (789) → credit agreement (106) → heuristic matching (~220)
 - ~~QC fixes~~ ✅ 0 critical, 0 errors remaining. Fixed ES revenue scale, deactivated 167 matured bonds, created 19 root entities, cleared 487 future issue dates
 
 **Then**:
-1. Complete Finnhub bond discovery for remaining new companies (run `python scripts/expand_bond_pricing.py --phase4` — ~7 hours)
-2. Benchmark denominator adjustments for banks/utilities ($0 cost)
-3. Stripe billing connection (products created, webhook handler exists, needs env vars in Railway)
-4. Prospectus supplement extraction for aggregate-footnote companies (VZ, T, CMCSA, PG, KO)
+1. Benchmark denominator adjustments for banks/utilities ($0 cost)
+2. Stripe billing connection (products created, webhook handler exists, needs env vars in Railway)
 
 ## Project Overview
 
@@ -34,21 +32,21 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 ## Current Status (February 2026)
 
-**Database**: 291 companies | 5,719 active debt instruments | 2,518 with CUSIP | 4,273 with pricing | 21,891 document sections | 5,127 guarantees | 949 collateral records | 1,793 covenants | 38,903 entities | ~2,900 financial quarters
+**Database**: 291 companies | 5,719 active debt instruments | 2,518 with CUSIP | 4,273 with pricing | ~25,030 document sections | 5,127 guarantees | 949 collateral records | 1,793 covenants | 38,903 entities | ~2,900 financial quarters
 
 **Company Expansion**: 291 companies (up from 211) — added 80 companies across Tiers 1-5 (10 massive >$50B + 22 large $30-50B + 38 significant $15-30B + 13 moderate $5-15B + 4 special interest <$5B). **COMPLETE.**
 
 **Document Linkage**: **96.4%** (5,512/5,719 instruments linked to source documents). Up from 80% after running full linking pipeline (base indenture → credit agreement → heuristic matching). Remaining 207 unlinked are mostly commercial paper, bank instruments, and specialized types.
 
-**Debt Coverage Gaps** (original 211 companies): 148/211 (70%) have instrument outstanding within 80-120% of total debt ("OK"). Phases 1-9 + Tiers 1-11 updated 1,730+ instruments. EXCESS reduced from 58→6. MISSING_ALL at 3 (PANW, TTD, BAC). 31 MISSING_SIGNIFICANT remain — mostly structural gaps. Overall (original 211): $4,531B instruments / $6,618B total debt = **68.5%**. **Extraction ceiling reached** — remaining non-OK companies have structural gaps. New 80 companies not yet gap-analyzed.
+**Debt Coverage Gaps** (all 291 companies): Overall $5,535B / $8,117B = **68.2%**. 174 OK, 12 EXCESS_SOME, 4 EXCESS_SIGNIFICANT, 30 MISSING_SOME, 54 MISSING_SIGNIFICANT, 5 MISSING_ALL, 12 NO_FINANCIALS. Fixes applied: EXCESS near-OK (AL/COP/BG→OK via dedup+deactivation), MISSING near-OK (M→OK via Tier 8, UPS→OK via Tier 8 24 instruments, SAVE→OK via re-extraction). Tier 8 also improved EMR/F/WEC/EIX. Remaining structural blockers: aggregate-footnote (VZ/T/CMCSA/PG/KO), banks (AXP/WFC/COF), utilities (AEE/EIX/WEC), captive finance (F/GM). **Expansion company eval**: 98.3% pass rate (593/603 non-skip checks).
 
 **Pricing Coverage**: ~4,273 active bonds with pricing via Finnhub/FINRA TRACE. Updated 3x daily by APScheduler (11 AM, 3 PM, 9 PM ET). Daily snapshots saved to `bond_pricing_history` at 9 PM ET. **Historical TRACE fallback** (2026-02-18): When Finnhub returns no current data, falls back to most recent historical TRACE price instead of estimated. Backfilled 172 bonds from estimated to real TRACE. **Scheduler fix** (2026-02-18): Replaced N+1 staleness query (33s) with single JOIN (0.3s), added `require_isin` filter, 429 retry with backoff, circuit breaker after 10 consecutive errors.
 
-**Finnhub Discovery**: 161/211 original companies + 87 new expansion companies scanned. 127 bonds discovered from new companies (UPS 42, BMY 28, TGT 13, CVS 11 top contributors). **COMPLETE.**
+**Finnhub Discovery**: All 291 companies scanned. 127 bonds discovered from new expansion companies (UPS 42, BMY 28, TGT 13, CVS 11 top contributors). **COMPLETE.**
 
-**Document Coverage**: 21,891 document sections across 291 companies
+**Document Coverage**: ~25,030 document sections across 291 companies (includes 3,139 prospectus sections)
 
-**Ownership Coverage**: 38,903 entities across 291 companies
+**Ownership Coverage**: 38,903 entities across 291 companies | 2,399 intermediate parents assigned via LLM | 3,139 prospectus sections
 
 **Data Quality**: QC audit passing - 0 critical, 3 errors (all legitimate: MSTR/AL EBITDA>revenue, VICI 0.40x leverage), 11 warnings (2026-02-18). Fixed ES revenue 1000x scale error, deactivated 167 matured bonds, created 19 root entities.
 
@@ -58,9 +56,9 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 - Live at: `https://api.debtstack.ai` (CNAME via Vercel DNS → Railway)
 
 **What's Working**:
-- **Chat Assistant**: Full-page chat at `/dashboard/chat` — Claude (Sonnet 4.5) + 8 DebtStack API tools via SSE streaming, starter prompts, watchlists, chat history
+- **Chat Assistant**: Full-page chat at `/dashboard/chat` — Gemini 2.5 Pro + 9 DebtStack API tools via SSE streaming, starter prompts, watchlists, chat history, live SEC research for non-covered companies
 - **Three-Tier Pricing**: Pay-as-You-Go ($0 + per-call), Pro ($199/mo), Business ($499/mo)
-- **Primitives API**: 11 core endpoints optimized for AI agents (field selection, powerful filters)
+- **Primitives API**: 12 core endpoints optimized for AI agents (field selection, powerful filters)
 - **Business-Only Endpoints**: Historical pricing, covenant compare, bulk export, usage analytics
 - **Auth & Credits**: API key auth, tier-based access control, usage tracking with cost
 - **Legacy REST API**: 26 endpoints for detailed company data
@@ -130,7 +128,7 @@ This separation keeps business logic testable and reusable while scripts handle 
 
 | File | Purpose |
 |------|---------|
-| `app/api/primitives.py` | **Primitives API** - 11 core endpoints for agents |
+| `app/api/primitives.py` | **Primitives API** - 12 core endpoints for agents |
 | `app/api/auth.py` | **Auth API** - signup, user info |
 | `app/api/routes.py` | Legacy FastAPI endpoints (26 routes) |
 | `app/core/auth.py` | API key generation, validation, tier config |
@@ -164,6 +162,8 @@ This separation keeps business logic testable and reusable while scripts handle 
 | `scripts/analyze_gaps_v2.py` | Debt coverage gap analysis (MISSING_ALL/SIGNIFICANT/EXCESS) |
 | `scripts/refresh_stale_amounts.py` | Tier 8: Refresh ALL active instrument amounts from SEC (not just NULL/zero) |
 | `scripts/fix_pld_debt_amounts.py` | Tier 8: Fix NULL/zero instrument amounts from SEC filings |
+| `scripts/fetch_prospectus_sections.py` | Fetch 424B prospectus sections for ownership extraction (regex, $0) |
+| `scripts/extract_intermediate_ownership.py` | LLM extraction of intermediate parent-child relationships (Gemini Flash) |
 | `scripts/backfill_debt_document_links.py` | Heuristic multi-strategy document linking (10+ strategies) |
 | `scripts/link_to_base_indenture.py` | Fallback: link notes/bonds → oldest base indenture (conf 0.60) |
 | `scripts/link_to_credit_agreement.py` | Fallback: link loans/revolvers → most recent credit agreement |
@@ -269,9 +269,9 @@ The `/v1/financials` endpoint returns `ebitda_type` so consumers know which metr
 
 **Business-Only Endpoints**: `/covenants/compare`, `/bonds/{cusip}/pricing/history`, `/export`, `/usage/analytics`
 
-### Primitives API (11 endpoints - optimized for agents)
+### Primitives API (12 endpoints - optimized for agents)
 
-All require `X-API-Key` header.
+All require `X-API-Key` header (except `/v1/coverage/request`).
 
 | Endpoint | Method | Pay-as-You-Go Cost | Purpose |
 |----------|--------|-------------------|---------|
@@ -286,6 +286,7 @@ All require `X-API-Key` header.
 | `/v1/entities/traverse` | POST | $0.15 | Graph traversal (guarantors, structure) |
 | `/v1/documents/search` | GET | $0.15 | Full-text search across SEC filings |
 | `/v1/batch` | POST | Sum of ops | Execute multiple primitives in parallel |
+| `/v1/coverage/request` | POST | Free | Request coverage for non-covered companies |
 
 ### Business-Only Endpoints
 
@@ -555,6 +556,24 @@ python scripts/fix_ownership_hierarchy.py --ticker CHTR --save-db # Save to DB
 python scripts/fix_ownership_hierarchy.py --all --save-db         # All companies
 ```
 
+**From Prospectus Supplements + LLM (intermediate ownership):**
+```bash
+# Step 1: Fetch 424B prospectus sections (regex extraction, $0 LLM cost)
+python scripts/fetch_prospectus_sections.py --analyze             # Survey availability
+python scripts/fetch_prospectus_sections.py --ticker CHTR --verbose  # Dry run
+python scripts/fetch_prospectus_sections.py --ticker CHTR --save  # Save sections
+python scripts/fetch_prospectus_sections.py --all --save          # All companies
+
+# Step 2: Extract intermediate parent-child relationships via Gemini Flash
+python scripts/extract_intermediate_ownership.py --analyze        # Orphan stats
+python scripts/extract_intermediate_ownership.py --ticker CHTR    # Dry run
+python scripts/extract_intermediate_ownership.py --ticker CHTR --save  # Save to DB
+python scripts/extract_intermediate_ownership.py --all --save     # All companies
+python scripts/extract_intermediate_ownership.py --all --save --batch-size 150  # Smaller batches
+```
+
+**Intermediate ownership results (2026-02-21):** 3,139 prospectus sections extracted across 167 companies. 2,399 parents assigned, 2,393 ownership links created. Top companies: HCA (639), UNH (267). Uses batch commits (every 25) to avoid Neon timeout.
+
 **Key fields:**
 - `entities.is_root`: `true` = ultimate parent company, `false` = subsidiary/orphan
 - `entities.parent_id`: UUID of parent entity, or NULL if root/unknown
@@ -567,7 +586,7 @@ python scripts/fix_ownership_hierarchy.py --all --save-db         # All companie
 | `false` | UUID | Has known parent |
 | `false` | `NULL` | Orphan (parent unknown from SEC filings) |
 
-**Note:** SEC filings rarely contain explicit intermediate ownership chains. Documents typically say entities are "subsidiaries of the Company" without specifying intermediate holding companies. The extraction only captures what's explicitly documented - no inferences.
+**Note:** 10-K/10-Q filings rarely contain explicit intermediate ownership chains. However, 424B prospectus supplements often describe the full corporate chain for investors (e.g., "CCO Holdings Capital Corp., a wholly-owned subsidiary of CCO Holdings, LLC"). The `fetch_prospectus_sections.py` + `extract_intermediate_ownership.py` pipeline resolved 2,399 orphan relationships using this approach.
 
 ### Ownership Data Honesty
 

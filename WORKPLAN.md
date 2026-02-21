@@ -1,6 +1,6 @@
 # DebtStack Work Plan
 
-Last Updated: 2026-02-18 (QC fixes + document linking pipeline + Finnhub discovery in progress)
+Last Updated: 2026-02-21 (Prospectus section extraction + intermediate ownership)
 
 ## Current Status
 
@@ -13,8 +13,8 @@ Last Updated: 2026-02-18 (QC fixes + document linking pipeline + Finnhub discove
 **Guarantee Coverage**: 5,127 guarantees
 **Collateral Coverage**: 949 collateral records
 **Covenant Coverage**: 1,793 covenants across 291 companies
-**Document Coverage**: 21,891 document sections across 291 companies
-**Ownership Coverage**: 38,903 entities across 291 companies
+**Document Coverage**: ~25,030 document sections across 291 companies (includes 3,139 prospectus sections)
+**Ownership Coverage**: 38,903 entities across 291 companies | 2,399 intermediate parents assigned via LLM | 3,139 prospectus sections
 **Data Quality**: QC audit - 0 critical, 3 errors (all legitimate), 11 warnings (2026-02-18). Fixed ES revenue 1000x scale, 167 matured bonds deactivated, 19 root entities created.
 **Eval Suite**: 121/136 tests passing (89.0%)
 
@@ -2670,6 +2670,202 @@ When starting a new session, read this file first, then:
 ---
 
 ## Session Log
+
+### 2026-02-21 (Session 50) - Prospectus Section Extraction + Intermediate Ownership
+
+**Objective:** Fetch 424B prospectus supplements to extract ownership-relevant sections, then use LLM to assign intermediate parents to 22,613 orphan entities across 167 companies.
+
+**Part 1: Prospectus Section Extraction (new script)**
+
+Created `scripts/fetch_prospectus_sections.py` — fetches 424B2/424B5 filings via SEC-API, extracts ownership-relevant sections using regex (no LLM cost), stores in `DocumentSection` table with `section_type="prospectus"`.
+
+Key technical discovery: SEC-API RenderApi returns content as one continuous string with **zero newlines**. Initial regex patterns required newlines and found 0 sections. Fixed with:
+- Named section patterns (no newline requirements): "The Issuer", "The Guarantors", "Organizational Structure", "Description of Notes"
+- Keyword sliding window fallback: 500-char windows around ownership keywords (`wholly-owned subsidiary`, `direct subsidiary`, etc.)
+
+Results:
+- **3,139 prospectus sections** stored across all 167 companies with orphans
+- CHTR: 17/21 filings extracted successfully (test case)
+- 7 companies had DNS failures during batch run (PM, PYPL, RCL, REGN, RIG, RTX, SAVE) — all succeeded on re-run
+- PLD needed `--max-filings 10` to avoid DNS cascade on its many old filings
+- Cost: **$0** (regex extraction only, SEC-API calls within quota)
+
+**Part 2: Intermediate Ownership Extraction (LLM)**
+
+Modified `scripts/extract_intermediate_ownership.py` to add `'prospectus'` to section types (2 lines changed). Prospectus goes first in priority order — most explicit ownership language.
+
+Initial `--all --save` run: 164/167 companies processed, 1,493 parents assigned, 1,488 ownership links. **3 companies failed with Neon connection drop**: HCA (458 relationships), UNH (268 relationships), WBD (17 relationships).
+
+**Root cause**: `process_company()` did all DB reads/writes in a single session before one final `db.commit()`. For large companies (HCA: 458+ entity updates), the session went idle long enough for Neon to drop the connection.
+
+**Fix**: Added batch commits every 25 relationships (`COMMIT_BATCH_SIZE = 25`) with `db.rollback()` recovery on errors. Re-ran all 3 failed companies successfully.
+
+Re-run results:
+| Company | Orphans | Parents Assigned | Links Created |
+|---------|---------|-----------------|---------------|
+| HCA | 2,562 | 639 | 639 |
+| UNH | 2,076 | 267 | 266 |
+| WBD | 8 | 0 (filtered) | 0 |
+
+**Final totals across all 167 companies:**
+- **2,399 parents assigned** (orphan entities now have parent_id set)
+- **2,393 ownership links created**
+- 17,967 orphans analyzed across 214 LLM batches
+- 1,933 relationships found by LLM (2,399 assigned after re-runs)
+
+**Files changed:**
+| Action | File | Changes |
+|--------|------|---------|
+| Created | `scripts/fetch_prospectus_sections.py` | New script — fetch 424B filings, extract ownership sections via regex |
+| Modified | `scripts/extract_intermediate_ownership.py` | Added `'prospectus'` to section_types (2 places) + batch commits every 25 saves |
+
+**Cost:** ~$5-8 Gemini Flash (167 companies x 1-13 batches each, ~$0.008/batch average)
+
+---
+
+### 2026-02-18 (Session 49) - Near-OK Fixes and Tier 8 Backfill
+
+**Objective:** Move near-OK companies to OK status via targeted fixes.
+
+**Results (+3 OK, 171→174):**
+- **M (Macy's)**: 78.9% → 86.4% [OK] — Tier 8 SEC-direct extraction filled 7% 2028 bond ($207M)
+- **UPS**: 0% → 80.1% [OK] — Tier 8 filled 24/37 instruments ($19.8B). Biggest single-company improvement
+- **SAVE (Spirit Airlines)**: 74.1% → 118.7% [OK] — Core re-extraction found +2 new instruments
+
+**Tier 8 improvements (not yet OK):**
+- EMR: 3.7% → 65.4% — 17/17 instruments filled ($8.3B). Remaining gap is commercial paper/revolvers
+- F (Ford): 47.2% → 48.6% — 5 instruments filled ($2.3B). Structural: Ford Motor Credit captive finance
+- WEC: 5.2% → 14.2% — 2 instruments filled ($1.7B). Structural: utility subsidiary debt
+- EIX: 22.4% → 27.2% — 2 revolver amounts filled ($1.8B). Structural: SCE subsidiary
+
+**Tier 8 no results (aggregate-footnote/structural):**
+- LMT, CSX, QCOM, GE, HTZ, CVX, MPC, GM, SRE, NLY, PCG, MAR, KMI, MMM, ALLY — all returned 0 matches
+- PPL, BSX, MET — couldn't find debt note sections (pattern issue)
+
+**Phase 6 backfill for 10 near-OK MISSING_SOME — all returned 0:**
+- FI, JNJ, KR, SAVE, ELV, SYY, TMO — no missing instruments (structural gap)
+- M, AXP, AEE — NULL instruments are revolvers (correctly $0)
+- Root cause: these companies need new instrument discovery, not amount backfill
+
+**Core re-extraction for structural MISSING_SOME:**
+- SAVE: +2 instruments, moved to OK
+- FI: 0 new instruments found (still 77.6%)
+- KR: failed — Gemini truncated, Claude escalation hit credit exhaustion
+
+**Key learnings:**
+1. Tier 8 works great for companies with individually-listed notes in debt footnotes (EMR perfect 17/17)
+2. Aggregate-footnote companies (VZ, T, PG, CSX, QCOM, etc.) consistently return 0 from Tier 8
+3. Most near-OK MISSING_SOME companies are structural — all instruments have amounts, gap is from missing instruments entirely
+4. Core re-extraction can occasionally find new instruments (SAVE +2) but is unreliable for closing gaps
+
+**Gap analysis:** 174 OK, 12 EXCESS_SOME, 4 EXCESS_SIGNIFICANT, 30 MISSING_SOME, 54 MISSING_SIGNIFICANT, 5 MISSING_ALL, 12 NO_FINANCIALS. Overall: $5,535B / $8,117B = **68.2%**.
+
+**Cost:** ~$3.00 (Gemini 2.5 Pro for Tier 8 extractions + re-extractions)
+
+---
+
+### 2026-02-18 (Session 48) - Financial Extraction for NO_FINANCIALS Companies
+
+**Objective:** Extract financials for 18 NO_FINANCIALS companies to enable gap categorization.
+
+**Results (17/18 companies extracted):**
+- **Successful with total_debt > 0 (6 — moved to active categories):**
+  - TDG: $29.3B total_debt → EXCESS_SOME (170%) — instruments at $49.8B
+  - MPC: $33.3B total_debt → MISSING_SIGNIFICANT (-44%)
+  - ED: $46.0B total_debt → MISSING_SIGNIFICANT (-62%)
+  - DELL: $31.2B total_debt → MISSING_SIGNIFICANT (-75%)
+  - ETR: $29.0B total_debt → MISSING_SIGNIFICANT (-56%)
+  - CCI: $24.3B total_debt → MISSING_ALL (-100%, only 1 instrument with NULL outstanding)
+
+- **Extracted but total_debt = $0 (11 — still NO_FINANCIALS):**
+  - Genuinely debt-free (5): ANET, ISRG, PLTR, VRTX, LULU — tech/pharma with no long-term debt
+  - Revenue/EBITDA also $0 (3): APD, CAG, SJM — extraction produced garbage, need re-extraction
+  - Banks with no debt field (2): BK, STT — custodian banks, total_debt not in standard location
+  - Other (1): GEV (has revenue, no debt extracted)
+
+- **Bad data**: GFS extracted from 1996 filings (wrong CIK mapping?), producing garbage data
+
+- **Failed initially, succeeded on retry**: CCI, DELL, ISRG, LULU, TDG, MPC — Neon DNS errors on first pass
+
+**Gap analysis after fixes:** 167 OK, 15 EXCESS_SOME, 4 EXCESS_SIGNIFICANT, 32 MISSING_SOME, 55 MISSING_SIGNIFICANT, 6 MISSING_ALL, 12 NO_FINANCIALS. Overall: $5,503B / $8,117B = **67.8%** (denominator increased from $7,924B due to new total_debt data).
+
+**Cost:** ~$0.30 (18 companies x ~$0.017/company Gemini extraction)
+
+---
+
+### 2026-02-18 (Session 47) - Fix EXCESS Expansion Companies
+
+**Objective:** Fix 6 EXCESS_SIGNIFICANT expansion companies (K, KMX, PSX, FE, PRU, VICI) — highest ROI fixes ($0 cost SQL-only).
+
+**Fixes applied:**
+
+| Ticker | Before | After | Fix |
+|--------|--------|-------|-----|
+| VICI | 259% | 151% | Deactivated 5 exact duplicates ($12.8B) + 4 matured 2024/2025 bonds ($5.3B) |
+| KMX | 1323% | 57% | Deactivated 4 non-debt instruments: securitization ($12.9B), interest rate swaps ($3.6B), warehouse facilities ($3.0B), financing obligations ($0.5B) |
+| K | 618% → 696% → 234% | 234% | Step 1: dedup+revolver clears via fix_excess_instruments.py. Step 2: cleared term loan capacity ($4B). Step 3: deactivated 7 Mars/Kellanova acquisition financing notes ($19.5B). Remaining excess is legacy Kellogg notes + non-Series bonds |
+| PSX | 384% → 417% → 402% | 402% | Deduped 5 pairs + cleared term loan capacity ($0.55B). Still excess — consolidated subsidiary debt (DCP Midstream etc.) |
+| FE | 213% → 313% → 299% | 299% | Deactivated 2 duplicates (Environmental Control Bonds, Phase-In Recovery Bonds). Still excess — utility subsidiary FMBs |
+| PRU | 152% → 250% | 250% | No fix applied — structural: insurance subsidiary surplus notes ($15.7B) + aggregate MTN programs ($9.1B). total_debt only covers corporate-level debt |
+
+Note: K, PSX, FE, PRU percentages fluctuated between the earlier fix_excess_instruments.py run (which ran dedup+revolver) and the analysis script because the initial analysis was pre-dedup but post-backfill.
+
+**Scripts created:** `scripts/fix_excess_expansion.py` (targeted SQL fixes), `scripts/analyze_excess_expansion.py` (diagnostic output per company)
+
+**Overall gap analysis after fixes:** 167 OK, 14 EXCESS_SOME, 4 EXCESS_SIGNIFICANT, 31 MISSING_SOME, 51 MISSING_SIGNIFICANT, 6 MISSING_ALL, 18 NO_FINANCIALS. Overall: $5,503B / $7,924B = **69.5%**.
+
+**Remaining structural EXCESS issues (won't be fixed by dedup/deactivation):**
+- K (234%): Mars-Kellanova acquisition debt mixed with legacy Kellogg bonds
+- PSX (402%): Consolidated subsidiary debt (DCP Midstream, midstream JVs)
+- FE (299%): Utility subsidiary first mortgage bonds
+- PRU (250%): Insurance subsidiary surplus notes + aggregate MTN programs
+
+---
+
+### 2026-02-18 (Session 46) - Expansion Company Evals + Debt Amount Backfill
+
+**Objective:** Run evals for 87 expansion companies, compare total_debt vs instrument outstanding, backfill missing amounts.
+
+**Eval Results (87 expansion companies, 8 checks per company):**
+- **98.3% pass rate** (593 pass / 10 fail / 93 skip)
+- 78/87 companies passed all checks
+- 9 failures: ET, BK, SRE, UPS, WEC, TGT, EMR, IP, CPB
+- Failure categories: bonds missing names (6 cos — Finnhub-discovered without names), low doc linkage (3 cos)
+- Aggregate stats: 1,746 instruments, 11,337 entities, 6,746 doc sections, 628 financial quarters
+
+**Gap Analysis — Before backfill (87 expansion companies):**
+- OK: 19 (22%), MISSING_SIGNIFICANT: 27, MISSING_ALL: 7, NO_FINANCIALS: 11
+- Most instruments had NULL outstanding amounts (never backfilled)
+
+**Debt Amount Backfill (Phase 6 — backfill_amounts_from_docs.py):**
+Ran for all 87 expansion companies. Key results:
+- **Perfect completions**: AMT 11/11, VICI 13/13, AL 10/10, ELV 9/9, TRGP 3/3, TDG 3/3, SJM 2/2, KR 1/1, CCI 1/1
+- **High yield**: FDX 23/25, AON 16/19, IP 12/27, CPB 10/14, BG 2/6, DELL 2/4, ALLY 2/7
+- **Zero yield (structural gaps)**: UPS 0/37 (aggregate footnotes), CMCSA 0/51, WEC 0/10, SRE 0/4, NLY 0/6
+- **Indenture regex** ($0 cost): 0 matches across all companies — new companies' indentures don't match existing regex patterns
+- **Total: ~125 instruments updated** across ~20 companies
+
+**Gap Analysis — After backfill (87 expansion companies):**
+| Category | Before | After | Change |
+|----------|--------|-------|--------|
+| OK | 19 | **22** | +3 |
+| EXCESS_SOME | 3 | 5 | +2 |
+| EXCESS_SIGNIFICANT | 5 | 6 | +1 |
+| MISSING_SOME | 15 | 15 | — |
+| MISSING_SIGNIFICANT | 27 | **25** | -2 |
+| MISSING_ALL | 7 | **3** | -4 |
+| NO_FINANCIALS | 11 | 11 | — |
+| Overall ratio | — | **68.6%** | |
+
+**Overall (291 companies) after backfill:** $5,576B / $7,924B = **70.4%** (up from 68.5%)
+
+**Remaining issues:**
+- 3 MISSING_ALL: AES (1 inst), MPLX (1 inst), UPS (37 inst — aggregate footnotes)
+- 11 NO_FINANCIALS: need financial extraction
+- 6 EXCESS_SIGNIFICANT: K (+683%), KMX (+1349%), PSX (+384%), FE (+213%), PRU (+152%), VICI (+162%) — need dedup/investigation
+- 25 MISSING_SIGNIFICANT: mix of utilities, banks, aggregate-footnote issuers
+
+---
 
 ### 2026-02-18 (Session 45) - QC Fixes + Document Linking Pipeline + Finnhub Discovery
 
