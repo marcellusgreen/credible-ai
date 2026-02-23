@@ -5,6 +5,10 @@
 [![PyPI](https://img.shields.io/pypi/v/debtstack-ai)](https://pypi.org/project/debtstack-ai/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
+<a href="https://glama.ai/mcp/servers/@debtstack-ai/debtstack-python">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@debtstack-ai/debtstack-python/badge" />
+</a>
+
 ## Why DebtStack?
 
 Equity data is everywhere. Credit data isn't.
