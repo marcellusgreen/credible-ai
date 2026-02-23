@@ -2671,6 +2671,30 @@ When starting a new session, read this file first, then:
 
 ## Session Log
 
+### 2026-02-22 (Session 51) - Seed Medici Knowledge Base from Moyer
+
+**Objective:** Populate Medici's empty `knowledge/` folders with credit analysis frameworks drawn from Stephen Moyer's *Distressed Debt Analysis*, mapping his concepts to the 9 DebtStack API tools.
+
+**Results: 7 knowledge files created**
+
+| Folder | File | Topic |
+|--------|------|-------|
+| `frameworks/` | `capital-structure-analysis.md` | Priority of claims waterfall, secured vs unsecured, holdco vs opco, guarantor analysis |
+| `frameworks/` | `recovery-analysis.md` | Enterprise value vs claims, recovery waterfall, fulcrum security, price-as-recovery signals |
+| `frameworks/` | `credit-metrics.md` | Leverage, net leverage, interest coverage, secured leverage, maturity profile, sector-specific metrics |
+| `frameworks/` | `covenant-analysis.md` | Maintenance vs incurrence, headroom calculation, restricted payments, change of control, cov-lite |
+| `frameworks/` | `structural-subordination.md` | Holdco vs opco risk, guarantee mitigation, unrestricted subs, VIEs, severity assessment |
+| `frameworks/` | `distress-indicators.md` | Market pricing signals, fundamental deterioration, covenant/structural warnings, distress timeline |
+| `api-patterns/` | `credit-analysis-workflow.md` | 7-step systematic workflow + 4 variations (quick screen, structural deep dive, distress assessment, peer comparison) |
+
+Every file follows the knowledge base conventions from `medici/CLAUDE.md`: `# Title` + summary, framework content, `## Medici Tools` section with specific tool/field references verified against `tools.ts` and `primitives.py`.
+
+Removed `.gitkeep` from `frameworks/` and `api-patterns/` (no longer empty). Other empty folders (`industry/`, `case-studies/`, `glossary/`) retain `.gitkeep`.
+
+**Cost:** $0 (no LLM calls — content authored from knowledge of Moyer's text)
+
+---
+
 ### 2026-02-21 (Session 50) - Prospectus Section Extraction + Intermediate Ownership
 
 **Objective:** Fetch 424B prospectus supplements to extract ownership-relevant sections, then use LLM to assign intermediate parents to 22,613 orphan entities across 167 companies.
