@@ -56,7 +56,55 @@ Gemini gets: system prompt + relevant frameworks + user message
 
 **Re-ingestion:** Run the ingestion script whenever knowledge files change. The script deletes old chunks for modified files and inserts new ones.
 
-**Current state:** 48 chunks across 7 files (~15K tokens total, ~$0.00015 embedding cost).
+**Current state:** 78 chunks across 13 files (~29K tokens total, ~$0.00029 embedding cost).
+
+## Knowledge File Inventory
+
+All files live in `knowledge/`. To add, edit, or remove: modify the markdown, then run `python credible/medici/scripts/ingest_knowledge.py` to re-embed.
+
+### Frameworks (Moyer — "Corporate Financial Distress" textbook)
+
+| File | Chunks | What It Teaches Medici |
+|------|--------|----------------------|
+| `frameworks/credit-metrics.md` | 10 | Leverage, coverage, maturity profile, sector context, trajectory |
+| `frameworks/capital-structure-analysis.md` | 6 | Priority of claims, secured vs unsecured, holdco vs opco, guarantor analysis |
+| `frameworks/covenant-analysis.md` | 9 | Maintenance vs incurrence, headroom, baskets, cov-lite, step-downs |
+| `frameworks/recovery-analysis.md` | 7 | Waterfall, fulcrum security, par vs market value, bond price signals |
+| `frameworks/structural-subordination.md` | 7 | Holdco risk, guarantees, unrestricted subs, VIEs, severity assessment |
+| `frameworks/distress-indicators.md` | 6 | Market pricing signals, fundamental deterioration, covenant warnings |
+| `api-patterns/credit-analysis-workflow.md` | 3 | Seven-step multi-tool workflow, variations, presentation guidelines |
+
+### Frameworks (Whitman — "Distress Investing" textbook)
+
+| File | Chunks | What It Teaches Medici |
+|------|--------|----------------------|
+| `frameworks/causes-of-distress.md` | 3 | Four triggers (capital access, operating, GAAP, contingent liabilities) |
+| `frameworks/distress-valuation.md` | 5 | Three valuation modes (going-concern, resource conversion, liquidation) |
+| `frameworks/distress-investing-risks.md` | 5 | Priority alteration, valuation disputes, process risks, Five Basic Truths |
+
+### Case Studies
+
+| File | Chunks | What It Teaches Medici |
+|------|--------|----------------------|
+| `case-studies/toys-r-us-lbo-failure.md` | 6 | LBO leverage fragility, maturity walls, structural vs cyclical decline, liquidation |
+| `case-studies/caesars-entertainment-restructuring.md` | 7 | Asset stripping, fraudulent conveyance, OpCo/PropCo/REIT split, blocking positions |
+| `case-studies/jcrew-nine-west-covenant-exploitation.md` | 4 | Trap door provisions, unrestricted subs, guarantee quality, professional cost drag |
+
+### How to Manage Knowledge Files
+
+**Add a file:** Create `.md` in the right subfolder → run ingestion → commit both the file and the updated chunk count here.
+
+**Edit a file:** Modify the markdown → run ingestion (auto-deletes old chunks for that file, inserts new ones).
+
+**Remove a file:** Delete the `.md` file from disk. **Important:** the ingestion script only deletes chunks for files it finds on disk, so orphaned chunks for deleted files will remain in the database. Clean them up manually:
+```sql
+-- Find orphaned chunks (files no longer on disk)
+SELECT DISTINCT source_file FROM knowledge_chunks ORDER BY source_file;
+-- Delete orphans
+DELETE FROM knowledge_chunks WHERE source_file = 'path/to/deleted-file.md';
+```
+
+**Verify:** After ingestion, check the output for chunk counts per file. Update this inventory if counts change significantly.
 
 ## Knowledge Base Rules
 
