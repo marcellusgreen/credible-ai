@@ -113,7 +113,16 @@ def parse_markdown_into_chunks(filepath: str, knowledge_root: str) -> list[dict]
                 'token_count': estimate_tokens(full_text),
             })
 
-    return chunks
+    # Filter out "Medici Tools" sections — these are API call reference guides that
+    # pollute vector search results (they score high on credit keywords but add no
+    # analytical value). The tool guidance is already in the system prompt.
+    SKIP_HEADINGS = {'Medici Tools', 'Medici Tools Application'}
+    filtered = [c for c in chunks if c['section_heading'] not in SKIP_HEADINGS]
+    skipped = len(chunks) - len(filtered)
+    if skipped:
+        print(f"    (skipped {skipped} Medici Tools section(s))")
+
+    return filtered
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:

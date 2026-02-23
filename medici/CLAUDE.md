@@ -56,7 +56,7 @@ Gemini gets: system prompt + relevant frameworks + user message
 
 **Re-ingestion:** Run the ingestion script whenever knowledge files change. The script deletes old chunks for modified files and inserts new ones.
 
-**Current state:** 78 chunks across 13 files (~29K tokens total, ~$0.00029 embedding cost).
+**Current state:** 66 chunks across 13 files (~24K tokens total, ~$0.00024 embedding cost). "Medici Tools" sections are filtered out during ingestion to prevent API reference boilerplate from polluting vector search results.
 
 ## Knowledge File Inventory
 
