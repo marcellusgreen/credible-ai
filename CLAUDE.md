@@ -168,6 +168,7 @@ This separation keeps business logic testable and reusable while scripts handle 
 | `scripts/link_to_base_indenture.py` | Fallback: link notes/bonds → oldest base indenture (conf 0.60) |
 | `scripts/link_to_credit_agreement.py` | Fallback: link loans/revolvers → most recent credit agreement |
 | `scripts/script_utils.py` | Shared CLI utilities (DB sessions, parsers, progress, Windows handling) |
+| `medici/scripts/ingest_knowledge.py` | Ingest knowledge markdown → Gemini embeddings → Neon pgvector (see `medici/CLAUDE.md`) |
 | `app/models/schema.py` | SQLAlchemy models (includes User, UserCredits, UsageLog) |
 | `app/core/config.py` | Environment configuration |
 | `app/core/database.py` | Database connection |
@@ -204,6 +205,9 @@ This separation keeps business logic testable and reusable while scripts handle 
 - `treasury_yield_history`: Historical US Treasury yield curves for spread calculations (1M-30Y tenors, 2021-present)
 - `team_members`: Business tier multi-seat team management
 - `coverage_requests`: Business tier custom company coverage requests
+
+**RAG Tables** (Medici knowledge base):
+- `knowledge_chunks`: Embedded knowledge chunks for RAG retrieval (pgvector `vector(768)`, HNSW index, cosine similarity). Ingested from `medici/knowledge/` markdown files via `medici/scripts/ingest_knowledge.py`. See `medici/CLAUDE.md` for details.
 
 **Cache Tables**:
 - `company_cache`: Pre-computed JSON responses + `extraction_status` (JSONB tracking step attempts)
@@ -1039,7 +1043,7 @@ alembic upgrade head     # Apply all
 alembic revision -m "description"  # Create new
 ```
 
-Current migrations: 001 (initial) through 020 (add_covenants_table)
+Current migrations: 001 (initial) through 027 (add_knowledge_chunks with pgvector)
 
 ## Utilities & Services Architecture
 
