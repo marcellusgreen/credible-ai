@@ -3,7 +3,7 @@
 **Corporate credit data for AI agents.**
 
 [![PyPI](https://img.shields.io/pypi/v/debtstack-ai)](https://pypi.org/project/debtstack-ai/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 ## Why DebtStack?
 
@@ -20,7 +20,7 @@ There's no "Yahoo Finance for bonds." Corporate debt structures, guarantor chain
 # Find distressed telecom companies
 GET /v1/companies?sector=Telecommunications&min_leverage=5&sort=-net_leverage_ratio
 ```
-Screen 177 companies by leverage, coverage ratios, or maturity risk in one call. No filing-by-filing analysis.
+Screen ~300 companies by leverage, coverage ratios, or maturity risk in one call. No filing-by-filing analysis.
 
 **2. Pre-Built Entity Relationships**
 ```python
@@ -91,12 +91,12 @@ result = client.search_companies(sector="Energy", min_leverage=3.0)
 
 | Coverage | Count |
 |----------|-------|
-| Companies | 211 (S&P 100 + NASDAQ 100 + high-yield issuers) |
-| Entities | 28,128 (subsidiaries, holdcos, JVs, VIEs) |
-| Debt Instruments | 4,496 (bonds, loans, revolvers) with 97% document linkage |
-| Bond Pricing | 3,557 bonds with FINRA TRACE pricing (updated 3x daily) |
-| SEC Filing Sections | 14,511 (searchable full-text) |
-| Covenants | 1,247 structured covenant records |
+| Companies | ~300 (S&P 100 + NASDAQ 100 + high-yield issuers) |
+| Entities | ~39,000 (subsidiaries, holdcos, JVs, VIEs) |
+| Debt Instruments | ~10,000 (bonds, loans, revolvers) with 96% document linkage |
+| Bond Pricing | ~4,300 bonds with FINRA TRACE pricing (updated 3x daily) |
+| SEC Filing Sections | ~25,000 (searchable full-text) |
+| Covenants | ~1,800 structured covenant records |
 
 **Pre-computed metrics:** Leverage ratios, interest coverage, maturity profiles, structural subordination scores.
 
@@ -343,4 +343,4 @@ See [debtstack.ai/pricing](https://debtstack.ai/pricing) for details.
 
 ## License
 
-MIT
+Apache-2.0
