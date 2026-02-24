@@ -281,6 +281,41 @@ async def root():
     }
 
 
+# MCP server card for Smithery and other MCP directories
+@app.get("/.well-known/mcp/server-card.json", include_in_schema=False)
+async def mcp_server_card():
+    """MCP server card for directory discovery."""
+    return {
+        "name": "debtstack-ai",
+        "title": "DebtStack.ai",
+        "description": "Corporate credit data API for AI agents — ~300 companies, ~10,000 instruments, leverage ratios, guarantor chains, covenants, and FINRA TRACE pricing from SEC filings",
+        "version": "0.1.3",
+        "homepage": "https://debtstack.ai",
+        "documentation": "https://docs.debtstack.ai",
+        "repository": "https://github.com/debtstack-ai/debtstack-python",
+        "license": "Apache-2.0",
+        "transport": "stdio",
+        "install": "pip install debtstack-ai[mcp]",
+        "authentication": {
+            "type": "api_key",
+            "env_var": "DEBTSTACK_API_KEY",
+            "signup_url": "https://debtstack.ai/dashboard",
+        },
+        "capabilities": {
+            "tools": [
+                {"name": "search_companies", "description": "Search companies by ticker, sector, leverage ratio, and risk flags"},
+                {"name": "search_bonds", "description": "Search bonds by ticker, seniority, yield, spread, and maturity"},
+                {"name": "resolve_bond", "description": "Resolve free-text bond identifiers (e.g. 'RIG 8% 2027') to CUSIPs"},
+                {"name": "get_guarantors", "description": "Find all entities that guarantee a bond"},
+                {"name": "get_corporate_structure", "description": "Get full parent-subsidiary hierarchy for a company"},
+                {"name": "search_pricing", "description": "Get FINRA TRACE bond prices, YTM, and spreads"},
+                {"name": "search_documents", "description": "Full-text search across SEC filing sections"},
+                {"name": "get_changes", "description": "Track changes in a company's debt structure since a date"},
+            ],
+        },
+    }
+
+
 # Error handlers
 @app.exception_handler(404)
 async def not_found_handler(request: Request, exc):
