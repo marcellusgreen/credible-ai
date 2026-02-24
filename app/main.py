@@ -289,7 +289,7 @@ async def mcp_server_card():
         "name": "debtstack-ai",
         "title": "DebtStack.ai",
         "description": "Corporate credit data API for AI agents — ~300 companies, ~10,000 instruments, leverage ratios, guarantor chains, covenants, and FINRA TRACE pricing from SEC filings",
-        "version": "0.1.3",
+        "version": "0.1.4",
         "homepage": "https://debtstack.ai",
         "documentation": "https://docs.debtstack.ai",
         "repository": "https://github.com/debtstack-ai/debtstack-python",
