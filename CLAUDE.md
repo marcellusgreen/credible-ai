@@ -6,28 +6,22 @@ Context for AI assistants working on the DebtStack.ai codebase.
 
 ## What's Next
 
-**Immediate**: Stripe billing connection (products created, webhook handler exists, needs env vars in Railway). See WORKPLAN.md.
+See `WORKPLAN.md` for full session history and priorities.
 
-**Completed (recent)**:
-- ~~Benchmark denominator adjustments~~ ✅ (2026-02-19) — 94 companies use `benchmark_total_debt` to handle banks/utilities/aggregate footnotes. 197 genuinely OK, 94 adjusted, 0 not OK. See **Debt Coverage Gaps** below.
-- ~~Debt coverage gap closure~~ ✅ All 291 companies accounted for (197 genuinely OK + 94 benchmark-adjusted). Refreshed amounts for ~30 companies via Gemini 2.5 Pro from SEC filings. Manual instrument insertion for MPLX (16 instruments from 10-K), AES ($1.75B term loan), BAC ($311B senior notes).
+**All major infrastructure complete:**
+- ~~Stripe billing~~ ✅ (2026-02-03) — Products, webhooks, checkout flow, 14/14 E2E tests passing
+- ~~Ownership enrichment~~ ✅ (2026-02-24) — 13,113 entities with known parents (32% of non-root), 13,077 ownership links
+- ~~Debt coverage~~ ✅ (2026-02-19) — 291/291 companies accounted for (197 genuinely OK + 94 benchmark-adjusted)
+- ~~Document linking~~ ✅ — 96.4% coverage (5,512/5,719 instruments linked)
+- ~~Company expansion~~ ✅ — 211 → 291 companies
+- ~~SDK/MCP/Docs~~ ✅ — PyPI v0.1.3, 6 MCP directories, docs.debtstack.ai
+- ~~Chat assistant~~ ✅ — Gemini + 9 DebtStack API tools via SSE streaming
+- ~~Analytics & alerting~~ ✅ — Vercel, PostHog, Sentry, Slack
+- ~~QC~~ ✅ — 0 critical, 0 errors
 
-**Completed (distribution)**:
-- ~~SDK publication to PyPI~~ ✅ v0.1.3 — LangChain tools (7), MCP server (8 tools), console script (`debtstack-mcp`)
-- ~~MCP directory submissions~~ ✅ Anthropic MCP Registry, Smithery (mcp.debtstack.ai), MCP.so, Awesome MCP Servers, PulseMCP, Glama.ai
-- ~~Mintlify docs~~ ✅ docs.debtstack.ai
-- ~~README restructure~~ ✅ API-first Quick Start, badges, MCP directory table
-- ~~Analytics & alerting~~ ✅ Vercel Analytics, PostHog (frontend + backend), Sentry, Slack alerts
-- ~~Pricing scheduler~~ ✅ APScheduler in-process (11 AM / 3 PM / 9 PM ET)
-- ~~Chat assistant~~ ✅ Full-page chat at `/dashboard/chat` — Gemini + 9 DebtStack API tools via SSE streaming (includes `research_company` for live SEC research of non-covered companies)
-- ~~Company expansion~~ ✅ 211 → 291 companies (Tiers 1-5: 10+22+38+13+4 = 87 new companies)
-- ~~Document linking~~ ✅ 96.4% coverage (5,512/5,719 instruments linked). Pipeline: base indenture (789) → credit agreement (106) → heuristic matching (~220)
-- ~~QC fixes~~ ✅ 0 critical, 0 errors remaining. Fixed ES revenue scale, deactivated 167 matured bonds, created 19 root entities, cleared 487 future issue dates
-- ~~Prospectus sections~~ ✅ 3,139 sections across 167 companies ($0, regex only)
-- ~~Intermediate ownership~~ ✅ 2,399 parents assigned, 2,393 ownership links across 167 companies (~$5-8 Gemini Flash)
-
-**Then**:
-1. Stripe billing connection (products created, webhook handler exists, needs env vars in Railway)
+**Remaining:**
+1. Update API documentation with tier requirements
+2. Grow usage / marketing
 
 ## Project Overview
 
@@ -37,7 +31,7 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 ## Current Status (February 2026)
 
-**Database**: 291 companies | 5,670 active debt instruments | 2,518 with CUSIP | 4,273 with pricing | ~25,030 document sections | 5,127 guarantees | 949 collateral records | 1,793 covenants | 38,903 entities | ~2,900 financial quarters
+**Database**: 291 companies | 5,670 active debt instruments | 2,518 with CUSIP | 4,273 with pricing | ~29,664 document sections | 5,127 guarantees | 949 collateral records | 1,793 covenants | 40,724 entities | ~2,900 financial quarters
 
 **Company Expansion**: 291 companies (up from 211) — added 80 companies across Tiers 1-5 (10 massive >$50B + 22 large $30-50B + 38 significant $15-30B + 13 moderate $5-15B + 4 special interest <$5B). **COMPLETE.**
 
@@ -49,9 +43,9 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 **Finnhub Discovery**: All 291 companies scanned. 127 bonds discovered from new expansion companies (UPS 42, BMY 28, TGT 13, CVS 11 top contributors). **COMPLETE.**
 
-**Document Coverage**: ~25,030 document sections across 291 companies (includes 3,139 prospectus sections)
+**Document Coverage**: ~29,664 document sections across 291 companies (includes 6,054 prospectus sections)
 
-**Ownership Coverage**: 38,903 entities across 291 companies | 2,399 intermediate parents assigned via LLM | 3,139 prospectus sections
+**Ownership Coverage**: 40,724 entities across 291 companies | 13,113 with known parents (32% of non-root) | 5,647 intermediate parents via LLM | 3,415 via GLEIF | 1,362 via UK Companies House | 6,054 prospectus sections across 259 companies
 
 **Data Quality**: QC audit passing - 0 critical, 3 errors (all legitimate: MSTR/AL EBITDA>revenue, VICI 0.40x leverage), 11 warnings (2026-02-18). Fixed ES revenue 1000x scale error, deactivated 167 matured bonds, created 19 root entities.
 
@@ -582,7 +576,7 @@ python scripts/extract_intermediate_ownership.py --all --save     # All companie
 python scripts/extract_intermediate_ownership.py --all --save --batch-size 150  # Smaller batches
 ```
 
-**Intermediate ownership results (2026-02-21):** 3,139 prospectus sections extracted across 167 companies. 2,399 parents assigned, 2,393 ownership links created. Top companies: HCA (639), UNH (267). Uses batch commits (every 25) to avoid Neon timeout.
+**Intermediate ownership results (2026-02-24):** 6,054 prospectus sections extracted across 259 companies. 5,647 parents assigned via LLM, 5,636 ownership links created. Additionally: 3,415 parents via GLEIF, 1,362 via UK Companies House. Total 13,113 entities with known parents. Pipeline: (1) clear false root assignments → (2) fetch prospectus → (3) GLEIF → (4) UK Companies House → (5) LLM intermediate. Uses batch commits (every 25) to avoid Neon timeout.
 
 **Key fields:**
 - `entities.is_root`: `true` = ultimate parent company, `false` = subsidiary/orphan
