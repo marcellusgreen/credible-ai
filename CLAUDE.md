@@ -11,9 +11,9 @@ See `WORKPLAN.md` for full session history and priorities.
 **All major infrastructure complete:**
 - ~~Stripe billing~~ ✅ (2026-02-03) — Products, webhooks, checkout flow, 14/14 E2E tests passing
 - ~~Ownership enrichment~~ ✅ (2026-02-24) — 13,113 entities with known parents (32% of non-root), 13,077 ownership links
-- ~~Debt coverage~~ ✅ (2026-02-19) — 291/291 companies accounted for (197 genuinely OK + 94 benchmark-adjusted)
+- ~~Debt coverage~~ ✅ (2026-02-19) — 314/314 companies accounted for (197 genuinely OK + 94 benchmark-adjusted + 23 new)
 - ~~Document linking~~ ✅ — 96.4% coverage (5,512/5,719 instruments linked)
-- ~~Company expansion~~ ✅ — 211 → 291 companies
+- ~~Company expansion~~ ✅ — 211 → 314 companies
 - ~~SDK/MCP/Docs~~ ✅ — PyPI v0.1.3, 6 MCP directories, docs.debtstack.ai
 - ~~Chat assistant~~ ✅ — Gemini + 9 DebtStack API tools via SSE streaming
 - ~~Analytics & alerting~~ ✅ — Vercel, PostHog, Sentry, Slack
@@ -31,45 +31,28 @@ DebtStack.ai is a credit data API for AI agents. It extracts corporate structure
 
 ## Current Status (February 2026)
 
-**Database**: 291 companies | 5,670 active debt instruments | 2,518 with CUSIP | 4,273 with pricing | ~29,664 document sections | 5,127 guarantees | 949 collateral records | 1,793 covenants | 40,724 entities | ~2,900 financial quarters
+**Database**: 314 companies | 5,838 active debt instruments | 3,131 with CUSIP | 3,064 with pricing | ~29,664 document sections | 5,962 guarantees | 1,088 collateral records | 2,088 covenants | 40,724 entities | ~2,631 financial quarters
 
-**Company Expansion**: 291 companies (up from 211) — added 80 companies across Tiers 1-5 (10 massive >$50B + 22 large $30-50B + 38 significant $15-30B + 13 moderate $5-15B + 4 special interest <$5B). **COMPLETE.**
+**Deployment**: Railway with Neon PostgreSQL + Upstash Redis. Live at `https://api.debtstack.ai`.
 
-**Document Linkage**: **96.4%** (5,512/5,719 instruments linked to source documents). Up from 80% after running full linking pipeline (base indenture → credit agreement → heuristic matching). Remaining 207 unlinked are mostly commercial paper, bank instruments, and specialized types.
-
-**Debt Coverage Gaps** (all 291 companies, 2026-02-19): **197 genuinely OK** (instrument_sum/total_debt within 80-120%, no adjustments needed). **94 benchmark-adjusted** (OK only because `benchmark_total_debt` replaces `total_debt` as denominator — banks, utilities, aggregate footnotes, incomplete extraction). **0 not OK**. Overall $5,838B / $7,980B = **73.2%**. Benchmark adjustments handle: banks (deposits in total_debt), utilities (subsidiary FMBs), aggregate-footnote companies (VZ/T/CMCSA/PG/KO etc.), captive finance (F/GM), and companies with stale total_debt. `company_financials.benchmark_total_debt` column stores the adjusted denominator; `benchmark_total_debt_meta` JSONB stores type/method/reason. Gap analysis script: `scripts/analyze_gaps_v2.py`. **Expansion company eval**: 98.3% pass rate (593/603 non-skip checks).
-
-**Pricing Coverage**: ~4,273 active bonds with pricing via Finnhub/FINRA TRACE. Updated 3x daily by APScheduler (11 AM, 3 PM, 9 PM ET). Daily snapshots saved to `bond_pricing_history` at 9 PM ET. **Historical TRACE fallback** (2026-02-18): When Finnhub returns no current data, falls back to most recent historical TRACE price instead of estimated. Backfilled 172 bonds from estimated to real TRACE. **Scheduler fix** (2026-02-18): Replaced N+1 staleness query (33s) with single JOIN (0.3s), added `require_isin` filter, 429 retry with backoff, circuit breaker after 10 consecutive errors.
-
-**Finnhub Discovery**: All 291 companies scanned. 127 bonds discovered from new expansion companies (UPS 42, BMY 28, TGT 13, CVS 11 top contributors). **COMPLETE.**
-
-**Document Coverage**: ~29,664 document sections across 291 companies (includes 6,054 prospectus sections)
-
-**Ownership Coverage**: 40,724 entities across 291 companies | 13,113 with known parents (32% of non-root) | 5,647 intermediate parents via LLM | 3,415 via GLEIF | 1,362 via UK Companies House | 6,054 prospectus sections across 259 companies
-
-**Data Quality**: QC audit passing - 0 critical, 3 errors (all legitimate: MSTR/AL EBITDA>revenue, VICI 0.40x leverage), 11 warnings (2026-02-18). Fixed ES revenue 1000x scale error, deactivated 167 matured bonds, created 19 root entities.
-
-**Eval Suite**: 121/136 tests passing (89.0%). 2 workflow tests fixed by secured bond pricing expansion.
-
-**Deployment**: Railway with Neon PostgreSQL + Upstash Redis
-- Live at: `https://api.debtstack.ai` (CNAME via Vercel DNS → Railway)
+**Key Metrics**:
+- Document Linkage: 96.4% (5,512/5,719 instruments linked)
+- Pricing Coverage: 3,064 bonds with TRACE pricing (95.8% of CUSIPs). All estimated/synthetic removed — only real TRACE data. Updated 3x daily by APScheduler (11 AM, 3 PM, 9 PM ET).
+- Debt Coverage: 197 genuinely OK + 94 benchmark-adjusted = 314/314 accounted for. Overall $5,838B/$7,980B = 73.2%.
+- Ownership: 13,113 entities with known parents (32% of non-root). Sources: LLM (5,647), GLEIF (3,415), UK Companies House (1,362).
+- Data Quality: QC audit passing — 0 critical, 3 errors (all legitimate), 11 warnings.
+- Eval Suite: 121/136 tests passing (89.0%).
+- Finnhub Discovery: All 314 companies scanned. Cache: 271 companies, 1,904 bonds. **COMPLETE.**
 
 **What's Working**:
-- **Chat Assistant**: Full-page chat at `/dashboard/chat` — Gemini 2.5 Pro + 9 DebtStack API tools via SSE streaming, starter prompts, watchlists, chat history, live SEC research for non-covered companies
-- **Three-Tier Pricing**: Pay-as-You-Go ($0 + per-call), Pro ($199/mo), Business ($499/mo)
-- **Primitives API**: 12 core endpoints optimized for AI agents (field selection, powerful filters)
-- **Business-Only Endpoints**: Historical pricing, covenant compare, bulk export, usage analytics
-- **Auth & Credits**: API key auth, tier-based access control, usage tracking with cost
-- **Legacy REST API**: 26 endpoints for detailed company data
-- **Observability**: Vercel Analytics, PostHog (frontend + backend events/funnels), Sentry (error tracking), Slack alerts
+- Chat Assistant: `/dashboard/chat` — Gemini 2.5 Pro + 9 DebtStack API tools via SSE streaming
+- Three-Tier Pricing: Pay-as-You-Go ($0 + per-call), Pro ($199/mo), Business ($499/mo)
+- Primitives API: 12 core endpoints optimized for AI agents (field selection, powerful filters)
+- Auth & Credits: API key auth, tier-based access control, usage tracking
+- Legacy REST API: 26 endpoints for detailed company data
+- Observability: Vercel Analytics, PostHog, Sentry, Slack alerts
 - Iterative extraction with QA feedback loop (5 checks, 85% threshold)
 - Gemini for extraction (~$0.008), Claude for escalation
-- SEC-API.io integration (paid tier)
-- PostgreSQL on Neon Cloud, Redis on Upstash
-- S&P 100 / NASDAQ 100 company coverage
-- Financial statement extraction (income, balance sheet, cash flow)
-- Credit ratio calculations
-- Bond pricing with YTM and spread calculations
 
 ## Architecture
 
@@ -87,24 +70,26 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 
 ### Code Organization
 
-**Utilities** are stateless helper functions (no DB, no API calls):
+**Utilities** (stateless helpers — no DB, no API calls):
 
-| File | Domain | Functions |
-|------|--------|-----------|
-| `app/services/utils.py` | Text/parsing | `parse_json_robust`, `normalize_name`, `parse_date` |
-| `app/services/extraction_utils.py` | SEC filings | `clean_filing_html`, `combine_filings`, `extract_debt_sections` |
-| `app/services/llm_utils.py` | LLM clients | `get_gemini_model`, `call_gemini`, `LLMResponse` |
-| `app/services/yield_calculation.py` | Financial math | YTM, duration, treasury yields |
+| File | Domain |
+|------|--------|
+| `app/services/utils.py` | Text/parsing: `parse_json_robust`, `normalize_name`, `parse_date` |
+| `app/services/extraction_utils.py` | SEC filings: `clean_filing_html`, `combine_filings`, `extract_debt_sections` |
+| `app/services/llm_utils.py` | LLM clients: `get_gemini_model`, `call_gemini`, `LLMResponse` |
+| `app/services/yield_calculation.py` | Financial math: YTM, duration, treasury yields |
 
-**Services** do complete jobs (orchestrate DB, APIs, workflows):
+**Services** (orchestrate DB, APIs, workflows):
 
 | File | Purpose |
 |------|---------|
 | `app/services/sec_client.py` | SEC filing clients (`SecApiClient`, `SECEdgarClient`) |
-| `app/services/extraction.py` | Core extraction service + DB persistence |
+| `app/services/extraction.py` | Core extraction + DB persistence |
+| `app/services/iterative_extraction.py` | Main extraction with QA loop (entry point) |
+| `app/services/tiered_extraction.py` | LLM clients, prompts, escalation |
 | `app/services/base_extractor.py` | Base class for LLM extraction services |
-| `app/services/section_extraction.py` | Extract and store document sections from filings |
-| `app/services/document_linking.py` | Link debt instruments to source documents (indentures, credit agreements) |
+| `app/services/section_extraction.py` | Document section extraction and storage |
+| `app/services/document_linking.py` | Link instruments to source documents |
 | `app/services/hierarchy_extraction.py` | Exhibit 21 + indenture ownership enrichment |
 | `app/services/financial_extraction.py` | TTM financial statements from 10-K/10-Q |
 | `app/services/guarantee_extraction.py` | Guarantee extraction from indentures |
@@ -112,901 +97,225 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 | `app/services/covenant_extraction.py` | Structured covenant data extraction |
 | `app/services/metrics.py` | Credit metrics (leverage, coverage ratios) |
 | `app/services/qc.py` | Quality control checks |
+| `app/services/qa_agent.py` | 5-check QA verification |
+| `app/services/pricing_history.py` | Bond pricing history backfill and daily snapshots |
+| `app/services/treasury_yields.py` | Treasury yield curve history from Treasury.gov |
 
-**Scripts** are thin CLI wrappers that import from services:
-- `scripts/extract_iterative.py` - Complete extraction pipeline
-- `scripts/recompute_metrics.py` - Metrics recomputation
-- `scripts/backfill_debt_document_links.py` - Heuristic multi-strategy document linking
-- `scripts/link_to_base_indenture.py` - Fallback: link notes → base indenture
-- `scripts/link_to_credit_agreement.py` - Fallback: link loans → credit agreement
-- `scripts/script_utils.py` - **Shared utilities** (DB sessions, parsers, progress, Windows handling)
-
-This separation keeps business logic testable and reusable while scripts handle CLI concerns. All scripts should use `script_utils.py` for consistent database handling and Windows compatibility.
-
-## Key Files
+**API Layer**:
 
 | File | Purpose |
 |------|---------|
-| `app/api/primitives.py` | **Primitives API** - 12 core endpoints for agents |
-| `app/api/auth.py` | **Auth API** - signup, user info |
+| `app/api/primitives.py` | Primitives API — 12 core endpoints for agents |
+| `app/api/auth.py` | Auth API — signup, user info |
 | `app/api/routes.py` | Legacy FastAPI endpoints (26 routes) |
 | `app/core/auth.py` | API key generation, validation, tier config |
 | `app/core/cache.py` | Redis cache client (Upstash) |
-| `app/services/utils.py` | Core utilities: JSON parsing, name normalization, dates |
-| `app/services/extraction_utils.py` | SEC filing utilities: HTML cleaning, content combining |
-| `app/services/llm_utils.py` | LLM client utilities: Gemini, Claude, cost tracking |
-| `app/services/sec_client.py` | SEC clients: SecApiClient, SECEdgarClient |
-| `app/services/base_extractor.py` | Base class for LLM extraction services |
-| `app/services/extraction.py` | ExtractionService + database persistence |
-| `app/services/iterative_extraction.py` | Main extraction with QA loop (entry point) |
-| `app/services/tiered_extraction.py` | LLM clients for extraction, prompts, escalation |
-| `app/services/hierarchy_extraction.py` | Exhibit 21 + indenture ownership enrichment |
-| `app/services/section_extraction.py` | Document section extraction and storage |
-| `app/services/document_linking.py` | Link instruments to source documents |
-| `app/services/guarantee_extraction.py` | Guarantee relationships from indentures |
-| `app/services/collateral_extraction.py` | Collateral extraction for secured debt |
-| `app/services/metrics.py` | Credit metrics computation with TTM tracking |
-| `app/services/qc.py` | Quality control checks |
-| `app/services/qa_agent.py` | 5-check QA verification |
-| `app/services/tiered_extraction.py` | LLM clients and prompts |
-| `app/services/financial_extraction.py` | Financial statements with TTM support |
-| `app/services/pricing_history.py` | Bond pricing history backfill and daily snapshots |
-| `app/services/treasury_yields.py` | Treasury yield curve history from Treasury.gov |
-| `scripts/extract_iterative.py` | Complete extraction pipeline CLI (thin wrapper) |
-| `scripts/recompute_metrics.py` | Metrics recomputation CLI (thin wrapper) |
-| `scripts/backfill_amounts_from_docs.py` | Phase 6: Multi-doc targeted outstanding amount backfill |
-| `scripts/extract_amounts_from_indentures.py` | Phase 9: Extract amounts from indentures (regex + LLM) |
-| `scripts/backfill_outstanding_from_filings.py` | Phase 2/4: Outstanding amount backfill from single footnote |
-| `scripts/fix_excess_instruments.py` | Phase 3/7/7.5: Dedup, deactivate matured, LLM review, revolver clears |
-| `scripts/analyze_gaps_v2.py` | Debt coverage gap analysis (genuinely OK / adjusted / not OK) |
-| `scripts/populate_benchmark_debt.py` | Set benchmark_total_debt for banks/utilities/aggregate footnote companies |
-| `scripts/refresh_stale_amounts.py` | Tier 8: Refresh ALL active instrument amounts from SEC (not just NULL/zero) |
-| `scripts/fix_pld_debt_amounts.py` | Tier 8: Fix NULL/zero instrument amounts from SEC filings |
-| `scripts/fetch_prospectus_sections.py` | Fetch 424B prospectus sections for ownership extraction (regex, $0) |
-| `scripts/extract_intermediate_ownership.py` | LLM extraction of intermediate parent-child relationships (Gemini Flash) |
-| `scripts/backfill_debt_document_links.py` | Heuristic multi-strategy document linking (10+ strategies) |
-| `scripts/link_to_base_indenture.py` | Fallback: link notes/bonds → oldest base indenture (conf 0.60) |
-| `scripts/link_to_credit_agreement.py` | Fallback: link loans/revolvers → most recent credit agreement |
-| `scripts/script_utils.py` | Shared CLI utilities (DB sessions, parsers, progress, Windows handling) |
-| `medici/scripts/ingest_knowledge.py` | Ingest knowledge markdown → Gemini embeddings → Neon pgvector (see `medici/CLAUDE.md`) |
+| `app/core/scheduler.py` | APScheduler: pricing refresh + alert checks |
+| `app/core/posthog.py` | PostHog analytics client |
+| `app/core/alerting.py` | Slack webhook alerts |
+| `app/core/monitoring.py` | Redis-based API metrics |
+
+**Models & Config**:
+
+| File | Purpose |
+|------|---------|
 | `app/models/schema.py` | SQLAlchemy models (includes User, UserCredits, UsageLog) |
 | `app/core/config.py` | Environment configuration |
 | `app/core/database.py` | Database connection |
-| `app/core/posthog.py` | PostHog analytics client (capture_event, identify_user, shutdown) |
-| `app/core/alerting.py` | Slack webhook alerts (check_and_alert called every 15 min) |
-| `app/core/monitoring.py` | Redis-based API metrics and alert condition checks |
-| `app/core/scheduler.py` | APScheduler jobs: pricing refresh + alert checks |
+
+**Scripts** (thin CLI wrappers importing from services):
+
+| File | Purpose |
+|------|---------|
+| `scripts/extract_iterative.py` | Complete extraction pipeline |
+| `scripts/recompute_metrics.py` | Metrics recomputation |
+| `scripts/update_pricing.py` | Bond pricing updates |
+| `scripts/backfill_debt_document_links.py` | Heuristic multi-strategy document linking |
+| `scripts/link_to_base_indenture.py` | Fallback: link notes → base indenture |
+| `scripts/link_to_credit_agreement.py` | Fallback: link loans → credit agreement |
+| `scripts/analyze_gaps_v2.py` | Debt coverage gap analysis |
+| `scripts/populate_benchmark_debt.py` | Set benchmark_total_debt for banks/utilities |
+| `scripts/fetch_prospectus_sections.py` | Fetch 424B prospectus sections ($0) |
+| `scripts/extract_intermediate_ownership.py` | LLM extraction of intermediate parents |
+| `scripts/script_utils.py` | **Shared utilities** (DB sessions, parsers, progress, Windows handling) |
+| `medici/scripts/ingest_knowledge.py` | RAG knowledge ingestion (see `medici/CLAUDE.md`) |
 
 ## Database Schema
 
 **Core Tables**:
 - `companies`: Master company data (ticker, name, CIK, sector)
 - `entities`: Corporate entities with hierarchy (`parent_id`, `is_root`, VIE tracking)
-  - `is_root=true`: Ultimate parent company
-  - `is_root=false` + `parent_id IS NOT NULL`: Has known parent
-  - `is_root=false` + `parent_id IS NULL`: Orphan (parent unknown)
-- `ownership_links`: Complex ownership (JVs, partial ownership)
-  - `ownership_type`: "direct", "indirect", or NULL (unknown - documents say "subsidiary" without specifying)
+- `ownership_links`: Complex ownership (JVs, partial ownership; `ownership_type`: "direct"/"indirect"/NULL)
 - `debt_instruments`: All debt with terms, linked via `issuer_id`
 - `guarantees`: Links debt to guarantor entities
 - `collateral`: Asset-backed collateral for secured debt (type, description, priority)
-- `covenants`: Structured covenant data extracted from credit agreements/indentures
-- `company_financials`: Quarterly financial statements (amounts in cents) - see **Industry-Specific Metrics** below
-- `bond_pricing`: Pricing data (YTM, spreads in basis points)
+- `covenants`: Structured covenant data from credit agreements/indentures
+- `company_financials`: Quarterly financial statements (amounts in cents) — see Industry-Specific Metrics below
+- `bond_pricing`: Current pricing (YTM, spreads in basis points)
+- `bond_pricing_history`: Historical daily snapshots (Business tier only)
+- `treasury_yield_history`: Historical US Treasury yield curves (1M-30Y tenors, 2021-present)
 - `document_sections`: SEC filing sections for full-text search (TSVECTOR + GIN index)
 
 **Auth Tables**:
-- `users`: User accounts (email, api_key_hash, tier, stripe IDs, rate_limit_per_minute, team_seats)
-- `user_credits`: Credit balance and billing cycle (credits_remaining, credits_purchased, credits_used)
+- `users`: User accounts (email, api_key_hash, tier, stripe IDs, rate_limit_per_minute)
+- `user_credits`: Credit balance and billing cycle
 - `usage_log`: API usage tracking (endpoint, cost_usd, tier_at_time_of_request)
 
-**Pricing Tables** (Three-Tier System):
-- `bond_pricing_history`: Historical bond pricing snapshots (Business tier only)
-- `treasury_yield_history`: Historical US Treasury yield curves for spread calculations (1M-30Y tenors, 2021-present)
-- `team_members`: Business tier multi-seat team management
-- `coverage_requests`: Business tier custom company coverage requests
-
-**RAG Tables** (Medici knowledge base):
-- `knowledge_chunks`: Embedded knowledge chunks for RAG retrieval (pgvector `vector(768)`, HNSW index, cosine similarity). 78 chunks from 13 markdown files (7 Moyer frameworks + 3 Whitman frameworks + 3 case studies). Ingested from `medici/knowledge/` via `medici/scripts/ingest_knowledge.py`. See `medici/CLAUDE.md` for full file inventory and management instructions.
-
-**Cache Tables**:
-- `company_cache`: Pre-computed JSON responses + `extraction_status` (JSONB tracking step attempts)
-- `company_metrics`: Computed credit metrics + `source_filings` JSONB for TTM provenance
+**Other Tables**: `company_cache` (pre-computed JSON + `extraction_status` JSONB), `company_metrics`, `team_members`, `coverage_requests`, `knowledge_chunks` (pgvector for RAG — see `medici/CLAUDE.md`)
 
 ### Industry-Specific Financial Metrics
 
-Different industries use different primary profitability metrics. The `company_financials.ebitda` field stores the industry-appropriate metric, with `ebitda_type` indicating which:
+The `company_financials.ebitda` field stores the industry-appropriate metric, with `ebitda_type` indicating which:
 
-| `ebitda_type` | Industry | Metric | Calculation |
-|---------------|----------|--------|-------------|
-| `"ebitda"` | Operating companies | EBITDA | Operating Income + D&A |
-| `"ppnr"` | Banks | Pre-Provision Net Revenue | NII + Non-Interest Income - Non-Interest Expense |
-| `"ffo"` | REITs | Funds From Operations | Net Income + D&A - Gains on Sales |
-| `"noi"` | Real Estate | Net Operating Income | Rental Income - Operating Expenses |
+| `ebitda_type` | Industry | Metric |
+|---------------|----------|--------|
+| `"ebitda"` | Operating companies | EBITDA |
+| `"ppnr"` | Banks | Pre-Provision Net Revenue |
+| `"ffo"` | REITs | Funds From Operations |
+| `"noi"` | Real Estate | Net Operating Income |
 
-**Current Support:**
-- Banks/Financial Institutions: `companies.is_financial_institution = true` (12 companies: AXP, BAC, C, COF, GS, JPM, MS, PNC, SCHW, TFC, USB, WFC)
-- Industry-specific fields in `company_financials`: `net_interest_income`, `non_interest_income`, `non_interest_expense`, `provision_for_credit_losses`
+Banks/Financial Institutions: `companies.is_financial_institution = true` (12 companies: AXP, BAC, C, COF, GS, JPM, MS, PNC, SCHW, TFC, USB, WFC). Industry-specific fields in `company_financials`: `net_interest_income`, `non_interest_income`, `non_interest_expense`, `provision_for_credit_losses`.
 
-**Bank Sub-Types (extraction differences):**
-| Type | Examples | Income Statement Structure | Notes |
-|------|----------|---------------------------|-------|
-| Commercial Banks | BAC, JPM, WFC, PNC, USB, TFC, C, COF | NII + Non-Interest Income - Non-Interest Expense | Standard bank prompt works well |
-| Credit Card / Consumer Finance | AXP, COF | Similar to commercial banks | May show "Net Interest Income" differently |
-| Investment Banks | GS, MS | "Net Revenues" by segment (Institutional, Wealth Mgmt) | Different terminology - "Net Revenues" not "NII" |
-| Brokerages | SCHW | Mix of NII and fee income | Works with bank prompt |
-
-**Known Limitation:** Investment banks (GS, MS) may have lower extraction success rate for bank-specific fields due to different income statement structure. They use "Net Revenues" and segment-based reporting rather than traditional NII/Non-Interest Income breakdown.
-
-**To add a new industry type:**
-1. Add flag to `companies` table (e.g., `is_reit`) or use `sector` detection
-2. Add industry-specific columns to `company_financials` in schema.py
-3. Create Alembic migration for new columns
-4. Add extraction prompt in `app/services/financial_extraction.py` (see `BANK_FINANCIAL_EXTRACTION_PROMPT`)
-5. Add calculation logic in `save_financials_to_db()` to compute the metric and set `ebitda_type`
-6. Update `extract_iterative.py` to detect and flag the industry type
-
-**API Response:**
-The `/v1/financials` endpoint returns `ebitda_type` so consumers know which metric they're seeing. Bank-specific fields (`net_interest_income`, etc.) are included but null for non-banks.
+**To add a new industry type:** Add flag to `companies` → add columns to `company_financials` → Alembic migration → extraction prompt in `financial_extraction.py` → calculation logic in `save_financials_to_db()` → detection in `extract_iterative.py`.
 
 ## API Endpoints
 
-### Auth Endpoints
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/v1/auth/signup` | POST | Create account, returns API key |
-| `/v1/auth/me` | GET | Get user info and credits (requires API key) |
-
-### Three-Tier Pricing
-
-| Tier | Price | Rate Limit | Features |
-|------|-------|------------|----------|
-| Pay-as-You-Go | $0/mo + per-call | 60/min | All basic endpoints, pay $0.05-$0.15/call |
-| Pro | $199/mo | 100/min | Unlimited queries to basic endpoints |
-| Business | $499/mo | 500/min | All endpoints + historical pricing + bulk export + 5 team seats |
-
-**Endpoint Costs (Pay-as-You-Go)**:
-- Simple ($0.05): `/companies`, `/bonds`, `/bonds/resolve`, `/financials`, `/collateral`, `/covenants`
-- Complex ($0.10): `/companies/{ticker}/changes`
-- Advanced ($0.15): `/entities/traverse`, `/documents/search`, `/batch`
-
-**Business-Only Endpoints**: `/covenants/compare`, `/bonds/{cusip}/pricing/history`, `/export`, `/usage/analytics`
-
-### Primitives API (12 endpoints - optimized for agents)
+### Primitives API (12 endpoints — optimized for agents)
 
 All require `X-API-Key` header (except `/v1/coverage/request`).
 
-| Endpoint | Method | Pay-as-You-Go Cost | Purpose |
-|----------|--------|-------------------|---------|
+| Endpoint | Method | Cost | Purpose |
+|----------|--------|------|---------|
 | `/v1/companies` | GET | $0.05 | Search companies with field selection |
-| `/v1/bonds` | GET | $0.05 | Search/screen bonds with pricing (YTM, seniority, maturity filters) |
-| `/v1/bonds/resolve` | GET | $0.05 | Map bond identifiers - free-text to CUSIP (e.g., "RIG 8% 2027") |
-| `/v1/financials` | GET | $0.05 | Quarterly financial statements (income, balance sheet, cash flow) |
-| `/v1/collateral` | GET | $0.05 | Collateral securing debt (types, values, priority) |
+| `/v1/bonds` | GET | $0.05 | Search/screen bonds with pricing |
+| `/v1/bonds/resolve` | GET | $0.05 | Map bond identifiers — free-text to CUSIP |
+| `/v1/financials` | GET | $0.05 | Quarterly financial statements |
+| `/v1/collateral` | GET | $0.05 | Collateral securing debt |
+| `/v1/covenants` | GET | $0.05 | Structured covenant data |
 | `/v1/companies/{ticker}/changes` | GET | $0.10 | Diff against historical snapshots |
-| `/v1/covenants` | GET | $0.05 | Search structured covenant data (financial, negative, protective) |
-| `/v1/covenants/compare` | GET | Business only | Compare covenants across multiple companies |
+| `/v1/covenants/compare` | GET | Biz | Compare covenants across companies |
 | `/v1/entities/traverse` | POST | $0.15 | Graph traversal (guarantors, structure) |
 | `/v1/documents/search` | GET | $0.15 | Full-text search across SEC filings |
-| `/v1/batch` | POST | Sum of ops | Execute multiple primitives in parallel |
+| `/v1/batch` | POST | Sum | Execute multiple primitives in parallel |
 | `/v1/coverage/request` | POST | Free | Request coverage for non-covered companies |
 
-### Business-Only Endpoints
+**Business-Only**: `/v1/bonds/{cusip}/pricing/history`, `/v1/export`, `/v1/usage/analytics`, `/v1/usage/trends`
 
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/v1/bonds/{cusip}/pricing/history` | GET | Historical bond pricing (up to 2 years) |
-| `/v1/export` | GET | Bulk data export (CSV/JSON, up to 50K records) |
-| `/v1/usage/analytics` | GET | Usage analytics dashboard |
-| `/v1/usage/trends` | GET | Usage trends over time |
+**Pricing API (public)**: `/v1/pricing/tiers`, `/v1/pricing/calculate`, `/v1/pricing/my-usage`, `/v1/pricing/purchase-credits`, `/v1/pricing/upgrade`
 
-### Pricing API (Public + Authenticated)
+**Auth**: `/v1/auth/signup` (POST), `/v1/auth/me` (GET)
 
-| Endpoint | Method | Auth | Purpose |
-|----------|--------|------|---------|
-| `/v1/pricing/tiers` | GET | No | Public tier info |
-| `/v1/pricing/calculate` | POST | No | Cost calculator |
-| `/v1/pricing/my-usage` | GET | Yes | User's usage stats |
-| `/v1/pricing/purchase-credits` | POST | Yes | Buy credit packages |
-| `/v1/pricing/upgrade` | POST | Yes | Upgrade subscription |
+**Legacy REST** (26 routes): `/v1/companies/{ticker}` — overview, structure, hierarchy, debt, metrics, financials, ratios, pricing, guarantees, entities, maturity-waterfall. Search: `/v1/search/companies`, `/v1/search/debt`, `/v1/search/entities`. Analytics: `/v1/compare/companies`, `/v1/analytics/sectors`. System: `/v1/ping`, `/v1/health`, `/v1/status`, `/v1/sectors`.
 
-**Field selection**: `?fields=ticker,name,net_leverage_ratio`
-**Sorting**: `?sort=-net_leverage_ratio` (prefix `-` for descending)
-**Filtering**: `?min_ytm=8.0&seniority=senior_unsecured`
-
-**Bonds vs Bonds/Resolve:**
-| `/v1/bonds` | `/v1/bonds/resolve` |
-|-------------|---------------------|
-| Bulk search/screening | Identifier resolution |
-| Filters: yield, seniority, maturity | Free-text parsing: "RIG 8% 2027" |
-| Always includes pricing | Fuzzy + exact match modes |
-| Use: "Show me all IG bonds with 5%+ yield" | Use: "What's the CUSIP for RIG's 8% 2027?" |
-
-### Legacy REST Endpoints (26 total)
-
-**Company**: `/v1/companies/{ticker}` - overview, structure, hierarchy, debt, metrics, financials, ratios, pricing, guarantees, entities, maturity-waterfall
-
-**Search**: `/v1/search/companies`, `/v1/search/debt`, `/v1/search/entities`
-
-**Analytics**: `/v1/compare/companies`, `/v1/analytics/sectors`
-
-**System**: `/v1/ping`, `/v1/health`, `/v1/status`, `/v1/sectors`
+**Query features**: Field selection (`?fields=ticker,name`), sorting (`?sort=-net_leverage_ratio`), filtering (`?min_ytm=8.0&seniority=senior_unsecured`).
 
 ## Key Design Decisions
 
 1. **Amounts in CENTS**: `$1 billion = 100_000_000_000 cents`
 2. **Rates in BASIS POINTS**: `8.50% = 850 bps`
 3. **Individual instruments**: Extract each bond separately, not totals
-4. **Name normalization**: Case-insensitive, punctuation-normalized
+4. **Name normalization**: Case-insensitive, punctuation-normalized via `normalize_name()`
 5. **Robust JSON parsing**: `parse_json_robust()` handles LLM output issues
-6. **Estimated data must be flagged**: When data cannot be extracted from source documents after repeated attempts and must be estimated/inferred, it MUST be clearly marked as estimated. Users should always know when they're seeing inferred data vs. extracted data. Example: `issue_date_estimated: true` indicates the date was inferred from maturity date and typical bond tenors, not extracted from SEC filings.
-7. **ALWAYS detect scale from source document**: SEC filings state their scale explicitly (e.g., "in millions", "in thousands", "$000"). NEVER assume scale - always extract it from the filing header. The `detect_filing_scale()` function in `financial_extraction.py` handles this. **Critical lesson**: When fixing apparent scale errors, ALWAYS verify against the source SEC filing first. Do not blindly multiply/divide - the extraction may be correct and the comparison data may be stale or from a different source.
-8. **Comprehensive debt instrument taxonomy**: Extract ALL types of corporate debt, not just bonds. See table below.
+6. **Estimated data must be flagged**: Always mark estimated/inferred data (e.g., `issue_date_estimated: true`)
+7. **ALWAYS detect scale from source document**: Never assume scale — extract from SEC filing header. `detect_filing_scale()` in `financial_extraction.py`. **Never blindly apply scale fixes** — always verify against the source SEC filing first.
 
 ### Debt Instrument Types
 
-The extraction uses a canonical taxonomy with normalization from 50+ LLM output variants:
+Canonical taxonomy with normalization from 50+ LLM output variants:
 
-| Type | Description | Examples |
-|------|-------------|----------|
-| `senior_notes` | Investment-grade or high-yield bonds | 5.75% Senior Notes due 2029 |
-| `senior_secured_notes` | Secured bonds with collateral | 8.5% Senior Secured Notes due 2028 |
-| `subordinated_notes` | Junior/subordinated bonds | 6.25% Subordinated Notes due 2030 |
-| `convertible_notes` | Bonds convertible to equity | 6.50% Convertible Senior Notes |
-| `term_loan` | Bank term loans (A, B, or generic) | 2023 Term Loan Facility |
-| `revolver` | Revolving credit facilities | 2023 Revolving Credit Facility |
-| `abl` | Asset-based lending facilities | ABL Facility |
-| `commercial_paper` | Short-term unsecured notes | Commercial Paper Program |
-| `equipment_trust` | EETCs, equipment financing | Enhanced Equipment Trust Certificates |
-| `government_loan` | PSP notes, government-backed loans | PSP1 Promissory Note |
-| `finance_lease` | Capital/finance lease obligations | Finance Lease Obligations |
-| `mortgage` | Real estate secured debt | Mortgage Notes |
-| `bond` | Generic bonds (municipal, revenue, etc.) | Special Facility Revenue Bonds |
-| `debenture` | Unsecured debentures | Debentures due 2035 |
-| `preferred_stock` | Trust preferred, preferred securities | Trust Preferred Securities |
-| `other` | Catch-all for rare types | Structured liabilities, repos |
+| Type | Description |
+|------|-------------|
+| `senior_notes` | Investment-grade or high-yield bonds |
+| `senior_secured_notes` | Secured bonds with collateral |
+| `subordinated_notes` | Junior/subordinated bonds |
+| `convertible_notes` | Bonds convertible to equity |
+| `term_loan` | Bank term loans (A, B, or generic) |
+| `revolver` | Revolving credit facilities |
+| `abl` | Asset-based lending facilities |
+| `commercial_paper` | Short-term unsecured notes |
+| `equipment_trust` | EETCs, equipment financing |
+| `government_loan` | PSP notes, government-backed loans |
+| `finance_lease` | Capital/finance lease obligations |
+| `mortgage` | Real estate secured debt |
+| `bond` | Generic bonds (municipal, revenue, etc.) |
+| `debenture` | Unsecured debentures |
+| `preferred_stock` | Trust preferred securities |
+| `other` | Catch-all for rare types |
 
-**Commonly missed types** (now explicitly prompted):
-- Term Loans and Revolvers (bank debt, not capital markets)
-- Equipment Trust Certificates (aircraft/equipment financing)
-- Government/PSP Loans (CARES Act, Payroll Support Program)
-- Special Facility Revenue Bonds (airport, industrial revenue bonds)
-
-The validator in `extraction.py` normalizes 50+ variants (e.g., `eetc` → `equipment_trust`, `term_loan_b` → `term_loan`).
+The validator in `extraction.py` normalizes 50+ variants (e.g., `eetc` → `equipment_trust`, `notes` → `senior_notes`).
 
 ## Adding a New Company
 
-**One command** to add a complete company with all data:
-
 ```bash
-# Get the company's CIK from SEC EDGAR first:
-# https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=COMPANY+NAME
-
-# Run complete extraction pipeline
+# Get CIK from SEC EDGAR, then run complete pipeline:
 python scripts/extract_iterative.py --ticker XXXX --cik 0001234567 --save-db
 ```
 
-This single command runs all 11 steps:
+This runs all 11 steps: SEC download → core extraction with QA → save to DB → document sections → document linking → amount backfill → TTM financials → ownership hierarchy → guarantees → collateral → metrics → QC checks.
 
-| Step | What It Does | Data Created |
-|------|--------------|--------------|
-| 1 | Download SEC filings | Cached for reuse |
-| 2 | Core extraction with QA | Company, Entities, Debt Instruments |
-| 3 | Save to database | Core records |
-| 4 | Document sections | Searchable SEC filing sections |
-| 5 | Document linking | Links instruments to indentures/credit agreements |
-| 5b | Amount backfill | Regex extraction from indentures ($0 cost) |
-| 6 | TTM financials | 4 quarters of financial data |
-| 7 | Ownership hierarchy | parent_id, is_root relationships |
-| 8 | Guarantees | Guarantee relationships (uses linked docs) |
-| 9 | Collateral | Collateral for secured debt (uses linked docs) |
-| 10 | Metrics | Leverage ratios, maturity profile |
-| 11 | QC checks | Validation and data quality |
+**Options**: `--core-only`, `--skip-financials`, `--skip-enrichment`, `--threshold 90`, `--force`, `--all`, `--resume`, `--limit N`
 
-**Options:**
+**Modular execution with `--step`**: Run individual steps for existing companies:
 ```bash
---core-only        # Fastest: only entities + debt (skip financials, enrichment)
---skip-financials  # Skip TTM financial extraction
---skip-enrichment  # Skip guarantees, collateral, hierarchy
---threshold 90     # QA score threshold (default: 85%)
---force            # Re-run all steps (ignore skip conditions)
---all              # Process all companies in database
---resume           # Resume batch from last processed company
---limit N          # Limit batch to N companies
---step STEP        # Run only a specific step (see below)
+python scripts/extract_iterative.py --ticker AAL --step financials  # Re-extract financials
+python scripts/extract_iterative.py --ticker AAL --step cache       # Refresh cache
+python scripts/extract_iterative.py --ticker AAL --step metrics     # Update metrics
 ```
 
-**Modular Execution with `--step`:**
+Available steps: `core`, `financials`, `hierarchy`, `guarantees`, `collateral`, `documents`, `amounts`, `covenants`, `metrics`, `finnhub`, `pricing`, `cache`.
 
-Run individual extraction steps for existing companies without the full pipeline:
+**Idempotent**: Tracks extraction status in `company_cache.extraction_status` (JSONB). Status values: `success`, `no_data` (won't retry unless `--force`), `error` (will retry). ~2-5 min per company, ~$0.03-0.08.
 
+### Individual Service CLIs
+
+Each extraction service has its own CLI for debugging:
 ```bash
-# Re-extract financials only
-python scripts/extract_iterative.py --ticker AAL --step financials
-
-# Refresh cache after manual DB fixes
-python scripts/extract_iterative.py --ticker AAL --step cache
-
-# Re-run guarantees extraction
-python scripts/extract_iterative.py --ticker AAL --step guarantees
-
-# Update metrics after data changes
-python scripts/extract_iterative.py --ticker AAL --step metrics
-```
-
-| Step | Purpose | Requires |
-|------|---------|----------|
-| `core` | Re-run entity and debt extraction | GEMINI_API_KEY, CIK |
-| `financials` | Extract 8 quarters of financial data | GEMINI_API_KEY, CIK |
-| `hierarchy` | Extract ownership from Exhibit 21 | CIK |
-| `guarantees` | Extract guarantee relationships | CIK |
-| `collateral` | Extract collateral data | CIK |
-| `documents` | Link documents to instruments | - |
-| `amounts` | Backfill bullet bond amounts from indentures (regex, $0) | - |
-| `covenants` | Extract covenant data | CIK |
-| `metrics` | Recompute derived metrics | - |
-| `finnhub` | Run Finnhub bond discovery | FINNHUB_API_KEY |
-| `pricing` | Update bond pricing | FINNHUB_API_KEY |
-| `cache` | Refresh company cache | - |
-
-**Idempotent Extraction:**
-
-The script is safe to re-run on existing companies. It tracks extraction status in `company_cache.extraction_status` (JSONB):
-
-```json
-{
-  "hierarchy": {"status": "no_data", "attempted_at": "2026-01-26T10:30:00", "details": "No Exhibit 21 found"},
-  "financials": {"status": "success", "latest_quarter": "2025Q3", "attempted_at": "..."}
-}
-```
-
-**Status values:**
-- `success` - Step completed with data (includes metadata like `latest_quarter`)
-- `no_data` - Source data unavailable (won't retry unless `--force`)
-- `error` - Step failed (will retry on next run)
-
-**Smart skip logic:**
-- Financials: Checks if new quarter available (~60 days after quarter end)
-- Hierarchy: Skips if no Exhibit 21 was found previously
-- Guarantees/Collateral: Skips if already extracted or source unavailable
-
-**Estimated time**: 2-5 minutes per company
-**Estimated cost**: ~$0.03-0.08 per company
-
-### Manual/Individual Steps
-
-Each extraction service has its own CLI for debugging or re-running specific steps:
-
-```bash
-# Document sections
-python -m app.services.section_extraction --ticker CHTR
-python -m app.services.section_extraction --all --limit 10
-python -m app.services.section_extraction --ticker CHTR --force  # Re-extract
-
-# Document linking (links instruments to indentures/credit agreements)
-python -m app.services.document_linking --ticker CHTR
-python -m app.services.document_linking --all --heuristic  # Fast, no LLM
-
-# Financials (TTM = 4 quarters)
+python -m app.services.section_extraction --ticker CHTR [--all] [--force]
+python -m app.services.document_linking --ticker CHTR [--all --heuristic]
 python -m app.services.financial_extraction --ticker CHTR --ttm --save-db
-python -m app.services.financial_extraction --ticker CHTR --claude  # Use Claude instead of Gemini
-
-# Ownership hierarchy (from Exhibit 21)
-python -m app.services.hierarchy_extraction --ticker CHTR
-python -m app.services.hierarchy_extraction --all --limit 10
-
-# Guarantees
-python -m app.services.guarantee_extraction --ticker CHTR
-python -m app.services.guarantee_extraction --all
-
-# Collateral
-python -m app.services.collateral_extraction --ticker CHTR
-python -m app.services.collateral_extraction --all
-
-# Covenants (structured covenant data from credit agreements/indentures)
-python -m app.services.covenant_extraction --ticker CHTR
-python -m app.services.covenant_extraction --all --limit 50
-python -m app.services.covenant_extraction --ticker CHTR --force  # Re-extract
-
-# Metrics recompute
-python -m app.services.metrics --ticker CHTR
-python -m app.services.metrics --all --dry-run  # Preview changes
-
-# QC check
+python -m app.services.hierarchy_extraction --ticker CHTR [--all]
+python -m app.services.guarantee_extraction --ticker CHTR [--all]
+python -m app.services.collateral_extraction --ticker CHTR [--all]
+python -m app.services.covenant_extraction --ticker CHTR [--all] [--force]
+python -m app.services.metrics --ticker CHTR [--all --dry-run]
 python scripts/qc_master.py --ticker CHTR --verbose
-
-# Pricing update (requires Finnhub)
 python scripts/update_pricing.py --ticker CHTR
 ```
 
-### Document-to-Instrument Linking
+## Bond Pricing
 
-Scripts for linking debt instruments to their governing legal documents:
+TRACE pricing via Finnhub/FINRA. See `docs/BOND_PRICING.md` for detailed data flow, tables, and scripts.
 
-```bash
-# Fix data quality issues first
-python scripts/fix_missing_interest_rates.py --save    # Extract rates from names
-python scripts/fix_missing_maturity_dates.py --save    # Extract years from names
-python scripts/fix_empty_instrument_names.py --ticker CHTR --save  # LLM extracts names
-
-# Smart pattern-based matching (for term loans, revolvers)
-python scripts/smart_document_matching.py --ticker CHTR --save
-python scripts/smart_document_matching.py --all --save --limit 50
-
-# Fallback linking (when specific documents not found)
-python scripts/link_to_base_indenture.py --save        # Links notes to base/supplemental indentures
-python scripts/link_to_credit_agreement.py --save      # Links loans/revolvers to credit agreements
-
-# Mark instruments that don't need documents
-python scripts/mark_no_doc_expected.py --execute       # Commercial paper, bank loans, etc.
-```
-
-### Ownership Hierarchy Extraction
-
-Corporate ownership hierarchy is extracted from multiple sources:
-
-**From Exhibit 21 (initial extraction):**
-```bash
-python scripts/extract_exhibit21_hierarchy.py --ticker CHTR --save-db
-python scripts/extract_exhibit21_hierarchy.py --all --save-db
-```
-
-**From Indentures/Credit Agreements (explicit relationships only):**
-```bash
-# Extract explicit parent-child relationships from SEC filings
-python scripts/fix_ownership_hierarchy.py --ticker CHTR           # Dry run
-python scripts/fix_ownership_hierarchy.py --ticker CHTR --save-db # Save to DB
-python scripts/fix_ownership_hierarchy.py --all --save-db         # All companies
-```
-
-**From Prospectus Supplements + LLM (intermediate ownership):**
-```bash
-# Step 1: Fetch 424B prospectus sections (regex extraction, $0 LLM cost)
-python scripts/fetch_prospectus_sections.py --analyze             # Survey availability
-python scripts/fetch_prospectus_sections.py --ticker CHTR --verbose  # Dry run
-python scripts/fetch_prospectus_sections.py --ticker CHTR --save  # Save sections
-python scripts/fetch_prospectus_sections.py --all --save          # All companies
-
-# Step 2: Extract intermediate parent-child relationships via Gemini Flash
-python scripts/extract_intermediate_ownership.py --analyze        # Orphan stats
-python scripts/extract_intermediate_ownership.py --ticker CHTR    # Dry run
-python scripts/extract_intermediate_ownership.py --ticker CHTR --save  # Save to DB
-python scripts/extract_intermediate_ownership.py --all --save     # All companies
-python scripts/extract_intermediate_ownership.py --all --save --batch-size 150  # Smaller batches
-```
-
-**Intermediate ownership results (2026-02-24):** 6,054 prospectus sections extracted across 259 companies. 5,647 parents assigned via LLM, 5,636 ownership links created. Additionally: 3,415 parents via GLEIF, 1,362 via UK Companies House. Total 13,113 entities with known parents. Pipeline: (1) clear false root assignments → (2) fetch prospectus → (3) GLEIF → (4) UK Companies House → (5) LLM intermediate. Uses batch commits (every 25) to avoid Neon timeout.
-
-**Key fields:**
-- `entities.is_root`: `true` = ultimate parent company, `false` = subsidiary/orphan
-- `entities.parent_id`: UUID of parent entity, or NULL if root/unknown
-- `ownership_links.ownership_type`: "direct", "indirect", or NULL (unknown)
-
-**Entity states:**
-| `is_root` | `parent_id` | Meaning |
-|-----------|-------------|---------|
-| `true` | `NULL` | Ultimate parent company |
-| `false` | UUID | Has known parent |
-| `false` | `NULL` | Orphan (parent unknown from SEC filings) |
-
-**Note:** 10-K/10-Q filings rarely contain explicit intermediate ownership chains. However, 424B prospectus supplements often describe the full corporate chain for investors (e.g., "CCO Holdings Capital Corp., a wholly-owned subsidiary of CCO Holdings, LLC"). The `fetch_prospectus_sections.py` + `extract_intermediate_ownership.py` pipeline resolved 2,399 orphan relationships using this approach.
-
-### Ownership Data Honesty
-
-We only show parent-child relationships where we have evidence from SEC filings. The `/structure` endpoint includes transparency fields:
-
-**Entity-level `ownership_confidence`:**
-- `root` - Ultimate parent company
-- `key_entity` - Issuer or guarantor with known relationship to parent
-- `verified` - Intermediate parent verified from indenture/credit agreement parsing
-- `unknown` - Listed in Exhibit 21 but parent relationship unknown (not shown in hierarchy tree)
-
-**Response-level `ownership_coverage`:**
-```json
-{
-  "ownership_coverage": {
-    "known_relationships": 3,
-    "unknown_relationships": 227,
-    "key_entities": 4,
-    "coverage_pct": 1.3,
-    "note": "Ownership relationships are only shown where we have evidence..."
-  }
-}
-```
-
-**`other_subsidiaries` section:** Lists entities with unknown parent relationships separately.
-
-**`meta.confidence`:** Shows "partial" when some relationships are unknown, "high" when all are known.
-
-### Fix False Ownership Script
-
-If ownership data needs cleanup:
-```bash
-# Dry run - see what would change
-python scripts/fix_false_ownership.py
-
-# Apply changes (sets parent_id=NULL for non-key entities with unverified relationships)
-python scripts/fix_false_ownership.py --save-db
-
-# Single company
-python scripts/fix_false_ownership.py --ticker RIG --save-db
-```
-
-### TTM EBITDA Calculation (Leverage Ratios)
-
-The metrics service (`app/services/metrics.py`) calculates TTM EBITDA for leverage ratios using smart filing-type detection:
-
-**Rule: 10-K vs 10-Q Logic**
-- **If latest filing is 10-K**: Use annual figures directly (already represents full year TTM)
-- **If latest filing is 10-Q**: Sum trailing 4 quarters of 10-Q data
-
-This prevents the common error of mixing annual and quarterly figures.
-
-**EBITDA Computation:**
-1. Use `ebitda` field if directly available
-2. Otherwise compute: `operating_income + depreciation_amortization`
-3. Fallback: Use `operating_income` alone if D&A unavailable (flagged as estimated)
-
-**Annualization:**
-- If fewer than 4 quarters of 10-Q data available, extrapolate: `ttm_ebitda = sum * (4 / quarters_available)`
-- This is flagged in metadata so users know data quality
-
-**Data Quality Tracking (`source_filings` JSONB):**
-```json
-{
-  "ebitda_source": "annual_10k",       // or "quarterly_sum"
-  "ebitda_quarters": 4,                 // Number of quarters used
-  "ebitda_quarters_with_da": 4,         // Quarters where D&A was available
-  "is_annualized": false,               // True if extrapolated from <4 quarters
-  "ebitda_estimated": false,            // True if some quarters used OpInc only
-  "ttm_quarters": ["2025FY"],           // Periods used (e.g., "2025FY" or "2025Q3,2025Q2,...")
-  "computed_at": "2026-01-29T16:32:47Z"
-}
-```
-
-**API Exposure:**
-```bash
-GET /v1/companies?ticker=AAPL&include_metadata=true
-```
-
-Returns `_metadata.leverage_data_quality` with all tracking fields, enabling users to assess data reliability.
-
-**Current Coverage (201 companies):**
-| Category | Count | Percent |
-|----------|-------|---------|
-| Full TTM (4 quarters or 10-K) | 73 | 36% |
-| Annualized (<4 quarters) | 111 | 55% |
-| No EBITDA data | 17 | 8% |
-
-**Data Freshness vs LLMs:**
-DebtStack extracts from the latest SEC filings (Oct-Dec 2025), while LLMs like Gemini/ChatGPT have knowledge cutoffs ~18 months stale. Comparison testing showed:
-- Companies where periods align: 100% match rate (within 15% tolerance)
-- Apparent "mismatches" are due to LLM data being from Q1-Q2 2024
-
-### TTM Financial Extraction
-
-For accurate leverage ratios, use `--ttm` to extract 8 quarters (2 years) of financial data:
-- Fetches 8 10-Qs (NOT 10-Ks) for clean quarterly data
-- Uses `periodOfReport` from SEC API to determine fiscal quarter
-- Stores `filing_type` field ("10-Q") for each record
-- If fewer than 4 quarters available, annualizes what's available
-
-**Why 8 10-Qs instead of 10-K + 10-Qs:**
-- 10-K contains ANNUAL figures, not Q4 quarterly data
-- Extracting Q4 from 10-K requires subtracting 9-month YTD from annual (error-prone)
-- Using 8 10-Qs gives clean quarterly data without math
-- Also provides 2 years of data for YoY comparisons and trend analysis
-
-**Target: 8 quarters per company** for full coverage (TTM + YoY comparison)
-
-### Financial Data Quality Control
-
-Run QC audit to validate financial data accuracy:
-
-```bash
-# Full audit - checks for scale errors, extraction failures
-python scripts/qc_financials.py --verbose
-
-# Check single company
-python scripts/qc_financials.py --ticker AAPL
-
-# Spot-check random companies
-python scripts/qc_financials.py --sample 10
-
-# Fix QC issues (delete impossible records, report issues)
-python scripts/fix_qc_financials.py              # Dry run
-python scripts/fix_qc_financials.py --save-db    # Apply fixes
-```
-
-**QC Checks:**
-1. **Sanity checks** (no source doc needed): Revenue > $1T, EBITDA > Revenue, Debt > 10x Assets
-2. **Source validation**: Re-reads scale from SEC filing header, compares stored vs. source values
-3. **Leverage quality**: Flags high leverage (>20x) with insufficient EBITDA quarters
-4. **Leverage consistency**: Compares stored leverage vs calculated (debt/EBITDA)
-
-**Current Status (2026-01-29):** 0 critical, 0 errors, 4 warnings
+**Key points**:
+- Finnhub requires **ISIN, not CUSIP**. Convert: `US` + CUSIP + check digit.
+- 3,064 bonds with TRACE pricing. All estimated/synthetic removed.
+- APScheduler refreshes at 11 AM, 3 PM, 9 PM ET. Daily snapshots at 9 PM ET.
+- Historical TRACE fallback when Finnhub returns no current data.
+- Tables: `bond_pricing` (current), `bond_pricing_history` (daily snapshots), `treasury_yield_history`
 
 ## Testing
 
-DebtStack has a comprehensive testing infrastructure with 5 layers:
-
-### Test Structure
-
-```
-tests/                          # pytest test suite
-├── conftest.py                 # Fixtures, sample data
-├── unit/                       # Pure function tests (no DB/API)
-│   ├── test_name_normalization.py    # Entity name matching
-│   ├── test_fuzzy_matching.py        # Guarantor matching
-│   ├── test_maturity_parsing.py      # Date extraction
-│   └── test_document_classification.py
-├── integration/                # Service tests (mocked)
-├── api/                        # API contract tests
-│   └── test_companies_endpoint.py
-└── eval/                       # API accuracy evaluation suite
-    ├── conftest.py             # API client, DB fixtures
-    ├── ground_truth.py         # Ground truth data management
-    ├── scoring.py              # Accuracy calculation, regression detection
-    ├── test_companies.py       # 8 use cases
-    ├── test_bonds.py           # 7 use cases
-    ├── test_bonds_resolve.py   # 6 use cases
-    ├── test_financials.py      # 8 use cases
-    ├── test_collateral.py      # 5 use cases
-    ├── test_covenants.py       # 6 use cases
-    ├── test_covenants_compare.py  # 4 use cases
-    ├── test_entities_traverse.py  # 7 use cases
-    ├── test_documents_search.py   # 6 use cases
-    ├── test_workflows.py       # 8 E2E scenarios
-    └── baseline/               # Regression detection baselines
-
-scripts/                        # Standalone test scripts
-├── run_all_tests.py           # Unified test runner
-├── run_evals.py               # Eval framework runner
-├── test_api_edge_cases.py     # Security/robustness tests
-├── qc_master.py               # Data quality checks
-└── qc_financials.py           # Financial validation
-```
-
-### Running Tests
+5 test layers. See `tests/` directory and `docs/EVAL_FRAMEWORK.md`.
 
 ```bash
-# Quick: Unit tests only (no external deps, fast)
+# Quick: Unit tests only
 python -m pytest tests/unit -v -s
 
 # All pytest tests
 python -m pytest tests/ -v -s
 
-# Unified runner (includes E2E scripts)
-python scripts/run_all_tests.py              # All suites
-python scripts/run_all_tests.py --quick      # Unit only
-python scripts/run_all_tests.py --unit       # Unit only
-python scripts/run_all_tests.py --api        # API contract tests
-python scripts/run_all_tests.py --qc         # Include QC checks
-python scripts/run_all_tests.py --json       # JSON output
+# Unified runner
+python scripts/run_all_tests.py [--quick|--unit|--api|--qc|--json]
 
-# API Evaluation Framework (replaces test_demo_scenarios.py)
-python scripts/run_evals.py                  # Run all evals
-python scripts/run_evals.py --primitive companies  # Single primitive
-python scripts/run_evals.py --update-baseline      # Update baseline
-python scripts/run_evals.py --json           # JSON output for CI
+# API evaluation
+python scripts/run_evals.py [--primitive companies|--update-baseline|--json]
 
 # Data quality
-python scripts/qc_master.py                  # Full QC audit
-python scripts/qc_master.py --category integrity  # Specific category
-python scripts/qc_financials.py --verbose    # Financial validation
+python scripts/qc_master.py [--category integrity]
+python scripts/qc_financials.py --verbose
 ```
 
-### Eval Framework
-
-The eval framework validates API correctness against ground truth from database/SEC filings:
-
-| Primitive | Use Cases | Description |
-|-----------|-----------|-------------|
-| `/v1/companies` | 8 | Leverage accuracy, debt totals, sorting, filtering |
-| `/v1/bonds` | 7 | Coupon rates, maturity dates, pricing, seniority |
-| `/v1/bonds/resolve` | 6 | Free-text parsing, CUSIP lookup, fuzzy matching |
-| `/v1/financials` | 8 | Revenue, EBITDA, cash, quarterly filtering |
-| `/v1/collateral` | 5 | Collateral types, debt linking, priority |
-| `/v1/covenants` | 6 | Covenant types, thresholds, metrics |
-| `/v1/covenants/compare` | 4 | Multi-company comparison |
-| `/v1/entities/traverse` | 7 | Guarantor counts, parent-child links |
-| `/v1/documents/search` | 6 | Term presence, relevance, snippets |
-| **Workflows** | 8 | End-to-end multi-step scenarios |
-
-**Target accuracy**: 95%+. See `docs/EVAL_FRAMEWORK.md` for details.
-
-### Test Coverage
-
-| Category | Tests | Purpose |
-|----------|-------|---------|
-| Unit | 73 | Pure functions: name normalization, fuzzy matching, parsing |
-| API Contract | 15+ | Endpoint schemas, response types |
-| Eval Suite | ~65 | Ground-truth validation per endpoint |
-| API Edge Cases | 50+ | Security, error handling, edge cases |
-| QC Checks | 30+ | Data integrity, business logic, completeness |
-
-### Adding Tests
-
-1. **Unit tests** go in `tests/unit/test_*.py` - no DB, no API, no mocks
-2. **API tests** go in `tests/api/test_*.py` - require `DEBTSTACK_API_KEY`
-3. **Eval tests** go in `tests/eval/test_*.py` - use `@pytest.mark.eval`
-4. Use `@pytest.mark.unit` or `@pytest.mark.api` markers
-5. Install dev deps: `pip install -r requirements-dev.txt`
-
-### Covenant Relationship Extraction
-
-Extract additional relationship data from indentures (796) and credit agreements (1,720):
-
-```bash
-# Single company (dry run)
-python scripts/extract_covenant_relationships.py --ticker CHTR
-
-# Single company (save to database)
-python scripts/extract_covenant_relationships.py --ticker CHTR --save-db
-
-# Batch all companies
-python scripts/extract_covenant_relationships.py --all --save-db
-
-# Audit extraction results
-python scripts/audit_covenant_relationships.py --verbose
-```
-
-**Data Extracted:**
-- **Unrestricted subsidiaries**: Updates `entities.is_unrestricted` flag
-- **Guarantee conditions**: Adds release/add triggers to `guarantees.conditions` (JSONB)
-- **Cross-default links**: Creates records in `cross_default_links` table
-- **Non-guarantor disclosure**: Adds EBITDA/asset percentages to `company_metrics.non_guarantor_disclosure`
-
-## Bond Pricing (Finnhub Integration)
-
-Bond pricing data comes from Finnhub, which sources from FINRA TRACE (same data as Bloomberg/Reuters).
-
-### Automated Pricing Schedule
-
-The APScheduler in `app/core/scheduler.py` runs these jobs (US/Eastern timezone):
-
-| Time (ET) | Job | What It Does |
-|-----------|-----|-------------|
-| 11:00 AM | `refresh_current_prices()` | Fetch latest TRACE prices for stale bonds → `bond_pricing` |
-| 3:00 PM | `refresh_current_prices()` | Second refresh of current prices |
-| 6:00 PM | `refresh_treasury_yields()` | Update current-year treasury yield curves |
-| 9:00 PM | `refresh_and_snapshot()` | Refresh prices + copy to `bond_pricing_history` for daily snapshot |
-| Every 15 min | `check_and_alert()` | Check error rates, send Slack alerts |
-
-The scheduler starts/stops with the FastAPI app lifecycle (`app/main.py`). No external cron needed.
-
-**Key implementation details:**
-- `copy_current_to_history()` uses `US/Eastern` date via `zoneinfo` (Railway runs UTC; without this, 9 PM ET = 2 AM UTC next day would save tomorrow's date)
-- Daily snapshots insert in batches of 100 with per-batch commits to avoid Neon serverless timeout
-- Only active, non-matured instruments are snapshotted (filtered via JOIN to `debt_instruments`)
-- Errors are logged with structlog; failed batches roll back without blocking subsequent batches
-
-**Past issue (fixed 2026-02-12):** Daily snapshots silently failed from Feb 9-12 because `copy_current_to_history()` tried to insert ~3,900 records in a single statement (timed out on Neon), and the exception was swallowed with no logging. Fix: batched inserts + error logging + timezone correction.
-
-### Data Flow
-
-```
-Finnhub API (FINRA TRACE)           Treasury.gov
-    ↓                                    ↓
-scripts/update_pricing.py           scripts/backfill_treasury_yields.py
-    ↓                                    ↓
-bond_pricing table (current)        treasury_yield_history table
-    ↓                                    ↓
-scripts/collect_daily_pricing.py ←──────┘ (for spread calc)
-    ↓
-bond_pricing_history table (daily snapshots)
-```
-
-### Finnhub API Endpoints
-
-| Endpoint | Purpose | Key Fields |
-|----------|---------|------------|
-| `GET /bond/price?isin={ISIN}` | Current pricing | close, yield, volume, timestamp |
-| `GET /bond/profile?isin={ISIN}` | Bond characteristics | FIGI, callable, coupon_type |
-
-**Note:** Finnhub requires ISIN, not CUSIP. Convert US CUSIPs by adding "US" prefix + check digit.
-
-### Data Mapping
-
-| Finnhub Field | DebtStack Column | Notes |
-|---------------|------------------|-------|
-| `close` | `bond_pricing.last_price` | Clean price as % of par (e.g., 94.25) |
-| `yield` | `bond_pricing.ytm_bps` | Convert to basis points (6.82% → 682) |
-| `volume` | `bond_pricing.last_trade_volume` | Face value in cents |
-| `t` (timestamp) | `bond_pricing.last_trade_date` | Unix → datetime |
-| `"Finnhub"` | `bond_pricing.price_source` | Track data source |
-
-### Tables
-
-**`bond_pricing`** - Current prices (one row per active, non-matured instrument):
-- 3,557 records (2,487 TRACE + 1,070 estimated)
-- `last_price`: Clean price as % of par
-- `ytm_bps`: Yield to maturity in basis points
-- `spread_to_treasury_bps`: Spread over benchmark treasury
-- `staleness_days`: Days since last trade
-- `price_source`: "TRACE", "Finnhub", "estimated"
-- Stale records for inactive/matured instruments cleaned up 2026-02-12 (366 removed)
-
-**`bond_pricing_history`** - Historical daily snapshots (active, non-matured only):
-- 785,258 records
-- `price_date`: Date of snapshot
-- `price`, `ytm_bps`, `spread_bps`, `volume`
-- Unique constraint on (debt_instrument_id, price_date)
-- Stale records for inactive/matured instruments cleaned up 2026-02-12 (154,459 removed)
-
-**`treasury_yield_history`** - Historical treasury yield curves:
-- `yield_date`: Date of yield curve
-- `benchmark`: Tenor (1M, 3M, 6M, 1Y, 2Y, 3Y, 5Y, 7Y, 10Y, 20Y, 30Y)
-- `yield_pct`: Yield as percentage (e.g., 4.25 for 4.25%)
-- `source`: "treasury.gov" or "finnhub"
-- Coverage: 13,970 records from 2021-01-04 to present
-
-### API Exposure
-
-```bash
-# Current prices (from bond_pricing) - pricing always included in bonds response
-GET /v1/bonds?has_pricing=true&fields=name,cusip,pricing
-GET /v1/bonds?ticker=RIG&fields=name,cusip,pricing
-
-# Historical prices (from bond_pricing_history)
-GET /v1/pricing/history?cusip=76825DAJ7&from=2025-01-01&to=2026-01-27
-```
-
-**Note:** The `/v1/pricing` endpoint is deprecated (removal: 2026-06-01). Use `/v1/bonds?has_pricing=true` instead.
-
-### Pricing Response Format
-
-```json
-{
-  "name": "8.000% Senior Notes due 2027",
-  "cusip": "76825DAJ7",
-  "pricing": {
-    "price": 94.25,
-    "ytm_pct": 9.82,
-    "spread_bps": 450,
-    "as_of": "2026-01-24",
-    "source": "Finnhub"
-  }
-}
-```
-
-### Scripts
-
-```bash
-# Update current prices for all instruments with CUSIPs
-python scripts/update_pricing.py --all
-
-# Update single company
-python scripts/update_pricing.py --ticker CHTR
-
-# Backfill treasury yields (free from Treasury.gov)
-python scripts/backfill_treasury_yields.py --from-year 2021 --to-year 2026
-python scripts/backfill_treasury_yields.py --stats  # Check coverage
-
-# Backfill historical bond pricing (requires Finnhub premium)
-python scripts/backfill_pricing_history.py --all --days 1095  # 3 years
-python scripts/backfill_pricing_history.py --all --with-spreads  # Use historical treasury yields
-python scripts/backfill_pricing_history.py --ticker CHTR --skip-yields  # Faster, no YTM calc
-
-# Daily pricing collection (for cron job)
-python scripts/collect_daily_pricing.py --all
-```
-
-### Services
-
-**`app/services/pricing_history.py`** - Bond pricing history service:
-- `fetch_historical_candles()` - Fetch from Finnhub
-- `calculate_ytm_for_price()` - Sync YTM calculation
-- `calculate_spread_for_price()` - Spread using historical treasury yields
-- `backfill_bond_history()` - Single bond backfill
-- `copy_current_to_history()` - Daily snapshot
-
-**`app/services/treasury_yields.py`** - Treasury yield service:
-- `fetch_treasury_gov_yields()` - Fetch from Treasury.gov by year (free)
-- `backfill_treasury_yields()` - Multi-year backfill
-- `get_treasury_yield_for_date()` - Single date/benchmark lookup
-- `get_treasury_curve_for_date()` - Full curve for a date
+**Test counts**: Unit (73), API Contract (15+), Eval Suite (~65), Edge Cases (50+), QC (30+). Target accuracy: 95%+.
 
 ## Environment Variables
 
@@ -1017,417 +326,70 @@ python scripts/collect_daily_pricing.py --all
 | `ANTHROPIC_API_KEY` | Yes | Claude for escalation |
 | `GEMINI_API_KEY` | Recommended | Gemini for extraction |
 | `SEC_API_KEY` | Recommended | SEC-API.io for filing retrieval |
-| `FINNHUB_API_KEY` | Optional | Finnhub for bond pricing (~$100/mo tier) |
-| `SENTRY_DSN` | Optional | Sentry error tracking (FastAPI auto-integration) |
-| `SLACK_WEBHOOK_URL` | Optional | Slack incoming webhook for alert notifications |
-| `POSTHOG_API_KEY` | Optional | PostHog analytics (backend event tracking, same project as frontend) |
-| `POSTHOG_HOST` | Optional | PostHog host (default: `https://us.i.posthog.com`) |
+| `FINNHUB_API_KEY` | Optional | Finnhub for bond pricing |
+| `SENTRY_DSN` | Optional | Sentry error tracking |
+| `SLACK_WEBHOOK_URL` | Optional | Slack alerts |
+| `POSTHOG_API_KEY` | Optional | PostHog analytics |
 
 ## Deployment
 
-**Railway** (recommended):
-- Config: `railway.json`
-- Dockerfile for container builds
-- Health check: `/v1/ping` (simple) or `/v1/health` (with DB)
-- Environment variables set in Railway dashboard
+**Railway**: `railway.json`, Dockerfile, health check at `/v1/ping` or `/v1/health`.
 
-**Local**:
-```bash
-uvicorn app.main:app --reload
-```
+**Local**: `uvicorn app.main:app --reload`
 
-## Migrations
-
-```bash
-alembic upgrade head     # Apply all
-alembic revision -m "description"  # Create new
-```
-
-Current migrations: 001 (initial) through 027 (add_knowledge_chunks with pgvector)
-
-## Utilities & Services Architecture
-
-The codebase distinguishes between **utilities** (stateless helpers) and **services** (orchestrate complete jobs):
-
-### Utilities (Stateless Functions)
-
-**`app/services/utils.py`** - Core text/parsing utilities:
-```python
-from app.services.utils import (
-    parse_json_robust,    # Parse JSON from LLM output (handles code blocks, trailing commas)
-    normalize_name,       # Normalize entity names for matching (case, suffixes)
-    parse_date,           # Parse various date formats to date objects
-    extract_sections,     # Extract sections by keywords with context
-    clean_html,           # Simple HTML tag removal
-)
-```
-
-**`app/services/extraction_utils.py`** - SEC filing utilities:
-```python
-from app.services.extraction_utils import (
-    clean_filing_html,      # Clean HTML/XBRL from SEC filings
-    truncate_content,       # Smart truncation at sentence boundaries
-    combine_filings,        # Combine multiple filings with priority
-    extract_debt_sections,  # Extract debt-related content using keyword priority
-    ModelTier,              # LLM model tiers enum
-    LLMUsage,               # Token tracking dataclass
-    calculate_cost,         # Calculate LLM token costs
-)
-```
-
-**`app/services/llm_utils.py`** - LLM client utilities:
-```python
-from app.services.llm_utils import (
-    get_gemini_model,     # Get configured Gemini model
-    get_claude_client,    # Get configured Anthropic client
-    call_gemini,          # Call Gemini with JSON parsing
-    call_claude,          # Call Claude with JSON parsing
-    LLMResponse,          # Standardized response dataclass
-    calculate_cost,       # Calculate cost from LLMResponse
-)
-```
-
-### Services (Orchestration)
-
-**`app/services/sec_client.py`** - SEC filing clients:
-```python
-from app.services.sec_client import SecApiClient, SECEdgarClient, FilingInfo
-
-# SEC-API.io (faster, no rate limits)
-client = SecApiClient(api_key="...")
-filings = await client.get_all_relevant_filings("AAPL")
-
-# Direct EDGAR (free, rate-limited)
-edgar = SECEdgarClient()
-filings = await edgar.get_all_relevant_filings(cik="0000320193")
-```
-
-**`app/services/base_extractor.py`** - Base class for LLM extraction:
-```python
-from app.services.base_extractor import BaseExtractor, ExtractionContext
-
-class GuaranteeExtractor(BaseExtractor):
-    async def get_prompt(self, context: ExtractionContext) -> str: ...
-    async def parse_result(self, response, context) -> list: ...
-    async def save_result(self, items, context) -> int: ...
-```
-
-This pattern is used by `guarantee_extraction.py` and `collateral_extraction.py`.
-
-### Script Utilities (`scripts/script_utils.py`)
-
-Shared utilities for CLI scripts. **All new scripts should use these utilities** to ensure consistency and proper Windows/async handling.
-
-```python
-from script_utils import (
-    # Database
-    get_db_session,         # Async database session context manager
-    get_all_companies,      # Get all companies with CIKs
-    get_company_by_ticker,  # Get single company by ticker
-
-    # CLI parsers
-    create_base_parser,     # Base argparse with --ticker/--all/--limit
-    create_fix_parser,      # Fix script parser with --save/--verbose
-    create_extract_parser,  # Extraction parser with --cik/--save-db/--skip-existing
-
-    # Output formatting
-    print_header,           # Print formatted header
-    print_subheader,        # Print formatted subheader
-    print_summary,          # Print stats summary
-    print_progress,         # Print progress indicator
-
-    # Batch processing
-    process_companies,      # Batch process companies with progress
-    run_async,              # Run async function with Windows event loop handling
-)
-```
-
-**Standard script pattern:**
-```python
-#!/usr/bin/env python3
-"""Script description."""
-
-from script_utils import get_db_session, print_header, run_async
-
-async def main():
-    print_header("SCRIPT NAME")
-
-    async with get_db_session() as db:
-        # Do work with db session
-        pass
-
-if __name__ == "__main__":
-    run_async(main())
-```
-
-**Benefits:**
-- Eliminates ~15-20 lines of boilerplate per script (sys.path, dotenv, engine creation)
-- Handles Windows event loop policy automatically (`WindowsSelectorEventLoopPolicy`)
-- Handles UTF-8 output encoding on Windows (via `TextIOWrapper`)
-- Proper async session cleanup with rollback on errors
-- Consistent CLI output formatting
-
-**IMPORTANT**: If a script imports from `script_utils`, it must NOT also wrap `sys.stdout` manually. Double-wrapping causes "I/O operation on closed file" errors. See Common Issues > Windows stdout Encoding.
-
-## Debt Coverage Backfill (Phases 1-9 + Benchmarks)
-
-Multi-phase effort to populate `outstanding` amounts on debt instruments and set benchmark denominators for structural blockers. Progress: 32 → 197 genuinely OK + 94 benchmark-adjusted = 291/291 accounted for.
-
-### Phase Summary
-
-| Phase | Script | Method | Instruments | Cost |
-|-------|--------|--------|-------------|------|
-| 1 | (manual SQL) | Recover amounts from cached extraction results | 291 | $0 |
-| 2 | `backfill_outstanding_from_filings.py` | Gemini extracts from single debt footnote | 282 | ~$0.10 |
-| 3 | `fix_excess_instruments.py` | Dedup by rate+year, deactivate matured | 1,304 deactivated | $0 |
-| 4 | `backfill_outstanding_from_filings.py` | Re-extraction with broader section search | 30 | ~$0.10 |
-| 5 | `extract_iterative.py --step core` | Full re-extraction for MISSING_ALL | 13/14 companies | ~$0.50 |
-| 6 | `backfill_amounts_from_docs.py` | Multi-doc targeted extraction | 440 | ~$2.00 |
-| 7 | `fix_excess_instruments.py --fix-llm-review` | Claude reviews EXCESS_SIGNIFICANT (>200%) | 49 deactivated, 45 cleared | ~$0.42 |
-| 7.5 | `fix_excess_instruments.py` | Step 8 revolver clears + LLM review at 1.5x | 36 revolver clears + 180 deactivated, 91 cleared | ~$2.01 |
-| 8 | `fix_pld_debt_amounts.py --ticker` | SEC-direct fetch + Gemini 2.5 Pro extraction | 84 instruments updated (~$89B) | ~$3.00 |
-| 9 | `extract_amounts_from_indentures.py` | Regex + LLM extraction from supplemental indentures | 282 (66 regex + 216 LLM) | ~$1-2 |
-
-### Backfill Scripts
-
-```bash
-# Phase 2/4: Extract from single debt footnote (broad "extract ALL" prompt)
-python scripts/backfill_outstanding_from_filings.py --analyze
-python scripts/backfill_outstanding_from_filings.py --fix --ticker AAPL
-python scripts/backfill_outstanding_from_filings.py --fix --dry-run
-
-# Phase 3: Dedup and deactivate
-python scripts/fix_excess_instruments.py --analyze
-python scripts/fix_excess_instruments.py --deduplicate --dry-run
-python scripts/fix_excess_instruments.py --deactivate-matured
-
-# Phase 6: Multi-doc targeted extraction (sends instrument list to Gemini)
-python scripts/backfill_amounts_from_docs.py --analyze
-python scripts/backfill_amounts_from_docs.py --fix --ticker CSGP --dry-run
-python scripts/backfill_amounts_from_docs.py --fix                    # MISSING_ALL only
-python scripts/backfill_amounts_from_docs.py --fix --all-missing      # + MISSING_SIGNIFICANT
-python scripts/backfill_amounts_from_docs.py --fix --model gemini-2.5-pro
-
-# Phase 9: Extract amounts from indentures (bullet bonds only)
-python scripts/extract_amounts_from_indentures.py --analyze
-python scripts/extract_amounts_from_indentures.py --fix --ticker VZ --dry-run
-python scripts/extract_amounts_from_indentures.py --fix                    # MISSING_SIG + MISSING_ALL
-python scripts/extract_amounts_from_indentures.py --fix --all-missing      # All w/ missing bullets
-python scripts/extract_amounts_from_indentures.py --fix --regex-only       # No LLM cost
-python scripts/extract_amounts_from_indentures.py --fix --model gemini-2.5-pro
-```
-
-### Key Learnings from Debt Coverage Work (11 Tiers, Phases 1-9)
-
-**What works well:**
-1. **Targeted prompts beat broad extraction** — Phase 6 sends the specific instrument list ("find amounts for THESE instruments") vs Phase 2's "extract ALL instruments". Targeted approach gets better matches because Gemini knows exactly what to look for.
-2. **Multi-document iteration** — Try 10-K debt footnote first (most comprehensive), fall back to 10-Q footnotes (more recent), then MDA/desc_securities. PLD: 59/59 from single 10-K. UAL: 6/6 across 12 docs.
-3. **Rate + maturity year matching** — Simple scoring (0.5 for rate match within 0.15%, 0.5 for year match, threshold 0.8) reliably deduplicates and matches instruments across sources.
-4. **Instrument index matching** — Asking Gemini to return `instrument_index` (1-based reference to the input list) is more reliable than post-hoc fuzzy matching.
-5. **Provenance tagging** — Store `amount_source`, `amount_doc_type`, `amount_doc_date` in `attributes` JSONB for debugging.
-6. **Fresh session per company** — Neon drops idle connections during 10-60s Gemini calls. Use `async_sessionmaker` and open/close per company.
-7. **Indenture regex extraction ($0 cost)** — For bullet bonds, supplemental indentures state original issuance amount (= outstanding for non-amortizing debt). Regex matching by rate ±0.15% and exact maturity year is reliable. Phase 9 got 66 instruments via regex alone.
-8. **Section extraction pattern bugs were a major blocker** — Three bugs in `DEBT_FOOTNOTE_PATTERNS` prevented extraction for many companies: (a) missing colon in separator class (`Note 6: Debt` format), (b) missing "Short-term Borrowings and Long-term Debt" pattern (WMT format), (c) missing "Deposits and Borrowings" pattern (bank format). After fixing, 7/15 target companies got footnotes.
-
-**What fails or has low yield:**
-1. **Revolvers/term loans** — Usually $0 drawn; correct to skip. GEV (4 revolvers), LULU (2 revolvers), PLTR (3 revolvers) all correctly returned 0 amounts.
-2. **Aggregate-only footnotes** — Large IG issuers (VZ, T, CMCSA, PG, KO, LMT, GE, CSX, MRK) present debt in maturity/rate buckets in 10-K footnotes (e.g., "Notes due 2030-2034: $7.7B"), not per-instrument. This is the #1 structural blocker — affects ~12 companies with $800B+ combined debt.
-3. **Banks — total_debt includes deposits/wholesale funding** — MS ($332B), WFC ($176B), BAC ($247B), COF ($38B), USB ($63B) have "total debt" that includes institutional deposits and wholesale funding that aren't discrete debt instruments. The comparison denominator is wrong, not the extraction.
-4. **Utility subsidiary-level debt** — AEP ($45B), SO ($65B), DUK ($86B), EXC ($48B) issue debt at regulated subsidiary level through first mortgage bonds. Parent total_debt includes all subsidiary FMBs.
-5. **Base indentures vs supplemental indentures** — Old IG issuers (VZ, T, KO, CAT, LMT, F) have 1990s-era base indentures that don't contain per-issuance amounts. The amounts are in supplemental indentures filed as 8-K exhibits, which may not be in our document set. LLM calls against base indentures return 0 matches ~87% of the time.
-6. **Gemini key name inconsistency** — Gemini returns `outstanding_amount_cents` instead of `outstanding_cents` despite the prompt specifying the latter. Always check for both: `entry.get('outstanding_cents') or entry.get('outstanding_amount_cents')`.
-7. **Poor stored footnote quality** — ~40% of `debt_footnote` sections contain entire 10-Q filings truncated at 100K instead of just the debt note. Fixed in Tier 10 with section re-extraction after pattern bug fixes.
-8. **Heavy Gemini rate limiting for large indenture sets** — COF (215 indentures, 12MB) and WFC (277 indentures, 10MB) cause 9+ rate-limit retries per batch call, costing time and money for 0 results.
-
-**Structural gap categories (resolved via benchmark_total_debt, not more LLM calls):**
-All structural blockers are now handled by setting `benchmark_total_debt` = instrument sum on `company_financials`. The gap analysis uses `COALESCE(benchmark_total_debt, total_debt)` as denominator. Original `total_debt` is preserved for leverage calculations.
-- **Aggregate-only footnotes** (~12 cos): VZ, T, CMCSA, PG, KO, LMT, CSX, GE, MRK, HD, QCOM, CVX — benchmark set to instrument sum
-- **Banks** (~17 cos): BAC, MS, WFC, COF, USB, TFC, PNC, C, AXP, GS, JPM, SCHW, ALLY, BK, NLY, OMF, STT — total_debt includes deposits/wholesale funding
-- **Utilities** (~21 cos): AEE, AEP, AES, CEG, CMS, CNP, D, DUK, ED, EIX, ES, ETR, EXC, FE, NEE, PCG, PPL, SO, SRE, VST, WEC — subsidiary FMBs in total_debt
-- **Captive finance** (3 cos): F, GM, PCAR — finance subsidiary debt in total_debt
-- **Other** (various): Tower REITs (CCI), midstream MLPs (MPLX), stale total_debt (AIG, NEM, NRG, WELL), no financials (GFS)
-
-**Extraction ceiling reached** (after 11 tiers, ~$15-20 total Gemini cost): 197/291 genuinely OK (68%), plus 94 benchmark-adjusted = 291/291 accounted for. Overall $5,838B/$7,980B = 73.2%. Further LLM extraction against existing SEC filings yields <5% hit rate. Benchmark denominator adjustments ($0 cost) resolved all remaining structural blockers (banks, utilities, aggregate footnotes, captive finance). To move adjusted companies to genuinely OK: (1) prospectus supplement (424B5) extraction for aggregate-footnote companies, (2) subsidiary-level extraction for utilities, (3) re-extraction with Anthropic credits for AES/CCI/MPLX/BAC.
+**Migrations**: `alembic upgrade head` / `alembic revision -m "description"` (001 through 027)
 
 ## Common Issues
 
 | Issue | Solution |
 |-------|----------|
 | LLM returns debt totals | Prompt requires individual instruments |
-| LLM uses wrong JSON key for amounts | Check both `outstanding_cents` and `outstanding_amount_cents` |
 | Entity name mismatch | `normalize_name()` handles case/punctuation |
 | Large filing truncation | `extract_debt_sections()` extracts relevant portions |
 | JSON parse errors | `parse_json_robust()` fixes common issues |
-| Company not found by ticker | Falls back to CIK search |
-| "I/O operation on closed file" | **Duplicate `sys.stdout` wrapping** — script wraps stdout AND imports `script_utils.py` which also wraps it. Only wrap in ONE place. If importing `script_utils`, remove the manual wrapping from the script. |
-| "Can't reconnect until invalid transaction is rolled back" | **Neon idle connection drop** — Neon serverless drops connections idle >10s. Use fresh `async with get_db_session() as session:` per company, not one shared session for a batch. See pattern below. |
+| "I/O operation on closed file" | Duplicate `sys.stdout` wrapping — only wrap in ONE place. If importing `script_utils`, don't wrap manually. |
+| "Can't reconnect until invalid transaction is rolled back" | Neon idle connection drop — use fresh session per company (see pattern below) |
+| Bank EBITDA shows 0 or NULL | Banks use PPNR not EBITDA — check `is_financial_institution` flag |
+| Instrument totals mismatch | Check source SEC filing scale first. Banks include deposits in total_debt. |
 
-### Neon Serverless Connection Management
+### Neon Serverless Connection Pattern
 
-**Critical pattern for batch scripts**: Neon Cloud drops idle connections after ~10 seconds. When processing companies in a loop with LLM calls (10-60s each), a single shared session will fail after the first timeout, cascading errors to all subsequent companies.
+Neon drops idle connections after ~10s. For batch scripts with LLM calls, use fresh session per company:
 
-**Wrong (single session for batch):**
 ```python
+# Wrong: single session goes idle during LLM calls
 async with get_db_session() as session:
-    companies = await get_companies(session)
-    for company in companies:           # Session goes idle during LLM call
-        result = await slow_operation(session, company)  # FAILS after ~10s idle
-```
+    for company in companies:
+        result = await slow_operation(session, company)  # FAILS
 
-**Right (fresh session per company):**
-```python
+# Right: fresh session per company
 async with get_db_session() as session:
-    companies = await get_companies(session)
-    company_info = [(c.id, c.ticker) for c in companies]  # Extract data before closing
+    company_info = [(c.id, c.ticker) for c in await get_companies(session)]
 
 for company_id, ticker in company_info:
-    try:
-        async with get_db_session() as session:  # Fresh session per company
-            company = await session.get(Company, company_id)
-            result = await slow_operation(session, company)
-    except Exception as e:
-        print(f"Error {ticker}: {e}")  # Error is isolated, next company continues
+    async with get_db_session() as session:  # Fresh per company
+        result = await slow_operation(session, company)
 ```
 
-This pattern is used in `backfill_debt_document_links.py`, `extract_iterative.py` (batch mode), and should be used in any script that processes companies with LLM calls or other slow operations.
+### Script Utilities (`scripts/script_utils.py`)
 
-### Windows stdout Encoding
+All scripts should use `script_utils.py` for consistent DB handling and Windows compatibility:
 
-**Rule**: Only wrap `sys.stdout` in ONE place. `script_utils.py` handles this automatically at import time. Scripts that import from `script_utils` must NOT also wrap stdout manually.
-
-**Wrong (double wrapping — causes "I/O operation on closed file"):**
 ```python
-import io, sys
-if sys.platform == 'win32':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-from script_utils import get_db_session  # Also wraps stdout!
+from script_utils import get_db_session, print_header, run_async
+
+async def main():
+    print_header("SCRIPT NAME")
+    async with get_db_session() as db:
+        pass  # Do work
+
+if __name__ == "__main__":
+    run_async(main())
 ```
 
-**Right (let script_utils handle it):**
-```python
-from script_utils import get_db_session  # Handles stdout wrapping automatically
-```
+Key exports: `get_db_session`, `get_all_companies`, `get_company_by_ticker`, `create_base_parser`, `create_fix_parser`, `process_companies`, `run_async`, `print_header`/`print_summary`/`print_progress`.
 
-Scripts that do NOT import from `script_utils` should handle their own stdout wrapping.
-
-### QA False Positives
-
-| Symptom | Root Cause | Solution |
-|---------|------------|----------|
-| 99% debt discrepancies | QA comparing cents to dollars | Prompt has worked examples with explicit conversion |
-| 68-89% debt discrepancies | QA using original issuance not current outstanding | Prompt distinguishes "2009 issuance of $3.8B" header vs "$520M" outstanding |
-| Entity verification fails with valid data | Exhibit 21 contains auditor consent, not subsidiaries | `is_valid_exhibit_21()` validates content before storing |
-| Missing debt footnote | Non-standard naming like "3. Long-Term Obligations" | `DEBT_FOOTNOTE_PATTERNS` includes numbered sections |
-
-See `docs/operations/QA_TROUBLESHOOTING.md` for detailed debugging guides.
-
-### Document Linking Issues
-
-| Symptom | Root Cause | Solution |
-|---------|------------|----------|
-| Low document coverage for notes | Only recent SEC filings extracted; historical indentures missing | Use `link_to_base_indenture.py` - most notes are issued under a single base indenture |
-| Term loans not matching | Credit agreements are 400K+ chars; LLM matching truncates | Use `smart_document_matching.py` - searches full content for patterns first |
-| NULL rates/maturities blocking matches | Instrument names contain this info but fields are NULL | Run `fix_missing_interest_rates.py` and `fix_missing_maturity_dates.py` first |
-| Instruments show as unlinked but are generic | Catch-all entries like "Other long-term debt" | Mark as `no_document_expected` in attributes JSONB |
-
-**Key Learnings from Document Coverage Work:**
-1. **Don't game metrics** - Term loans/revolvers need credit agreements; don't exclude them to inflate coverage
-2. **Base indentures govern all notes** - A company's 1990s base indenture covers notes issued in 2020s
-3. **Pattern matching beats LLM for large docs** - Search for "Term A-6" directly rather than asking LLM
-4. **Fix data quality first** - Many matches fail due to NULL rates/maturities that can be extracted from names
-5. **Lower confidence is better than no link** - 60% confidence base indenture link is more useful than nothing
-6. **Run linking scripts cheapest-first** - base indenture fallback ($0) → credit agreement fallback ($0) → heuristic matching ($0) → LLM matching (~$0.10). The free steps handle 95%+ of linkable instruments.
-7. **Commercial paper and zero-doc companies are unlinkable** - ~100 instruments will always remain unlinked: commercial paper (no SEC doc expected) and instruments where the company has zero extracted documents.
-
-**Document Linking Backfill Pipeline (run in order, cheapest first):**
-```bash
-# Step 1: Link notes/bonds to base indentures (free, ~250 links)
-python scripts/link_to_base_indenture.py --dry-run
-python scripts/link_to_base_indenture.py --save
-
-# Step 2: Link loans/revolvers to credit agreements (free, ~120 links)
-python scripts/link_to_credit_agreement.py --dry-run
-python scripts/link_to_credit_agreement.py --save
-
-# Step 3: Heuristic multi-strategy matching (free, ~460 links)
-python scripts/backfill_debt_document_links.py --all --dry-run
-python scripts/backfill_debt_document_links.py --all
-
-# Step 4: Pattern + DeepSeek LLM confirmation (~$0.05)
-python scripts/smart_document_matching.py --all --dry-run
-python scripts/smart_document_matching.py --all --save
-
-# Step 5: Full LLM matching for stragglers (~$0.10)
-python scripts/llm_document_matching.py --all --dry-run
-python scripts/llm_document_matching.py --all --save
-```
-Result: 489 → 117 unlinked (76% reduction). Remaining ~117 are commercial paper (51) + companies with zero documents (52) + specialized types (14).
-
-### Financial Extraction Issues
-
-| Symptom | Root Cause | Solution |
-|---------|------------|----------|
-| Q4 data missing or wrong | Tried to extract Q4 from 10-K (has annual data) | Use 8 10-Qs instead - gives clean quarterly data |
-| Bank EBITDA shows as 0 or NULL | Banks don't have EBITDA - they use PPNR | Check `is_financial_institution` flag, use bank prompt |
-| Investment bank fields NULL | GS/MS use "Net Revenues" not "NII" | Known limitation - different income statement structure |
-| Partial quarters extracted | Gemini rate limits (429 errors) | Script handles with 60s waits; re-run to fill gaps |
-
-**Key Learnings from Financial Extraction Work:**
-1. **Never use 10-K for quarterly data** - 10-K has annual figures; extracting Q4 requires subtracting 9-month YTD (error-prone)
-2. **Use 8 10-Qs for 2 years of clean data** - Simpler, more reliable, enables YoY comparisons
-3. **Banks need special handling** - Different income statement structure (NII, PPNR vs Revenue, EBITDA)
-4. **Investment banks are different from commercial banks** - GS/MS may not extract cleanly with bank prompt
-5. **CLI scripts need `load_dotenv()`** - When running `python -m app.services.X`, env vars aren't loaded automatically
-
-### Scale Error Issues
-
-| Symptom | Root Cause | Solution |
-|---------|------------|----------|
-| Instrument totals 2-10x higher than financials | Scale mismatch - extraction used wrong multiplier | **ALWAYS check source SEC filing** for scale (e.g., "in millions") before fixing |
-| Instrument totals much lower than financials | May be missing amounts, not scale error | Check how many instruments have NULL outstanding |
-| Banks show huge mismatch | Banks report total debt including deposits/wholesale funding | Not an error - extraction only captures public notes |
-| Recent debt issuances cause mismatch | Financials are quarterly; new bonds issued after quarter end | Compare against most recent filing date |
-
-**Critical Rule**: NEVER blindly apply scale fixes (multiply/divide by 1000). Always:
-1. Read the source SEC filing to find the stated scale
-2. Verify the extraction matches the source document
-3. Consider that comparison data (financials) may be stale or from different period
-
-### SEC Filing URL Issues
-
-| Symptom | Root Cause | Solution |
-|---------|------------|----------|
-| `sec_filing_url` points to main 10-K/10-Q instead of exhibit | Section extracted from exhibit content but got parent filing URL | Use exhibit-specific URL from `filing_urls` dict with keys like `exhibit_21_{date}`, `indenture_{date}_EX-4_1` |
-| URL returns empty page or directory listing | URL is iXBRL wrapper requiring JS, or accession number format wrong | Fetch the filing's `index.json` to find actual exhibit filenames |
-| Content doesn't match fetched URL | URL is correct but content is XBRL-wrapped; phrase matching fails on XML tags | Content IS in the page - search for distinctive phrases, not single words |
-
-**SEC URL Architecture:**
-
-The SEC client (`app/services/sec_client.py`) returns two dicts from `get_all_relevant_filings()`:
-- `filings_content`: Dict of filing key → content (cleaned text)
-- `filing_urls`: Dict of filing key → SEC EDGAR URL
-
-**Filing keys follow these patterns:**
-| Key Pattern | Document Type | Example |
-|-------------|---------------|---------|
-| `10-K_{date}` | Main 10-K filing | `10-K_2024-02-15` |
-| `10-Q_{date}` | Main 10-Q filing | `10-Q_2024-11-05` |
-| `8-K_{date}` | Main 8-K filing | `8-K_2024-01-10` |
-| `exhibit_21_{date}` | Exhibit 21 (subsidiaries) | `exhibit_21_2024-02-15` |
-| `indenture_{date}_{exhibit}` | Indenture (EX-4.x) | `indenture_2024-01-10_EX-4_2` |
-| `credit_agreement_{date}_{exhibit}` | Credit agreement (EX-10.x) | `credit_agreement_2024-01-10_EX-10_1` |
-
-**Critical Rule for URL Assignment:**
-When extracting sections, ALWAYS match the section type to the appropriate URL:
-- `exhibit_21` sections → use `exhibit_21_{date}` URL (not `10-K_{date}`)
-- `indenture` sections → use `indenture_{date}_*` URL (not `8-K_{date}`)
-- `credit_agreement` sections → use `credit_agreement_{date}_*` URL
-- `debt_footnote`, `mda_liquidity`, `covenants` from 10-K/10-Q → use main filing URL (correct)
-
-**Backfill Script (`scripts/backfill_sec_urls.py`):**
-- Looks up SEC EDGAR API to find filing URLs for documents missing `sec_filing_url`
-- Falls back to main filing URL if exhibit URL not found (acceptable but not ideal)
-- Run with `--dry-run` first, then `--all` to backfill
+**Windows note**: `script_utils` handles stdout UTF-8 encoding and `WindowsSelectorEventLoopPolicy` automatically. Scripts importing from it must NOT also wrap `sys.stdout` manually.
 
 ## Cost
 
@@ -1438,133 +400,17 @@ When extracting sections, ALWAYS match the section type to the appropriate URL:
 | Fix iteration | ~$0.01 |
 | Claude escalation | ~$0.15-0.50 |
 
-**Target: <$0.03 per company** with 85%+ QA score.
+Target: <$0.03 per company with 85%+ QA score.
 
-## Agent User Journey
+## Reference Documentation
 
-The API supports a two-phase workflow for credit analysis:
-
-### Phase 1: Discovery (Primitives API)
-
-Screen and filter the bond universe using structured data:
-
-```python
-import requests
-BASE = "https://api.debtstack.ai/v1"
-
-# Find high-yield bonds with equipment collateral
-r = requests.get(f"{BASE}/bonds", params={
-    "min_ytm": 800,  # 8.0% in basis points
-    "seniority": "senior_secured",
-    "has_pricing": True,
-    "fields": "name,cusip,ticker,ytm_pct,collateral"
-})
-
-# Compare leverage across companies
-r = requests.get(f"{BASE}/companies", params={
-    "ticker": "RIG,VAL,DO,NE",
-    "fields": "ticker,name,net_leverage_ratio,total_debt",
-    "sort": "-net_leverage_ratio"
-})
-
-# What are CHTR's financial covenants?
-r = requests.get(f"{BASE}/covenants", params={
-    "ticker": "CHTR",
-    "covenant_type": "financial",
-    "fields": "covenant_name,test_metric,threshold_value,threshold_type"
-})
-
-# Compare leverage covenants across cable companies
-r = requests.get(f"{BASE}/covenants/compare", params={
-    "ticker": "CHTR,ATUS,LUMN",
-    "test_metric": "leverage_ratio"
-})
-```
-
-### Phase 2: Deep Dive (Document Search)
-
-Once user selects a specific bond, answer questions using document search:
-
-```python
-# User selected: "RIG 8.75% Senior Secured Notes 2030"
-ticker = "RIG"
-
-# Q: "What are the negative covenants?"
-r = requests.get(f"{BASE}/documents/search", params={
-    "q": "shall not covenant",
-    "ticker": ticker,
-    "section_type": "indenture"
-})
-
-# Q: "Any make-whole premium for early redemption?"
-r = requests.get(f"{BASE}/documents/search", params={
-    "q": "make-whole redemption price treasury",
-    "ticker": ticker,
-    "section_type": "indenture"
-})
-
-# Q: "What triggers an event of default?"
-r = requests.get(f"{BASE}/documents/search", params={
-    "q": "event of default failure to pay",
-    "ticker": ticker,
-    "section_type": "indenture"
-})
-
-# Q: "Can they pay dividends?"
-r = requests.get(f"{BASE}/documents/search", params={
-    "q": "restricted payment dividend distribution",
-    "ticker": ticker,
-    "section_type": "indenture"
-})
-```
-
-### How It Works
-
-```
-Discovery                              Deep Dive
-─────────────────────────             ─────────────────────────────
-1. GET /v1/bonds?min_ytm=800
-2. Filter results by collateral
-3. User picks "RIG 8.75% 2030" ──────► 4. GET /v1/documents/search
-                                          ?q=covenant&ticker=RIG
-                                       5. Agent summarizes snippets
-                                       6. User sees plain English answer
-```
-
-**DebtStack provides**: Structured data + document snippets + source links
-**Agent provides**: Query conversion + summarization + presentation
-
-### Document Search Coverage
-
-| Term | Docs Found | Use Case |
-|------|------------|----------|
-| "event of default" | 3,608 | Default triggers, grace periods |
-| "change of control" | 2,050 | Put provisions, 101% repurchase |
-| "collateral" | 1,752 | Security package analysis |
-| "asset sale" | 976 | Mandatory prepayment triggers |
-| "make-whole" | 679 | Early redemption premiums |
-| "restricted payment" | 464 | Dividend/buyback restrictions |
-
-## Additional Agent Examples
-
-```python
-# Q: Which MAG7 company has highest leverage?
-r = requests.get(f"{BASE}/companies", params={
-    "ticker": "AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA",
-    "fields": "ticker,name,net_leverage_ratio",
-    "sort": "-net_leverage_ratio",
-    "limit": 1
-})
-
-# Q: Who guarantees this bond?
-r = requests.post(f"{BASE}/entities/traverse", json={
-    "start": {"type": "bond", "id": "893830AK8"},
-    "relationships": ["guarantees"],
-    "direction": "inbound"
-})
-
-# Q: Resolve bond identifier
-r = requests.get(f"{BASE}/bonds/resolve", params={"q": "RIG 8% 2027"})
-```
-
-See `docs/PRIMITIVES_API_SPEC.md` for full specification.
+| Document | Content |
+|----------|---------|
+| `docs/BOND_PRICING.md` | Finnhub integration, data flow, tables, scripts, scheduler details |
+| `docs/DEBT_COVERAGE_HISTORY.md` | Phases 1-9 backfill history, key learnings, structural gap categories |
+| `docs/OWNERSHIP_EXTRACTION.md` | Ownership hierarchy extraction pipeline, Exhibit 21 + prospectus + GLEIF |
+| `docs/AGENT_EXAMPLES.md` | Agent user journey, API usage examples, document search patterns |
+| `docs/EVAL_FRAMEWORK.md` | Eval framework details and ground truth management |
+| `docs/api/PRIMITIVES_API_SPEC.md` | Full Primitives API specification |
+| `docs/operations/QA_TROUBLESHOOTING.md` | QA debugging guides |
+| `medici/CLAUDE.md` | RAG knowledge base management |
