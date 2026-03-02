@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-API_KEY = os.getenv("DEBTSTACK_API_KEY", "")
+API_KEY = os.getenv("DEBTSTACK_API_KEY") or os.getenv("TEST_API_KEY", "")
 BASE_URL = os.getenv("DEBTSTACK_API_URL", "https://api.debtstack.ai")
 
 # Step-load configuration
@@ -306,6 +306,8 @@ class StressTestUser(HttpUser):
                 body = resp.json()
                 if "data" not in body:
                     resp.failure(f"[{name}] Missing 'data'")
+                elif not isinstance(body["data"], (list, dict)):
+                    resp.failure(f"[{name}] 'data' has unexpected type")
                 else:
                     resp.success()
             except json.JSONDecodeError:
@@ -402,7 +404,11 @@ class StressTestUser(HttpUser):
         ticker = random.choice(TICKERS)
         with self.client.post(
             "/v1/entities/traverse",
-            json={"start_ticker": ticker, "direction": "down"},
+            json={
+                "start": {"type": "company", "id": ticker},
+                "relationships": ["subsidiaries"],
+                "direction": "outbound",
+            },
             name="/v1/entities/traverse",
             catch_response=True,
         ) as resp:

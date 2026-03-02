@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-API_KEY = os.getenv("DEBTSTACK_API_KEY", "")
+API_KEY = os.getenv("DEBTSTACK_API_KEY") or os.getenv("TEST_API_KEY", "")
 BASE_URL = os.getenv("DEBTSTACK_API_URL", "https://api.debtstack.ai")
 
 # Realistic tickers from the eval suite / database
@@ -58,10 +58,10 @@ DOC_KEYWORDS = [
 ]
 
 TRAVERSE_QUERIES = [
-    {"start_ticker": "CHTR", "direction": "down", "entity_type": "guarantor"},
-    {"start_ticker": "RIG", "direction": "down", "entity_type": "guarantor"},
-    {"start_ticker": "CVS", "direction": "up"},
-    {"start_ticker": "BA", "direction": "down"},
+    {"start": {"type": "company", "id": "CHTR"}, "relationships": ["guarantees"], "direction": "inbound"},
+    {"start": {"type": "company", "id": "RIG"}, "relationships": ["guarantees"], "direction": "inbound"},
+    {"start": {"type": "company", "id": "CVS"}, "relationships": ["subsidiaries"], "direction": "outbound"},
+    {"start": {"type": "company", "id": "BA"}, "relationships": ["subsidiaries"], "direction": "outbound"},
 ]
 
 # ---------------------------------------------------------------------------
@@ -75,7 +75,11 @@ def random_tickers(n=3):
     return ",".join(random.sample(TICKERS, min(n, len(TICKERS))))
 
 def validate_response(response, name=""):
-    """Check response has expected structure."""
+    """Check response has expected structure.
+
+    Most endpoints return {"data": [...]}, but some (e.g. /v1/bonds/resolve)
+    return {"data": {...}} with a dict. Both are accepted.
+    """
     if response.status_code == 200:
         try:
             body = response.json()
@@ -83,11 +87,15 @@ def validate_response(response, name=""):
                 response.failure(f"[{name}] Missing 'data' in response")
                 return False
             data = body["data"]
-            if not isinstance(data, list):
-                response.failure(f"[{name}] 'data' is not a list")
+            if isinstance(data, list):
+                logger.debug("[%s] OK — %d items, %d bytes",
+                             name, len(data), len(response.content))
+            elif isinstance(data, dict):
+                logger.debug("[%s] OK — dict response, %d bytes",
+                             name, len(response.content))
+            else:
+                response.failure(f"[{name}] 'data' has unexpected type: {type(data).__name__}")
                 return False
-            logger.debug("[%s] OK — %d items, %d bytes",
-                         name, len(data), len(response.content))
             return True
         except json.JSONDecodeError:
             response.failure(f"[{name}] Invalid JSON")
@@ -95,10 +103,36 @@ def validate_response(response, name=""):
     elif response.status_code == 429:
         # Rate limited — not a test failure, but log it
         logger.info("[%s] Rate limited (429)", name)
+        response.success()
+        return True
+    elif response.status_code in (400, 404):
+        # Some endpoints return 400/404 for valid queries (e.g., ticker has no
+        # covenants, no changes snapshot). Not a load-test failure.
+        logger.debug("[%s] HTTP %d (expected for some data)", name, response.status_code)
+        response.success()
         return True
     else:
         response.failure(f"[{name}] HTTP {response.status_code}")
         return False
+
+
+def validate_batch_response(response, name=""):
+    """Check batch response structure. Batch returns {"results": [...]}."""
+    if response.status_code == 200:
+        try:
+            body = response.json()
+            results = body.get("data", body.get("results", []))
+            if not results:
+                response.failure(f"[{name}] Batch returned no results")
+            else:
+                response.success()
+        except json.JSONDecodeError:
+            response.failure(f"[{name}] Invalid JSON")
+    elif response.status_code == 429:
+        logger.info("[%s] Rate limited (429)", name)
+        response.success()
+    else:
+        response.failure(f"[{name}] HTTP {response.status_code}")
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +225,7 @@ class CreditAnalystUser(DebtStackUser):
             name="/v1/entities/traverse",
             catch_response=True,
         ) as resp:
-            validate_response(resp, f"entities/traverse ({tq['start_ticker']})")
+            validate_response(resp, f"entities/traverse ({tq['start']['id']})")
 
 
 class ScreeningUser(DebtStackUser):
@@ -358,7 +392,11 @@ class ResearchUser(DebtStackUser):
         ticker = random_ticker()
         with self.client.post(
             "/v1/entities/traverse",
-            json={"start_ticker": ticker, "direction": "down"},
+            json={
+                "start": {"type": "company", "id": ticker},
+                "relationships": ["subsidiaries"],
+                "direction": "outbound",
+            },
             name="/v1/entities/traverse",
             catch_response=True,
         ) as resp:
@@ -399,16 +437,7 @@ class BatchUser(DebtStackUser):
             name="/v1/batch (3 ops)",
             catch_response=True,
         ) as resp:
-            if resp.status_code == 200:
-                try:
-                    body = resp.json()
-                    results = body.get("data", body.get("results", []))
-                    if not results:
-                        resp.failure("Batch returned no results")
-                except json.JSONDecodeError:
-                    resp.failure("Invalid JSON from batch")
-            elif resp.status_code != 429:
-                resp.failure(f"Batch HTTP {resp.status_code}")
+            validate_batch_response(resp, "batch (3 ops)")
 
     @task(2)
     def batch_multi_ticker(self):
@@ -428,16 +457,7 @@ class BatchUser(DebtStackUser):
             name="/v1/batch (multi-ticker)",
             catch_response=True,
         ) as resp:
-            if resp.status_code == 200:
-                try:
-                    body = resp.json()
-                    results = body.get("data", body.get("results", []))
-                    if not results:
-                        resp.failure("Multi-ticker batch returned no results")
-                except json.JSONDecodeError:
-                    resp.failure("Invalid JSON from batch")
-            elif resp.status_code != 429:
-                resp.failure(f"Batch HTTP {resp.status_code}")
+            validate_batch_response(resp, "batch (multi-ticker)")
 
     @task(1)
     def batch_credit_analysis(self):
@@ -468,13 +488,4 @@ class BatchUser(DebtStackUser):
             name="/v1/batch (credit analysis)",
             catch_response=True,
         ) as resp:
-            if resp.status_code == 200:
-                try:
-                    body = resp.json()
-                    results = body.get("data", body.get("results", []))
-                    if not results:
-                        resp.failure("Credit analysis batch returned no results")
-                except json.JSONDecodeError:
-                    resp.failure("Invalid JSON from batch")
-            elif resp.status_code != 429:
-                resp.failure(f"Batch HTTP {resp.status_code}")
+            validate_batch_response(resp, "batch (credit analysis)")

@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-API_KEY = os.getenv("DEBTSTACK_API_KEY", "")
+API_KEY = os.getenv("DEBTSTACK_API_KEY") or os.getenv("TEST_API_KEY", "")
 BASE_URL = os.getenv("DEBTSTACK_API_URL", "https://api.debtstack.ai")
 
 # Expected rate limit for the API key's tier (rpm)

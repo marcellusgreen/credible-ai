@@ -23,9 +23,9 @@ from app.api.export import router as export_router
 from app.api.usage import router as usage_router
 import sentry_sdk
 from app.core.config import get_settings
-from app.core.cache import check_rate_limit, DEFAULT_RATE_LIMIT, DEFAULT_RATE_WINDOW
+from app.core.cache import check_rate_limit, cache_get, cache_set, DEFAULT_RATE_LIMIT, DEFAULT_RATE_WINDOW
 from app.core.monitoring import record_request, record_rate_limit_hit
-from app.core.auth import hash_api_key
+from app.core.auth import hash_api_key, TIER_RATE_LIMITS
 from app.core.posthog import capture_event as posthog_capture, shutdown as posthog_shutdown
 from app.core.scheduler import start_scheduler, stop_scheduler
 
@@ -156,6 +156,45 @@ async def logging_middleware(request: Request, call_next):
     return response
 
 
+async def _get_user_rate_limit(api_key_hash: str) -> int:
+    """Look up a user's rate limit by API key hash.
+
+    Uses Redis cache (5-minute TTL) to avoid hitting the DB on every request.
+    On cache miss, queries the DB for the user's rate_limit_per_minute.
+    Falls back to pay-as-you-go limit (60) if the user is not found.
+    """
+    cache_key = f"user_rate_limit:{api_key_hash}"
+    cached = await cache_get(cache_key)
+    if cached is not None:
+        try:
+            return int(cached)
+        except (ValueError, TypeError):
+            pass
+
+    # Cache miss — look up from DB
+    from sqlalchemy import select, text
+    from app.core.database import async_session_maker
+
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                text("SELECT rate_limit_per_minute FROM users WHERE api_key_hash = :h AND is_active = true"),
+                {"h": api_key_hash},
+            )
+            row = result.first()
+            if row and row[0]:
+                limit = row[0]
+            else:
+                limit = TIER_RATE_LIMITS.get("pay_as_you_go", 60)
+
+        # Cache for 5 minutes
+        await cache_set(cache_key, str(limit), ttl_seconds=300)
+        return limit
+    except Exception:
+        # Fail open with pay-as-you-go default
+        return TIER_RATE_LIMITS.get("pay_as_you_go", 60)
+
+
 # Rate limiting middleware (supports both IP-based and user-based limits)
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
@@ -182,12 +221,9 @@ async def rate_limit_middleware(request: Request, call_next):
     rate_limit_value = DEFAULT_RATE_LIMIT
 
     if api_key and api_key.startswith(settings.api_key_prefix):
-        # User-based rate limiting will be handled after auth
-        # For now, use API key hash as identifier
-        rate_limit_identifier = f"user:{hash_api_key(api_key)}"
-        # Default to starter tier limit for authenticated users
-        # Actual tier limit will be applied in auth middleware
-        rate_limit_value = settings.rate_limit_starter
+        api_key_hash = hash_api_key(api_key)
+        rate_limit_identifier = f"user:{api_key_hash}"
+        rate_limit_value = await _get_user_rate_limit(api_key_hash)
 
     # Check rate limit
     allowed, remaining, reset = await check_rate_limit(
