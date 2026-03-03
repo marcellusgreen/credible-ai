@@ -96,8 +96,11 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 | `app/services/collateral_extraction.py` | Collateral for secured debt |
 | `app/services/covenant_extraction.py` | Structured covenant data extraction |
 | `app/services/metrics.py` | Credit metrics (leverage, coverage ratios) |
+| `app/services/filing_monitor.py` | SEC EDGAR polling for new filings (`FilingMonitor`, `NewFiling`) |
+| `app/services/filing_refresh.py` | Filing refresh orchestrator (`FilingRefreshService`, `RefreshResult`) |
 | `app/services/qc.py` | Quality control checks |
 | `app/services/qa_agent.py` | 5-check QA verification |
+| `app/services/embedding.py` | Shared Gemini embedding utilities (`embed_texts`, `embed_query`) |
 | `app/services/pricing_history.py` | Bond pricing history backfill and daily snapshots |
 | `app/services/treasury_yields.py` | Treasury yield curve history from Treasury.gov |
 
@@ -110,7 +113,7 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 | `app/api/routes.py` | Legacy FastAPI endpoints (26 routes) |
 | `app/core/auth.py` | API key generation, validation, tier config |
 | `app/core/cache.py` | Redis cache client (Upstash) |
-| `app/core/scheduler.py` | APScheduler: pricing refresh + alert checks |
+| `app/core/scheduler.py` | APScheduler: pricing refresh + filing refresh + alert checks |
 | `app/core/posthog.py` | PostHog analytics client |
 | `app/core/alerting.py` | Slack webhook alerts |
 | `app/core/monitoring.py` | Redis-based API metrics |
@@ -136,8 +139,10 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 | `scripts/analyze_gaps_v2.py` | Debt coverage gap analysis |
 | `scripts/populate_benchmark_debt.py` | Set benchmark_total_debt for banks/utilities |
 | `scripts/fetch_prospectus_sections.py` | Fetch 424B prospectus sections ($0) |
+| `scripts/refresh_filings.py` | Automated SEC filing refresh (`--all`, `--ticker`, `--dry-run`) |
 | `scripts/extract_intermediate_ownership.py` | LLM extraction of intermediate parents |
 | `scripts/script_utils.py` | **Shared utilities** (DB sessions, parsers, progress, Windows handling) |
+| `scripts/embed_document_sections.py` | Embed document sections into pgvector for semantic search |
 | `medici/scripts/ingest_knowledge.py` | RAG knowledge ingestion (see `medici/CLAUDE.md`) |
 
 ## Database Schema
@@ -155,6 +160,7 @@ Targeted Fixes → Loop up to 3x → Escalate to Claude
 - `bond_pricing_history`: Historical daily snapshots (Business tier only)
 - `treasury_yield_history`: Historical US Treasury yield curves (1M-30Y tenors, 2021-present)
 - `document_sections`: SEC filing sections for full-text search (TSVECTOR + GIN index)
+- `document_section_chunks`: Embedded chunks for vector semantic search (pgvector HNSW, 768-dim Gemini embeddings)
 
 **Auth Tables**:
 - `users`: User accounts (email, api_key_hash, tier, stripe IDs, rate_limit_per_minute)
@@ -195,7 +201,7 @@ All require `X-API-Key` header (except `/v1/coverage/request`).
 | `/v1/companies/{ticker}/changes` | GET | $0.10 | Diff against historical snapshots |
 | `/v1/covenants/compare` | GET | Biz | Compare covenants across companies |
 | `/v1/entities/traverse` | POST | $0.15 | Graph traversal (guarantors, structure) |
-| `/v1/documents/search` | GET | $0.15 | Full-text search across SEC filings |
+| `/v1/documents/search` | GET | $0.15 | Search SEC filings (mode: keyword, semantic, hybrid) |
 | `/v1/batch` | POST | Sum | Execute multiple primitives in parallel |
 | `/v1/coverage/request` | POST | Free | Request coverage for non-covered companies |
 
@@ -218,6 +224,7 @@ All require `X-API-Key` header (except `/v1/coverage/request`).
 5. **Robust JSON parsing**: `parse_json_robust()` handles LLM output issues
 6. **Estimated data must be flagged**: Always mark estimated/inferred data (e.g., `issue_date_estimated: true`)
 7. **ALWAYS detect scale from source document**: Never assume scale — extract from SEC filing header. `detect_filing_scale()` in `financial_extraction.py`. **Never blindly apply scale fixes** — always verify against the source SEC filing first.
+8. **Automated filing refresh**: New filings detected via EDGAR polling (7:30 AM + 1:00 PM ET). Each filing type triggers specific extraction steps: 10-Q updates financials/docs/metrics; 10-K adds hierarchy/guarantees/collateral/covenants; 8-K updates docs/metrics only. Detection via `company_cache.source_filing_date` comparison. ~$0.008 per 10-Q, ~$0.04 per 10-K.
 
 ### Debt Instrument Types
 
@@ -289,7 +296,8 @@ TRACE pricing via Finnhub/FINRA. See `docs/BOND_PRICING.md` for detailed data fl
 **Key points**:
 - Finnhub requires **ISIN, not CUSIP**. Convert: `US` + CUSIP + check digit.
 - 3,064 bonds with TRACE pricing. All estimated/synthetic removed.
-- APScheduler refreshes at 11 AM, 3 PM, 9 PM ET. Daily snapshots at 9 PM ET.
+- APScheduler refreshes pricing at 11 AM, 3 PM, 9 PM ET. Daily snapshots at 9 PM ET.
+- APScheduler checks for new SEC filings at 7:30 AM, 1:00 PM ET. Triggers data refresh per filing type.
 - Historical TRACE fallback when Finnhub returns no current data.
 - Tables: `bond_pricing` (current), `bond_pricing_history` (daily snapshots), `treasury_yield_history`
 
@@ -337,7 +345,7 @@ python scripts/qc_financials.py --verbose
 
 **Local**: `uvicorn app.main:app --reload`
 
-**Migrations**: `alembic upgrade head` / `alembic revision -m "description"` (001 through 027)
+**Migrations**: `alembic upgrade head` / `alembic revision -m "description"` (001 through 028)
 
 ## Common Issues
 
